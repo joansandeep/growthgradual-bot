@@ -47,7 +47,7 @@ STEP 1 — SCAN sources for chartable data:
     • pie  → parts of a whole (portfolio breakdown, market share, sector allocation) — need ≥3 distinct slices
 
 STEP 2 — ONLY create a chart if ALL conditions are met:
-  ✓ At least 3 data points (bar/pie) or 4 time points (line)
+  ✓ At least 3 data points (bar/pie) or 4 time points (line) — charts with fewer points will be SILENTLY DROPPED from the PDF
   ✓ All labels are DIFFERENT from each other — NEVER repeat a label
   ✓ All values are DIFFERENT from each other — NOT all the same number
   ✓ Values come VERBATIM from the source — NEVER invented, estimated, or calculated

@@ -75,15 +75,9 @@ def classify_query(msg: str) -> str:
 
 def needs_web_search(msg: str) -> bool:
     m = msg.lower().strip()
-    if any(m.startswith(s) for s in SKIP_SEARCH_PREFIXES) and len(m) < 60:
-        return False
-    if len(m) < 4:
-        return False
-    # Finance-related queries almost always benefit from fresh web data,
-    # even when short (e.g. "Top banking stocks", "Analyse HDFC Bank").
-    if classify_query(m) == "finance":
-        return True
     if len(m) < 20 and "?" not in m:
+        return False
+    if any(m.startswith(s) for s in SKIP_SEARCH_PREFIXES) and len(m) < 60:
         return False
     return True
 

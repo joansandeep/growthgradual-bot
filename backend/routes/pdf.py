@@ -43,7 +43,7 @@ LIGHT  = (240/255, 243/255, 255/255)
 GREY   = (139/255, 147/255, 181/255)
 BODY_TXT = (0.18, 0.21, 0.38)
 
-CHART_COLORS = [NAVY, BLUE, GREEN, AMBER, RED, PURPLE, CYAN, PINK]
+CHART_COLORS = [BLUE, GREEN, AMBER, RED, PURPLE, CYAN, PINK, NAVY]
 
 # Section accent colours (one per major section heading)
 SECTION_ACCENTS = [GOLD, BLUE, GREEN, AMBER, RED, PURPLE]
@@ -59,7 +59,10 @@ def _is_valid_chart(spec: dict) -> bool:
     for s in series:
         pts = s.get("data") or []
         all_data.extend(pts)
-    if len(all_data) < 2:
+    chart_type = spec.get("type", "bar")
+    # Enforce minimum data points per chart type
+    min_pts = 4 if chart_type == "line" else 3
+    if len(all_data) < min_pts:
         return False
     values = [d.get("value", 0) for d in all_data]
     # Reject if all values identical or all zero
@@ -67,6 +70,10 @@ def _is_valid_chart(spec: dict) -> bool:
         return False
     # Reject if max == 0
     if max(abs(v) for v in values) == 0:
+        return False
+    # Reject if labels are not unique (duplicate labels = bad chart)
+    labels = [d.get("label", "") for d in all_data]
+    if len(set(labels)) < len(labels):
         return False
     return True
 
@@ -293,8 +300,10 @@ def _bar(c, spec, x0, y0, w, h):
     max_v = max(values) if values else 1
     PL, PB = 44, 32
     pw, ph = w - PL - 8, h - PB - 22
-    bw = max(4, pw / len(data) * 0.62)
-    sp = pw / len(data)
+    n = max(len(data), 1)
+    sp = pw / n
+    # Cap bar width: no wider than 80% of slot, min 4pt, max 60pt
+    bw = max(4, min(60, sp * 0.62))
 
     for f in (0.25, 0.5, 0.75, 1.0):
         gy = y0 + PB + f * ph
@@ -311,6 +320,8 @@ def _bar(c, spec, x0, y0, w, h):
         v = d.get("value", 0)
         bh = max(2, (abs(v) / max_v) * ph)
         bx = x0 + PL + i * sp + (sp - bw) / 2
+        # Ensure bar stays within plot area
+        bx = min(bx, x0 + PL + pw - bw)
         color = RED if v < 0 else CHART_COLORS[i % len(CHART_COLORS)]
         c.setFillColorRGB(*color)
         c.rect(bx, y0 + PB, bw, bh, fill=1, stroke=0)
