@@ -1256,7 +1256,7 @@ export default function GrowthGradualChat() {
                   <div key={msg.id} className="msg-row msg-row--bot">
                     <div className="msg-inner">
                       <div className="msg-avatar msg-avatar--bot">
-                        <Image src="/growth-gradual-icon-transparent.png" alt="" width={28} height={28} style={{ objectFit:'contain' }}/>
+                        <Image src="/growth-gradual-icon.png" alt="" width={28} height={28} style={{ objectFit:'contain' }}/>
                       </div>
                       <div className="msg-bubble">
                         <div className="typing-dots">
