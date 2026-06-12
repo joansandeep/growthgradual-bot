@@ -28,7 +28,7 @@ You MUST respond with valid JSON only — no markdown fences, no preamble, no te
 
 Respond with EXACTLY this shape:
 {
-  "title": "<concise report title, max 12 words>",
+  "title": "<concise report title, max 12 words — a noun-phrase headline like 'Global Growth Slowdown and AI Investment Trends', NEVER a sentence starting with 'Here are', 'Based on', 'The following', or similar preamble/instruction phrasing>",
   "report": "<full markdown report — target 800-1200 words, structured and data-rich>",
   "charts": [...],
   "keyStats": [{ "label": "<short label>", "value": "<value string>", "change": "<+/- % or empty string>" }],
@@ -50,8 +50,12 @@ STEP 2 — ONLY create a chart if ALL conditions are met:
   ✓ At least 3 data points (bar/pie) or 4 time points (line)
   ✓ All labels are DIFFERENT from each other — NEVER repeat a label
   ✓ All values are DIFFERENT from each other — NOT all the same number
-  ✓ Values come VERBATIM from the source — NEVER invented or estimated
+  ✓ Values come VERBATIM from the source — NEVER invented, estimated, or calculated
+  ✓ The source explicitly states each individual data point — NOT inferred from a single current value
   ✗ If these conditions cannot be met → DO NOT create the chart at all
+  ✗ NEVER create a line chart showing historical price levels you calculated or estimated
+  ✗ NEVER create a chart from a single number (e.g. "Sensex is at 74,503" is ONE data point — not chartable)
+  ✗ A bar chart needs ≥3 NAMED items (e.g. 3 different sector indices) — not 1 item shown 3 ways
 
 STEP 3 — Place [CHART_n] inline in the report markdown exactly where each chart should appear — right after the paragraph whose data it visualises. Number from 1. charts[0] = [CHART_1], charts[1] = [CHART_2], etc.
 
@@ -113,6 +117,11 @@ Only include this section if sources have trend/time-series data. Insert [CHART_
 
 GLOBAL RULES:
 - NEVER invent any number, date, name, or statistic
+- TABLE HYGIENE: every column in a table must have real values for EVERY row. If a column would
+  be "-" or empty for some rows (e.g. indices like NIFTY 50/NIFTY BANK have no market cap),
+  do NOT include that column for those rows — instead, put indices and individual stocks in
+  SEPARATE tables (one for index levels, one for stock market caps), or drop the column entirely
+  if it doesn't apply to the row type being shown.
 - Cite [n] throughout every section
 - At least 3 markdown data tables
 - keyStats: 6-8 real metrics with values and change indicators
@@ -162,7 +171,7 @@ async def fetch_page_content(url: str, max_chars: int = 6000) -> str:
 
 
 # Groq context limit: ~6K tokens input. Trim prompt to avoid 413.
-GROQ_MAX_PROMPT_CHARS = 10_000  # keep input small — Groq 413s above ~12K chars
+GROQ_MAX_PROMPT_CHARS = 7_000   # safe hard cap — 9K+ reliably triggers 413
 
 def _trim_for_groq(prompt: str) -> str:
     """Hard-cap the user prompt so Groq never returns 413 Payload Too Large."""
@@ -218,8 +227,34 @@ async def call_groq(user_prompt: str) -> str:
                     },
                 )
             if res.status_code == 413:
-                log.warning("Groq 413 (still too large after trim) on key ...%s — skipping Groq entirely", key[-4:])
-                # Mark all keys as temporarily unavailable; fall through to Gemini
+                log.warning("Groq 413 on key ...%s — retrying with harder trim", key[-4:])
+                # Try once more at half the current limit before giving up
+                harder_trim = len(trimmed_prompt) // 2
+                trimmed_prompt = trimmed_prompt[:harder_trim]
+                try:
+                    async with httpx.AsyncClient(timeout=90) as client2:
+                        res2 = await client2.post(
+                            "https://api.groq.com/openai/v1/chat/completions",
+                            headers={"Content-Type": "application/json", "Authorization": f"Bearer {key}"},
+                            json={
+                                "model": "llama-3.3-70b-versatile",
+                                "messages": [
+                                    {"role": "system", "content": SYSTEM_PROMPT},
+                                    {"role": "user", "content": trimmed_prompt},
+                                ],
+                                "max_tokens": 8000,
+                                "temperature": 0.2,
+                                "response_format": {"type": "json_object"},
+                            },
+                        )
+                    if res2.is_success:
+                        text2 = res2.json().get("choices", [{}])[0].get("message", {}).get("content", "")
+                        if text2:
+                            log.info("Groq: report generated on retry (%d chars)", len(text2))
+                            return text2
+                except Exception:
+                    pass
+                # Still failing — skip Groq entirely
                 for k in keys:
                     mark_rate_limited(k, 120_000)
                 return ""
@@ -257,11 +292,12 @@ async def call_groq(user_prompt: str) -> str:
     return ""
 
 
-# Gemini model priority: try best model first, fall back to alternatives on 503
+# Gemini model priority: try best model first, fall back on 503/429/404
 GEMINI_MODELS = [
-    "gemini-2.5-flash",
-    "gemini-1.5-flash",
-    "gemini-2.0-flash-lite",
+    "gemini-2.5-flash",        # best quality — try first
+    "gemini-2.0-flash",        # reliable fallback (replaced deprecated 1.5-flash)
+    "gemini-2.5-flash-8b",     # lighter/faster — good for overload situations
+    "gemini-2.0-flash-lite",   # last resort
 ]
 
 
@@ -300,6 +336,7 @@ async def call_gemini(user_prompt: str) -> str:
                         "generationConfig": {
                             "maxOutputTokens": 16000,
                             "temperature": 0.1,
+                            "responseMimeType": "application/json",  # force JSON — avoids markdown fences
                         },
                     },
                 )
@@ -318,6 +355,10 @@ async def call_gemini(user_prompt: str) -> str:
                 continue
             if not res.is_success:
                 log.warning("Gemini HTTP %d on model=%s key=...%s", res.status_code, model, key[-4:])
+                if res.status_code == 404:
+                    # Model doesn't exist — no point trying other keys for this model
+                    log.warning("Gemini 404 — model=%s is deprecated/unavailable, skipping all keys for it", model)
+                    break
                 continue
             text = res.json().get("candidates", [{}])[0].get("content", {}).get("parts", [{}])[0].get("text", "")
             if text:
@@ -351,11 +392,19 @@ async def generate_report(request: Request):
         log.warning("Report: no sources provided")
         return JSONResponse({"report": "No sources available.", "charts": [], "keyStats": [], "summary": "", "title": ""})
 
+    from routes.chat import _looks_like_ai_overview
+
     async def enrich(src: dict, idx: int) -> dict:
+        if _looks_like_ai_overview(src.get("snippet", "")):
+            src = {**src, "snippet": ""}
+        if _looks_like_ai_overview(src.get("fullContent", "")):
+            src = {**src, "fullContent": ""}
         if len(src.get("fullContent", "")) > 600:
             return src
         if idx < 15:
             fetched = await fetch_page_content(src["url"], 1500)
+            if _looks_like_ai_overview(fetched):
+                return src
             if len(fetched) > len(src.get("snippet", "")):
                 log.debug("Enriched source %d: %s (+%d chars)", idx + 1, src.get("title", "")[:40], len(fetched))
                 return {**src, "fullContent": fetched}
@@ -417,13 +466,40 @@ async def generate_report(request: Request):
 
     try:
         parsed = json.loads(clean)
-        charts = [
-            c for c in (parsed.get("charts") or [])
-            if c.get("type") and c.get("title")
-            and isinstance(c.get("series"), list)
-            and c["series"]
-            and c["series"][0].get("data")
-        ]
+
+        def _is_plausible_chart(ch: dict) -> bool:
+            """Reject charts that look invented rather than sourced from real data."""
+            series = ch.get("series") or []
+            if not series or not ch.get("type") or not ch.get("title"):
+                return False
+            all_pts = [pt for s in series for pt in (s.get("data") or [])]
+            if len(all_pts) < 2:
+                return False
+            values = [pt.get("value", 0) for pt in all_pts]
+            labels = [str(pt.get("label", "")) for pt in all_pts]
+            # Reject duplicate labels
+            if len(set(labels)) < len(labels):
+                log.warning("Chart rejected — duplicate labels: %s", labels[:6])
+                return False
+            # Reject all-identical values
+            if len(set(values)) <= 1:
+                log.warning("Chart rejected — identical values: %s", values[:6])
+                return False
+            # Reject line charts with values that look like evenly-spaced fabricated price levels
+            # (e.g. [36121, 48915, 61709, 74503] — suspiciously arithmetic progression)
+            if ch.get("type") == "line" and len(values) >= 3:
+                diffs = [abs(values[i+1] - values[i]) for i in range(len(values)-1)]
+                if diffs and max(diffs) > 0:
+                    variance = sum((d - sum(diffs)/len(diffs))**2 for d in diffs) / len(diffs)
+                    cv = (variance ** 0.5) / (sum(diffs)/len(diffs))
+                    if cv < 0.05:  # coefficient of variation <5% = suspiciously even spacing
+                        log.warning("Chart rejected — values look arithmetically generated (cv=%.3f): %s", cv, values)
+                        return False
+            return True
+
+        charts = [c for c in (parsed.get("charts") or []) if _is_plausible_chart(c)]
+        if len(charts) < len(parsed.get("charts") or []):
+            log.info("Chart validation: kept %d / %d charts", len(charts), len(parsed.get("charts") or []))
         elapsed = (time.perf_counter() - t0) * 1000
         log.info(
             "Report complete in %.0fms — title=%r  charts=%d  keyStats=%d",

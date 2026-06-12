@@ -73,7 +73,16 @@ def _is_valid_chart(spec: dict) -> bool:
 
 
 # ─── Logo loader ──────────────────────────────────────────────────────────────
-def _load_logo_bytes() -> bytes | None:
+def _load_logo_bytes(logo_b64: str = "") -> bytes | None:
+    """Load logo from: (1) request-supplied base64, (2) LOGO_B64 env var, (3) filesystem."""
+    # 1. Logo passed directly in the PDF request body (most reliable)
+    if logo_b64:
+        try:
+            return base64.b64decode(logo_b64)
+        except Exception:
+            pass
+
+    # 2. Environment variable (set once at deploy time)
     b64 = os.environ.get("LOGO_B64", "")
     if b64:
         try:
@@ -81,29 +90,49 @@ def _load_logo_bytes() -> bytes | None:
         except Exception:
             pass
 
-    # Build a broad candidate list covering all common project layouts
+    # 2b. Explicit path override via env var (most reliable for non-monorepo deploys)
+    logo_path_env = os.environ.get("LOGO_PATH", "")
+    if logo_path_env:
+        p = Path(logo_path_env)
+        if p.exists():
+            try:
+                return p.read_bytes()
+            except Exception:
+                pass
+
+    # 3. Filesystem search — covers local dev and various deploy layouts
     _here = Path(__file__).resolve().parent          # routes/
     _backend = _here.parent                          # backend/
     _project = _backend.parent                       # project root
     _frontend_pub = _project / "frontend" / "public"
 
     search_dirs = [
-        _frontend_pub,                               # frontend/public/ ← where the logo actually lives
+        _frontend_pub,
         _project / "public",
         _backend / "public",
+        _backend / "static",
+        _backend / "assets",
         _backend,
+        _backend.parent / "frontend" / "public",
         _project,
+        _project.parent / "frontend" / "public",
         Path(os.getcwd()),
         Path(os.getcwd()) / "public",
+        Path(os.getcwd()) / "static",
+        Path(os.getcwd()) / "frontend" / "public",
+        Path(os.getcwd()).parent / "frontend" / "public",
         Path("/app"),
         Path("/app/public"),
+        Path("/app/static"),
         Path("/app/frontend/public"),
+        Path("/opt/render/project/src/frontend/public"),  # Render.com
+        Path("/opt/render/project/src/backend/public"),
     ]
     logo_names = [
-        "growth-gradual-logo-transparent.png",
         "growth-gradual-logo.png",
         "growth-gradual-logo.jpg",
         "growth-gradual-logo.jpeg",
+        "growth-gradual-logo-transparent.jpeg",
         "logo.png",
         "logo.jpg",
         "logo.jpeg",
@@ -115,8 +144,24 @@ def _load_logo_bytes() -> bytes | None:
                 return p.read_bytes()
     return None
 
+def _draw_logo(c, logo_bytes, x, y, width, height):
+    """Draw logo, preserving alpha transparency for PNGs with transparent backgrounds."""
+    from reportlab.lib.utils import ImageReader
+    if not logo_bytes:
+        return False
+    try:
+        img_reader = ImageReader(io.BytesIO(logo_bytes))
+        pil_img = getattr(img_reader, "_image", None)
+        has_alpha = pil_img is not None and pil_img.mode in ("RGBA", "LA", "PA")
+        mask = "auto" if has_alpha else None
+        c.drawImage(img_reader, x, y, width=width, height=height,
+                    mask=mask, preserveAspectRatio=True)
+        return True
+    except Exception:
+        return False
 
-# ─── Domain detector ──────────────────────────────────────────────────────────
+
+
 def detect_domain(question: str) -> str:
     q = question.lower()
     if re.search(r"\b(stock|share|nse|bse|sensex|nifty|sebi|ipo|equity|mutual fund|etf|trading|portfolio|invest)\b", q):
@@ -140,12 +185,32 @@ def detect_domain(question: str) -> str:
     return "Research Intelligence"
 
 
+# ─── Safe text — strip chars Helvetica can't render ──────────────────────────
+def _safe_text(text: str) -> str:
+    """Replace characters that Helvetica can't render (shows as ■ tofu)."""
+    return (text
+        .replace("₹", "Rs.")
+        .replace("\u20b9", "Rs.")
+        .replace("\u2019", "'")
+        .replace("\u2018", "'")
+        .replace("\u201c", '"')
+        .replace("\u201d", '"')
+        .replace("\u2013", "-")
+        .replace("\u2014", "--")
+        .replace("\u2026", "...")
+    )
+
+
 # ─── Inline markdown stripping ────────────────────────────────────────────────
 def _strip_inline(text: str) -> str:
+    # Remove bold/italic markers
     text = re.sub(r"\*\*(.+?)\*\*", r"\1", text)
     text = re.sub(r"\*(.+?)\*", r"\1", text)
     text = re.sub(r"`([^`]+)`", r"\1", text)
-    return text
+    # Remove any stray leading/trailing asterisks
+    text = re.sub(r"^\*+\s*", "", text)
+    text = re.sub(r"\s*\*+$", "", text)
+    return _safe_text(text.strip())
 
 
 # ─── Markdown tokeniser ───────────────────────────────────────────────────────
@@ -362,7 +427,7 @@ def _draw_chart(c, spec, x0, y0, w, h):
 
 # ─── PDF builder ──────────────────────────────────────────────────────────────
 def build_pdf(report: str, title: str, question: str, summary: str,
-              key_stats: list, charts: list) -> bytes:
+              key_stats: list, charts: list, logo_b64: str = "") -> bytes:
     import json as _json
 
     # Last-resort: if report arrived as raw JSON, extract the markdown field
@@ -388,14 +453,14 @@ def build_pdf(report: str, title: str, question: str, summary: str,
     CW = PAGE_W - 2 * MARGIN     # content width
     HEADER_H = 34
     FOOTER_H = 22
-    BODY_TOP = PAGE_H - HEADER_H - 8
-    BODY_BOT = FOOTER_H + 8
+    BODY_TOP = PAGE_H - HEADER_H - 24   # 24pt gap below header band (was 16 — still touching)
+    BODY_BOT = FOOTER_H + 24            # guard above footer
 
     now_utc = datetime.now(timezone.utc)
     now_str  = now_utc.strftime("%d %b %Y")
     date_str = now_utc.strftime("%d %B %Y")
     domain   = detect_domain(question)
-    logo_bytes = _load_logo_bytes()
+    logo_bytes = _load_logo_bytes(logo_b64)
 
     buf = io.BytesIO()
     c = rl_canvas.Canvas(buf, pagesize=A4)
@@ -408,11 +473,7 @@ def build_pdf(report: str, title: str, question: str, summary: str,
         c.setFillColorRGB(*NAVY)
         c.rect(0, PAGE_H - HEADER_H, PAGE_W, HEADER_H, fill=1, stroke=0)
         if logo_bytes:
-            try:
-                c.drawImage(ImageReader(io.BytesIO(logo_bytes)),
-                            MARGIN, PAGE_H - HEADER_H + 5,
-                            width=72, height=22, mask="auto", preserveAspectRatio=True)
-            except Exception:
+            if not _draw_logo(c, logo_bytes, MARGIN, PAGE_H - HEADER_H + 5, 72, 22):
                 _logo_text()
         else:
             _logo_text()
@@ -421,16 +482,12 @@ def build_pdf(report: str, title: str, question: str, summary: str,
             c.drawRightString(PAGE_W - MARGIN, PAGE_H - HEADER_H + 18, section_title[:70])
         c.setFillColorRGB(0.65, 0.68, 0.82); c.setFont("Helvetica", 7)
         c.drawRightString(PAGE_W - MARGIN, PAGE_H - HEADER_H + 7, now_str)
-        # Footer
+        # Footer — minimal: just page number
         c.setFillColorRGB(0.94, 0.95, 1.0)
         c.rect(0, 0, PAGE_W, FOOTER_H, fill=1, stroke=0)
         c.setStrokeColorRGB(*NAVY); c.setLineWidth(1.2)
         c.line(0, FOOTER_H, PAGE_W, FOOTER_H)
-        c.setFillColorRGB(*NAVY); c.setFont("Helvetica-Bold", 7)
-        c.drawString(MARGIN, 7, "Growth Gradual · In The Money")
         c.setFillColorRGB(*GREY); c.setFont("Helvetica", 7)
-        c.drawCentredString(PAGE_W / 2, 7, "Not Financial Advice · For Informational Purposes Only")
-        c.setFont("Helvetica", 7)
         c.drawRightString(PAGE_W - MARGIN, 7, f"Page {page_num[0]}")
 
     def _logo_text():
@@ -448,93 +505,137 @@ def build_pdf(report: str, title: str, question: str, summary: str,
         y[0] -= n
 
     # ═══════════════════════════════════════════════════════════════════════════
-    # PAGE 1 — TITLE PAGE
+    # PAGE 1 — TITLE PAGE (light background)
     # ═══════════════════════════════════════════════════════════════════════════
-    # Dark cover background
-    c.setFillColorRGB(*NAVY)
+    # White background
+    c.setFillColorRGB(1, 1, 1)
     c.rect(0, 0, PAGE_W, PAGE_H, fill=1, stroke=0)
     # Gold accent bar at top
     c.setFillColorRGB(*GOLD)
     c.rect(0, PAGE_H - 8, PAGE_W, 8, fill=1, stroke=0)
-    # Subtle circle accent
-    c.setFillColorRGB(0.22, 0.28, 0.58)
-    c.circle(PAGE_W - 40, PAGE_H - 40, 180, fill=1, stroke=0)
-    c.setFillColorRGB(*NAVY)
-    c.rect(0, 0, PAGE_W - 120, PAGE_H, fill=1, stroke=0)
+    # Thin navy rule under header area
+    c.setStrokeColorRGB(*NAVY); c.setLineWidth(1)
+    c.line(MARGIN, PAGE_H - 100, PAGE_W - MARGIN, PAGE_H - 100)
 
-    # Logo
-    logo_y = PAGE_H - 80
+    # Logo — natural size on white background
+    logo_y = PAGE_H - 85
     if logo_bytes:
-        try:
-            c.drawImage(ImageReader(io.BytesIO(logo_bytes)),
-                        MARGIN, logo_y, width=130, height=40,
-                        mask="auto", preserveAspectRatio=True)
-        except Exception:
-            c.setFillColorRGB(*WHITE); c.setFont("Helvetica-Bold", 16)
-            c.drawString(MARGIN, logo_y + 10, "Growth Gradual")
+        if not _draw_logo(c, logo_bytes, MARGIN, logo_y, 150, 46):
+            c.setFillColorRGB(*NAVY); c.setFont("Helvetica-Bold", 16)
+            c.drawString(MARGIN, logo_y + 14, "Growth Gradual")
     else:
-        c.setFillColorRGB(*WHITE); c.setFont("Helvetica-Bold", 16)
-        c.drawString(MARGIN, logo_y + 10, "Growth Gradual")
+        c.setFillColorRGB(*NAVY); c.setFont("Helvetica-Bold", 16)
+        c.drawString(MARGIN, logo_y + 14, "Growth Gradual")
 
     # Domain tag
-    tag_y = PAGE_H - 160
+    tag_y = PAGE_H - 150
     tag = f"Research Report  ·  {domain}"
     tw = c.stringWidth(tag, "Helvetica-Bold", 8) + 20
-    c.setFillColorRGB(0.3, 0.18, 0.02)
+    c.setFillColorRGB(0.96, 0.91, 0.80)
     c.roundRect(MARGIN, tag_y - 4, tw, 18, 3, fill=1, stroke=0)
     c.setFillColorRGB(*GOLD); c.setFont("Helvetica-Bold", 8)
     c.drawString(MARGIN + 10, tag_y + 2, tag.upper())
 
-    # Report title
-    report_title = title or question
-    c.setFillColorRGB(*WHITE); c.setFont("Helvetica-Bold", 26)
-    t_lines = _wrap(c, report_title, "Helvetica-Bold", 26, CW - 20)
+    # Report title — clean, single-line headline
+    raw_title = title or question
+    raw_title = re.sub(r"^\*+\s*", "", raw_title.strip())
+    m = re.match(r"^(.{0,80}?)(?:\*\*|:|\.\s|,\s*here are|,\s*based on)", raw_title, re.IGNORECASE)
+    if m and len(m.group(1).strip()) >= 8:
+        raw_title = m.group(1).strip()
+    _PREAMBLE_PATTERNS = (
+        r"^here(?:'s| is| are)\b",
+        r"^based on\b",
+        r"^(?:latest|some of the latest)\b.{0,40}\b(news|trends|updates|data)\b",
+        r"^the following\b",
+        r"^below (?:is|are)\b",
+    )
+    if any(re.match(p, raw_title.strip(), re.IGNORECASE) for p in _PREAMBLE_PATTERNS):
+        raw_title = f"{domain} Briefing"
+    report_title = _strip_inline(raw_title)
+    # Single-line title — truncate with ellipsis if it doesn't fit at a readable size
+    title_size = 24
+    while title_size > 14 and c.stringWidth(report_title, "Helvetica-Bold", title_size) > CW:
+        title_size -= 1
+    while c.stringWidth(report_title, "Helvetica-Bold", title_size) > CW and len(report_title) > 10:
+        report_title = report_title[:-1]
+    if c.stringWidth(report_title, "Helvetica-Bold", title_size) > CW:
+        report_title = report_title.rstrip() 
+        while c.stringWidth(report_title + "...", "Helvetica-Bold", title_size) > CW and len(report_title) > 10:
+            report_title = report_title[:-1]
+        report_title = report_title.rstrip() + "..."
+
+    c.setFillColorRGB(*NAVY); c.setFont("Helvetica-Bold", title_size)
     ty = tag_y - 36
-    for ln in t_lines[:4]:
-        c.drawString(MARGIN, ty, ln); ty -= 34
+    c.drawString(MARGIN, ty, report_title)
 
     # Gold rule
-    ty -= 6
+    ty -= 22
     c.setStrokeColorRGB(*GOLD); c.setLineWidth(2)
     c.line(MARGIN, ty, MARGIN + CW * 0.55, ty); ty -= 18
 
     # Summary
     if summary:
-        c.setFillColorRGB(0.82, 0.84, 0.94); c.setFont("Helvetica", 11)
+        c.setFillColorRGB(*BODY_TXT); c.setFont("Helvetica", 11)
         s_lines = _wrap(c, summary, "Helvetica", 11, CW - 20)
         for ln in s_lines[:6]:
             c.drawString(MARGIN, ty, ln); ty -= 15
         ty -= 8
 
-    # Key stats row
+    # Key stats cards — max 4 per row, 2 rows if needed
     if key_stats:
-        stats_top = max(ty - 14, 170)
-        card_w = min(100, (CW - 8 * (min(len(key_stats), 6) - 1)) / min(len(key_stats), 6))
-        for i, st in enumerate(key_stats[:6]):
-            sx = MARGIN + i * (card_w + 8)
-            c.setFillColorRGB(0.18, 0.22, 0.50)  # solid card bg — visible on navy
-            c.roundRect(sx, stats_top - 46, card_w, 52, 4, fill=1, stroke=0)
-            c.setStrokeColorRGB(0.35, 0.40, 0.70)
-            c.roundRect(sx, stats_top - 46, card_w, 52, 4, fill=0, stroke=1)
-            c.setFillColorRGB(0.65, 0.68, 0.82); c.setFont("Helvetica", 6.5)
-            c.drawString(sx + 6, stats_top + 1, st.get("label", "")[:18].upper())
-            c.setFillColorRGB(*WHITE); c.setFont("Helvetica-Bold", 13)
-            c.drawString(sx + 6, stats_top - 17, st.get("value", "")[:11])
-            chg = st.get("change", "")
+        stats = key_stats[:8]
+        per_row = min(4, len(stats))           # max 4 per row — wider cards, readable labels
+        gap = 8
+        card_w = (CW - gap * (per_row - 1)) / per_row
+        CARD_H = 56
+        stats_top = max(ty - 14, 180)
+
+        for i, st in enumerate(stats):
+            row = i // per_row
+            col = i % per_row
+            sx = MARGIN + col * (card_w + gap)
+            sy = stats_top - row * (CARD_H + gap)
+
+            # Card background + border
+            c.setFillColorRGB(*LIGHT)
+            c.roundRect(sx, sy - CARD_H + 8, card_w, CARD_H, 4, fill=1, stroke=0)
+            c.setStrokeColorRGB(0.82, 0.85, 0.93)
+            c.roundRect(sx, sy - CARD_H + 8, card_w, CARD_H, 4, fill=0, stroke=1)
+
+            # Label — wrap to 2 lines if needed, font sized to fit card width
+            label = _safe_text(st.get("label", "")).upper()
+            label_font_size = 6.5
+            max_label_w = card_w - 12
+            # Wrap label across 2 lines if it overflows
+            label_lines = _wrap(c, label, "Helvetica", label_font_size, max_label_w)
+            c.setFillColorRGB(*GREY); c.setFont("Helvetica", label_font_size)
+            for li, ll in enumerate(label_lines[:2]):
+                c.drawString(sx + 6, sy + 2 - li * 8, ll)
+
+            # Value — scale font down if value is long
+            value = _safe_text(st.get("value", ""))[:14]
+            val_font = 13 if len(value) <= 9 else 10
+            c.setFillColorRGB(*NAVY); c.setFont("Helvetica-Bold", val_font)
+            c.drawString(sx + 6, sy - 18, value)
+
+            # Change indicator
+            chg = _safe_text(st.get("change", ""))
             if chg:
-                col = GREEN if chg.startswith("+") else (RED if chg.startswith("-") else GREY)
-                c.setFillColorRGB(*col); c.setFont("Helvetica", 7)
-                c.drawString(sx + 6, stats_top - 30, chg[:11])
+                col_c = GREEN if chg.startswith("+") else (RED if chg.startswith("-") else GREY)
+                c.setFillColorRGB(*col_c); c.setFont("Helvetica", 7)
+                chg_lines = _wrap(c, chg, "Helvetica", 7, max_label_w)
+                for li, cl in enumerate(chg_lines[:1]):
+                    c.drawString(sx + 6, sy - 32 - li * 8, cl)
 
     # Bottom info strip
-    c.setFillColorRGB(0.12, 0.16, 0.42)  # solid dark strip bottom
+    c.setFillColorRGB(*LIGHT)
     c.rect(0, 0, PAGE_W, 50, fill=1, stroke=0)
-    c.setStrokeColorRGB(0.30, 0.35, 0.65); c.setLineWidth(0.8)
+    c.setStrokeColorRGB(0.85, 0.88, 0.95); c.setLineWidth(0.8)
     c.line(0, 50, PAGE_W, 50)
-    c.setFillColorRGB(0.55, 0.58, 0.72); c.setFont("Helvetica", 8)
+    c.setFillColorRGB(*GREY); c.setFont("Helvetica", 8)
     c.drawString(MARGIN, 34, f"Generated: {date_str}")
     c.drawString(MARGIN, 20, "Confidential — For Informational Purposes Only")
-    c.setFont("Helvetica-Bold", 8); c.setFillColorRGB(0.72, 0.74, 0.88)
+    c.setFont("Helvetica-Bold", 8); c.setFillColorRGB(*NAVY)
     c.drawRightString(PAGE_W - MARGIN, 34, "In The Money · AI Research Platform")
     c.drawRightString(PAGE_W - MARGIN, 20, "growth-gradual.com")
 
@@ -571,23 +672,34 @@ def build_pdf(report: str, title: str, question: str, summary: str,
             if ci < len(charts) and _is_valid_chart(charts[ci]):
                 ch = charts[ci]
                 CHART_H = 195
-                need(CHART_H + 80, current_section[0])  # +80: title(20) + box-padding(28) + gap(32)
-                nl(6)
-                # Card
+                CARD_HEADER = 30   # space for title bar inside the card
+                GAP_ABOVE = 14     # breathing room between previous content and this card
+                CARD_TOTAL = CHART_H + CARD_HEADER + 10 + GAP_ABOVE
+                need(CARD_TOTAL, current_section[0])
+                nl(GAP_ABOVE)
+
+                card_top    = y[0]                       # top of card (just below the gap)
+                card_bottom = card_top - (CARD_HEADER + CHART_H + 4)
+
+                # White card background
                 c.setFillColorRGB(1, 1, 1)
-                c.roundRect(MARGIN, y[0] - CHART_H - 2, CW, CHART_H + 28, 5, fill=1, stroke=0)
+                c.roundRect(MARGIN, card_bottom, CW, card_top - card_bottom, 5, fill=1, stroke=0)
                 c.setStrokeColorRGB(0.87, 0.9, 0.95)
-                c.roundRect(MARGIN, y[0] - CHART_H - 2, CW, CHART_H + 28, 5, fill=0, stroke=1)
-                # Title bar inside card
+                c.roundRect(MARGIN, card_bottom, CW, card_top - card_bottom, 5, fill=0, stroke=1)
+
+                # Title bar — sits inside the card, near its top
+                title_y = card_top - 18
                 c.setFillColorRGB(*accent())
-                c.rect(MARGIN, y[0] + 14, 4, 14, fill=1, stroke=0)
+                c.rect(MARGIN, title_y - 2, 4, 14, fill=1, stroke=0)
                 c.setFillColorRGB(*NAVY); c.setFont("Helvetica-Bold", 9)
-                c.drawString(MARGIN + 10, y[0] + 16, ch.get("title", "")[:80])
+                c.drawString(MARGIN + 10, title_y, ch.get("title", "")[:80])
                 c.setStrokeColorRGB(0.9, 0.92, 0.96); c.setLineWidth(0.6)
-                c.line(MARGIN + 8, y[0] + 10, MARGIN + CW - 8, y[0] + 10)
-                # Draw chart
-                _draw_chart(c, ch, MARGIN + 8, y[0] - CHART_H + 2, CW - 16, CHART_H)
-                y[0] -= CHART_H + 34
+                c.line(MARGIN + 8, title_y - 6, MARGIN + CW - 8, title_y - 6)
+
+                # Chart body — fills remaining card area below the title bar
+                chart_top = title_y - 10
+                _draw_chart(c, ch, MARGIN + 8, chart_top - CHART_H, CW - 16, CHART_H)
+                y[0] = card_bottom - 14   # gap below the card before next content
             continue
 
         # ── Horizontal rule ──────────────────────────────────────────────────
@@ -607,8 +719,9 @@ def build_pdf(report: str, title: str, question: str, summary: str,
             section_idx[0] += 1
             text = _strip_inline(tok["text"])
             current_section[0] = text
-            need(52, text)
-            nl(10)
+            # 10(gap above) + 28(banner) + 34(nl after) + 40(min content below) = 112
+            need(112, text)
+            nl(14)   # visible gap before section banner
             col = accent()
             # Full-width section banner
             c.setFillColorRGB(*NAVY)
@@ -618,20 +731,21 @@ def build_pdf(report: str, title: str, question: str, summary: str,
             c.rect(MARGIN, y[0] - 8, 5, 28, fill=1, stroke=0)
             c.setFillColorRGB(*WHITE); c.setFont("Helvetica-Bold", 12)
             c.drawString(MARGIN + 14, y[0] + 6, text[:80])
-            nl(34); continue
+            nl(38); continue   # extra gap after banner before content starts
 
         # ── H3 — sub-section ─────────────────────────────────────────────────
         if tp == "h3":
             text = _strip_inline(tok["text"])
-            need(28, current_section[0])
-            nl(8)
+            # 8(gap above) + 20(banner) + 24(nl after) + 28(min content below) = 80
+            need(80, current_section[0])
+            nl(10)   # visible gap before sub-section
             c.setFillColorRGB(*LIGHT)
             c.rect(MARGIN, y[0] - 4, CW, 20, fill=1, stroke=0)
             c.setFillColorRGB(*accent())
             c.rect(MARGIN, y[0] - 4, 3, 20, fill=1, stroke=0)
             c.setFillColorRGB(*NAVY); c.setFont("Helvetica-Bold", 10.5)
             c.drawString(MARGIN + 9, y[0] + 4, text[:90])
-            nl(24); continue
+            nl(28); continue   # gap after sub-section banner
 
         # ── H4 ───────────────────────────────────────────────────────────────
         if tp == "h4":
@@ -659,13 +773,18 @@ def build_pdf(report: str, title: str, question: str, summary: str,
         # ── Numbered item ────────────────────────────────────────────────────
         if tp == "numbered":
             text = _strip_inline(tok["text"])
-            need(14, current_section[0])
             num = tok.get("num", "•")
-            c.setFillColorRGB(*accent()); c.setFont("Helvetica-Bold", 9.5)
-            c.drawString(MARGIN, y[0], f"{num}.")
-            c.setFillColorRGB(*BODY_TXT); c.setFont("Helvetica", 9.5)
-            c.drawString(MARGIN + 16, y[0], text[:110])
-            nl(14); continue
+            indent = 16
+            wlines = _wrap(c, text, "Helvetica", 9.5, CW - indent)
+            for li, ln in enumerate(wlines):
+                need(14, current_section[0])
+                if li == 0:
+                    c.setFillColorRGB(*accent()); c.setFont("Helvetica-Bold", 9.5)
+                    c.drawString(MARGIN, y[0], f"{num}.")
+                c.setFillColorRGB(*BODY_TXT); c.setFont("Helvetica", 9.5)
+                c.drawString(MARGIN + indent, y[0], ln)
+                nl(14)
+            continue
 
         # ── Paragraph ────────────────────────────────────────────────────────
         if tp == "para":
@@ -717,20 +836,29 @@ def build_pdf(report: str, title: str, question: str, summary: str,
         if not _is_valid_chart(ch):
             continue
         CHART_H = 195
-        need(CHART_H + 80, "Data Analysis")
-        nl(6)
+        CARD_HEADER = 30
+        GAP_ABOVE = 14
+        CARD_TOTAL = CHART_H + CARD_HEADER + 10 + GAP_ABOVE
+        need(CARD_TOTAL, "Data Analysis")
+        nl(GAP_ABOVE)
+
+        card_top    = y[0]
+        card_bottom = card_top - (CARD_HEADER + CHART_H + 4)
+
         c.setFillColorRGB(1, 1, 1)
-        c.roundRect(MARGIN, y[0] - CHART_H - 2, CW, CHART_H + 28, 5, fill=1, stroke=0)
+        c.roundRect(MARGIN, card_bottom, CW, card_top - card_bottom, 5, fill=1, stroke=0)
         c.setStrokeColorRGB(0.87, 0.9, 0.95)
-        c.roundRect(MARGIN, y[0] - CHART_H - 2, CW, CHART_H + 28, 5, fill=0, stroke=1)
+        c.roundRect(MARGIN, card_bottom, CW, card_top - card_bottom, 5, fill=0, stroke=1)
+        title_y = card_top - 18
         c.setFillColorRGB(*GOLD)
-        c.rect(MARGIN, y[0] + 14, 4, 14, fill=1, stroke=0)
+        c.rect(MARGIN, title_y - 2, 4, 14, fill=1, stroke=0)
         c.setFillColorRGB(*NAVY); c.setFont("Helvetica-Bold", 9)
-        c.drawString(MARGIN + 10, y[0] + 16, ch.get("title", "")[:80])
+        c.drawString(MARGIN + 10, title_y, ch.get("title", "")[:80])
         c.setStrokeColorRGB(0.9, 0.92, 0.96); c.setLineWidth(0.6)
-        c.line(MARGIN + 8, y[0] + 10, MARGIN + CW - 8, y[0] + 10)
-        _draw_chart(c, ch, MARGIN + 8, y[0] - CHART_H + 2, CW - 16, CHART_H)
-        y[0] -= CHART_H + 34
+        c.line(MARGIN + 8, title_y - 6, MARGIN + CW - 8, title_y - 6)
+        chart_top = title_y - 10
+        _draw_chart(c, ch, MARGIN + 8, chart_top - CHART_H, CW - 16, CHART_H)
+        y[0] = card_bottom - 14
 
     # Disclaimer removed per product requirement
 
@@ -758,6 +886,7 @@ async def generate_pdf(request: Request):
     summary: str    = body.get("summary", "")
     key_stats: list = body.get("keyStats", [])
     charts: list    = body.get("charts", [])
+    logo_b64: str   = body.get("logoB64", "")  # base64 logo sent from frontend
 
     # ── Safety: unwrap double-encoded report (LLM sometimes stuffs JSON into report field) ──
     stripped = report.strip()
@@ -788,7 +917,7 @@ async def generate_pdf(request: Request):
     log.info("PDF: generating — title=%r  charts=%d  keyStats=%d", title[:60], len(charts), len(key_stats))
 
     try:
-        pdf_bytes = build_pdf(report, title, question, summary, key_stats, charts)
+        pdf_bytes = build_pdf(report, title, question, summary, key_stats, charts, logo_b64)
     except Exception as e:
         log.error("PDF: build_pdf failed: %s", e)
         return JSONResponse({"error": f"Failed to generate PDF: {e}"}, status_code=500)
