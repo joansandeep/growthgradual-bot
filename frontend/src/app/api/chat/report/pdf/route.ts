@@ -1,12 +1,9 @@
 /**
  * Thin proxy → Python FastAPI backend /api/chat/report/pdf
  * Returns raw PDF bytes (application/pdf)
- * Injects logoB64 from logos.ts so the backend can render the logo even on servers
- * where the frontend/public directory isn't accessible.
  */
 import { NextRequest, NextResponse } from 'next/server';
 import { createLogger, logRequest } from '@/lib/logger';
-import { LOGO_B64 } from './logos';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -17,25 +14,14 @@ const BACKEND = (process.env.BACKEND_URL ?? 'http://localhost:8000').replace(/\/
 
 export async function POST(req: NextRequest) {
   const done = logRequest(log, 'POST', '/api/chat/report/pdf');
-
-  // Parse the incoming body, inject logoB64, then re-serialise
-  let bodyObj: Record<string, unknown>;
-  try {
-    bodyObj = await req.json();
-  } catch {
-    done(400, 'invalid json');
-    return NextResponse.json({ error: 'Invalid request body' }, { status: 400 });
-  }
-
-  // Attach the logo so the Python PDF generator can render it regardless of filesystem layout
-  bodyObj.logoB64 = LOGO_B64;
+  const body = await req.arrayBuffer();
 
   let upstream: Response;
   try {
     upstream = await fetch(`${BACKEND}/api/chat/report/pdf`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(bodyObj),
+      body,
       signal: AbortSignal.timeout(55_000),
     });
   } catch (err) {

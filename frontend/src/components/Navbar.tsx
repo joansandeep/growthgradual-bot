@@ -45,7 +45,7 @@ export default function Navbar() {
         <div className="nav-top">
           <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
             <Image
-              src="/growth-gradual-logo-transparent.jpeg"
+              src="/growth-gradual-logo-transparent.png"
               alt="Growth Gradual"
               width={180}
               height={52}

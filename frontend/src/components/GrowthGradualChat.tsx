@@ -1134,7 +1134,7 @@ export default function GrowthGradualChat() {
           {/* Sidebar header */}
           <div className="sidebar-hdr">
             <div className="sidebar-logo">
-              <Image src="/growth-gradual-icon-transparent.jpeg" alt="Growth Gradual" width={32} height={32} style={{ objectFit:'contain' }}/>
+              <Image src="/growth-gradual-icon-transparent.png" alt="Growth Gradual" width={32} height={32} style={{ objectFit:'contain' }}/>
             </div>
             <div className="sidebar-brand">
               Growth Gradual
@@ -1193,7 +1193,7 @@ export default function GrowthGradualChat() {
               <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round"><path d="M3 12h18M3 6h18M3 18h18"/></svg>
             </button>
             <div className="topbar-logo">
-              <Image src="/growth-gradual-icon-transparent.jpeg" alt="Growth Gradual" width={30} height={30} style={{ objectFit:'contain' }}/>
+              <Image src="/growth-gradual-icon-transparent.png" alt="Growth Gradual" width={30} height={30} style={{ objectFit:'contain' }}/>
             </div>
             <div className="topbar-info">
               <div className="topbar-name">Growth Gradual</div>
@@ -1213,7 +1213,7 @@ export default function GrowthGradualChat() {
             {isEmpty ? (
               <div className="chat-welcome">
                 <div className="welcome-logo">
-                  <Image src="/growth-gradual-icon-transparent.jpeg" alt="Growth Gradual" width={68} height={68} style={{ objectFit:'contain' }}/>
+                  <Image src="/growth-gradual-icon-transparent.png" alt="Growth Gradual" width={68} height={68} style={{ objectFit:'contain' }}/>
                 </div>
                 <div>
                   <p className="welcome-title">Growth Gradual</p>

@@ -107,28 +107,6 @@ async def fetch_page_content(url: str, max_chars: int = 4000) -> str:
         return ""
 
 
-_AI_OVERVIEW_PATTERNS = [
-    r"^\s*\*{0,2}as of [a-z]+,?\s+[a-z]+\s+\d{1,2},?\s+\d{4}.{0,40}here are the latest",
-    r"^\s*\*{0,2}latest .{0,60}\*{0,2}\s*as of\b",
-    r"^\s*here(?:'s| is) (?:a |an )?(?:summary|overview|update) of",
-]
-
-def _looks_like_ai_overview(text: str) -> bool:
-    if not text:
-        return False
-    head = text.strip()[:300].lower()
-    return any(re.search(p, head, re.IGNORECASE) for p in _AI_OVERVIEW_PATTERNS)
-
-
-def _clean_result_content(r: dict) -> dict:
-    """Drop snippet/fullContent fields that look like injected AI-overview text."""
-    if _looks_like_ai_overview(r.get("snippet", "")):
-        r["snippet"] = ""
-    if _looks_like_ai_overview(r.get("fullContent", "")):
-        r["fullContent"] = ""
-    return r
-
-
 async def tavily_search(query: str, max_results: int = 25) -> list[dict]:
     keys = get_tavily_keys()
     if not keys:
@@ -182,7 +160,6 @@ async def tavily_search(query: str, max_results: int = 25) -> list[dict]:
                     }
                     for r in (data.get("results") or [])
                 ]
-                results = [_clean_result_content(r) for r in results]
 
                 # Retry without domain filter if too few results
                 if len(results) < 5:
@@ -206,7 +183,6 @@ async def tavily_search(query: str, max_results: int = 25) -> list[dict]:
                             }
                             for r in (res2.json().get("results") or [])
                         ]
-                        results = [_clean_result_content(r) for r in results]
 
                 # Enrich top-10 sparse results
                 enriched = []
