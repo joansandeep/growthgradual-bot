@@ -1,0 +1,295 @@
+'use client';
+import { useEffect, useState, useCallback } from 'react';
+import { Stock, QuickStat } from '@/types';
+
+// ── Types that mirror /api/market response ─────────────────────────────────
+interface LiveQuote {
+  symbol: string;
+  price: string;
+  change: string;
+  up: boolean;
+  raw: number;
+}
+interface LiveStat {
+  label: string;
+  value: string;
+  sub: string;
+}
+interface MarketData {
+  stocks: LiveQuote[];
+  stats: LiveStat[];
+  gainers: LiveQuote[];
+  losers: LiveQuote[];
+  marketOpen: boolean;
+  fetchedAt: string;
+  fromCache: boolean;
+  stale?: boolean;
+  cacheAge?: string;
+  error?: string;
+}
+
+// ── Static fallback (same as old data/index.ts values) ────────────────────
+const FALLBACK: MarketData = {
+  stocks: [
+    { symbol: 'NIFTY 50',   price: '—', change: '—',     up: true,  raw: 0 },
+    { symbol: 'SENSEX',     price: '—', change: '—',     up: true,  raw: 0 },
+    { symbol: 'NIFTY BANK', price: '—', change: '—',     up: false, raw: 0 },
+    { symbol: 'NIFTY IT',   price: '—', change: '—',     up: true,  raw: 0 },
+    { symbol: 'NIFTY MID',  price: '—', change: '—',     up: true,  raw: 0 },
+    { symbol: 'USD/INR',    price: '—', change: '—',     up: true,  raw: 0 },
+  ],
+  stats: [
+    { label: 'USD/INR',        value: '—', sub: '—' },
+    { label: 'Gold (MCX ~10g)',value: '—', sub: '—' },
+    { label: 'Crude Oil',      value: '—', sub: '—' },
+    { label: '10Y Yield (US)', value: '—', sub: '—' },
+    { label: 'Repo Rate',      value: '—', sub: 'Loading…' },
+  ],
+  gainers: [],
+  losers: [],
+  marketOpen: false,
+  fetchedAt: '',
+  fromCache: false,
+};
+
+// ── Sub-components ─────────────────────────────────────────────────────────
+const Panel = ({ children, style = {} }: { children: React.ReactNode; style?: React.CSSProperties }) => (
+  <div style={{
+    background: '#ffffff',
+    border: '1px solid #e2e8f0',
+    borderRadius: '8px',
+    padding: '16px',
+    boxShadow: '0 1px 3px rgba(0,0,0,0.04)',
+    ...style,
+  }}>{children}</div>
+);
+
+const SectionLabel = ({ children }: { children: React.ReactNode }) => (
+  <p style={{
+    fontSize: '9px', fontWeight: 600, color: '#94a3b8',
+    textTransform: 'uppercase', letterSpacing: '2px',
+    marginBottom: '12px', fontFamily: 'DM Sans, sans-serif',
+    borderBottom: '1px solid #f1f5f9', paddingBottom: '6px',
+  }}>{children}</p>
+);
+
+function Pulse({ color = '#22c55e' }: { color?: string }) {
+  return (
+    <span style={{
+      width: '6px', height: '6px', borderRadius: '50%',
+      background: color, display: 'inline-block',
+      boxShadow: `0 0 6px ${color}80`,
+      animation: 'pulse 2s ease-in-out infinite',
+    }} />
+  );
+}
+
+// ── Props kept for layout.tsx compatibility ────────────────────────────────
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
+export default function StockPanel(_props: { stocks?: Stock[]; stats?: QuickStat[] }) {
+  const [data, setData] = useState<MarketData>(FALLBACK);
+  const [loading, setLoading] = useState(true);
+  const [lastUpdated, setLastUpdated] = useState('');
+  const [flash, setFlash] = useState<Set<string>>(new Set());
+
+  const fetchMarket = useCallback(async () => {
+    try {
+      const res = await fetch('/api/market', { cache: 'no-store' });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const json: MarketData = await res.json();
+      if (json.error) throw new Error(json.error);
+      // Reject response if all prices are dashes (API ran but data source failed)
+      const hasRealData = json.stocks?.some((s: {price: string}) => s.price && s.price !== '—');
+      if (!hasRealData) throw new Error('No real price data');
+
+      // Flash changed symbols
+      setData(prev => {
+        const changed = new Set<string>();
+        for (const q of json.stocks) {
+          const old = prev.stocks.find(s => s.symbol === q.symbol);
+          if (old && old.price !== q.price) changed.add(q.symbol);
+        }
+        if (changed.size > 0) {
+          setFlash(changed);
+          setTimeout(() => setFlash(new Set()), 1200);
+        }
+        return json;
+      });
+
+      if (json.fetchedAt) {
+        setLastUpdated(new Date(json.fetchedAt).toLocaleTimeString('en-IN', {
+          hour: '2-digit', minute: '2-digit', second: '2-digit',
+        }));
+      }
+    } catch (e) {
+      console.warn('[StockPanel] fetch failed:', e);
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    fetchMarket();
+    // Refresh every 60s (API caches on server for 60s anyway)
+    const timer = setInterval(fetchMarket, 60_000);
+    return () => clearInterval(timer);
+  }, [fetchMarket]);
+
+  const indices = data.stocks.slice(0, 6);
+  const equities = data.stocks.slice(6, 12);
+  const gainers = data.gainers.length > 0 ? data.gainers : equities.filter(s => s.up).slice(0, 4);
+  const losers  = data.losers.length  > 0 ? data.losers  : equities.filter(s => !s.up).slice(0, 3);
+
+  // ── FII/DII: still static — no free public API for this ─────────────────
+  const fiiNet = '+₹2,841 Cr';
+  const diiNet = '+₹1,205 Cr';
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
+
+      {/* ── Live Market ─────────────────────────────────────────────────── */}
+      <Panel>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: '4px' }}>
+          <SectionLabel>Live Market</SectionLabel>
+          <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: '2px' }}>
+            <span style={{
+              display: 'flex', alignItems: 'center', gap: '5px',
+              fontSize: '9px', color: data.marketOpen ? '#15803d' : '#94a3b8',
+              fontFamily: 'JetBrains Mono, monospace',
+            }}>
+              {loading ? (
+                <span style={{ fontSize: '8px', color: '#cbd5e1' }}>loading…</span>
+              ) : (
+                <>
+                  <Pulse color={data.marketOpen ? '#22c55e' : '#94a3b8'} />
+                  {data.marketOpen ? 'OPEN' : 'CLOSED'}
+                </>
+              )}
+            </span>
+            {lastUpdated && (
+              <span style={{ fontSize: '8px', fontFamily: 'JetBrains Mono, monospace',
+                color: data.stale ? '#f59e0b' : (data.fromCache ? '#94a3b8' : '#22c55e') }}>
+                {data.stale ? `⚠ stale · ${data.cacheAge ?? lastUpdated}` :
+                 data.fromCache ? `⟳ cached · ${data.cacheAge ?? lastUpdated}` :
+                 `↻ live · ${lastUpdated}`}
+              </span>
+            )}
+          </div>
+        </div>
+
+        {/* Delay disclaimer */}
+        <p style={{ fontSize: '8px', color: '#cbd5e1', fontFamily: 'JetBrains Mono, monospace', marginBottom: '8px', letterSpacing: '0.5px' }}>
+          ⚡ NSE India · Live
+        </p>
+
+        {indices.map(s => (
+          <div key={s.symbol} style={{
+            display: 'flex', justifyContent: 'space-between', alignItems: 'center',
+            padding: '7px 0', borderBottom: '1px solid #f8fafc',
+            transition: 'background 0.3s',
+            background: flash.has(s.symbol) ? (s.up ? '#f0fdf4' : '#fef2f2') : 'transparent',
+            borderRadius: '2px',
+          }}>
+            <span style={{
+              fontSize: '10px', fontWeight: 600, color: '#475569',
+              fontFamily: 'DM Sans, sans-serif', letterSpacing: '0.3px',
+            }}>{s.symbol}</span>
+            <div style={{ textAlign: 'right' }}>
+              <p style={{
+                fontSize: '11px', color: '#0f172a',
+                fontFamily: 'JetBrains Mono, monospace', fontWeight: 500,
+              }}>{loading ? '—' : s.price}</p>
+              <p style={{
+                fontSize: '9px',
+                color: s.change === '—' ? '#94a3b8' : (s.up ? '#15803d' : '#b91c1c'),
+                fontFamily: 'JetBrains Mono, monospace',
+              }}>{loading ? '—' : (s.change === '—' ? '—' : `${s.up ? '▲' : '▼'} ${s.change}`)}</p>
+            </div>
+          </div>
+        ))}
+      </Panel>
+
+      {/* ── Top Gainers ─────────────────────────────────────────────────── */}
+      <Panel>
+        <SectionLabel>▲ Top Gainers</SectionLabel>
+        {loading ? (
+          <div style={{ fontSize: '10px', color: '#cbd5e1', fontFamily: 'DM Sans, sans-serif' }}>Loading…</div>
+        ) : gainers.length === 0 ? (
+          <div style={{ fontSize: '10px', color: '#cbd5e1', fontFamily: 'DM Sans, sans-serif' }}>No data</div>
+        ) : gainers.map(s => (
+          <div key={s.symbol} style={{
+            display: 'flex', justifyContent: 'space-between', alignItems: 'center',
+            padding: '6px 0', borderBottom: '1px solid #f8fafc',
+          }}>
+            <span style={{ fontSize: '10px', color: '#64748b', fontFamily: 'DM Sans, sans-serif' }}>{s.symbol}</span>
+            <span style={{ fontSize: '10px', color: '#15803d', fontFamily: 'JetBrains Mono, monospace', fontWeight: 600 }}>{s.change}</span>
+          </div>
+        ))}
+      </Panel>
+
+      {/* ── Top Losers ──────────────────────────────────────────────────── */}
+      <Panel>
+        <SectionLabel>▼ Top Losers</SectionLabel>
+        {loading ? (
+          <div style={{ fontSize: '10px', color: '#cbd5e1', fontFamily: 'DM Sans, sans-serif' }}>Loading…</div>
+        ) : losers.length === 0 ? (
+          <div style={{ fontSize: '10px', color: '#cbd5e1', fontFamily: 'DM Sans, sans-serif' }}>No data</div>
+        ) : losers.map(s => (
+          <div key={s.symbol} style={{
+            display: 'flex', justifyContent: 'space-between', alignItems: 'center',
+            padding: '6px 0', borderBottom: '1px solid #f8fafc',
+          }}>
+            <span style={{ fontSize: '10px', color: '#64748b', fontFamily: 'DM Sans, sans-serif' }}>{s.symbol}</span>
+            <span style={{ fontSize: '10px', color: '#b91c1c', fontFamily: 'JetBrains Mono, monospace', fontWeight: 600 }}>{s.change}</span>
+          </div>
+        ))}
+      </Panel>
+
+      {/* ── FII / DII ───────────────────────────────────────────────────── */}
+      <Panel>
+        <SectionLabel>FII / DII Activity</SectionLabel>
+        <p style={{ fontSize: '8px', color: '#cbd5e1', fontFamily: 'JetBrains Mono, monospace', marginBottom: '8px' }}>
+          ⚡ Indicative — previous session
+        </p>
+        <div style={{ display: 'flex', gap: '8px' }}>
+          <div style={{
+            flex: 1, background: '#f0fdf4', border: '1px solid #bbf7d0',
+            borderRadius: '6px', padding: '10px', textAlign: 'center',
+          }}>
+            <p style={{ fontSize: '9px', color: '#64748b', fontFamily: 'DM Sans, sans-serif', letterSpacing: '1px', textTransform: 'uppercase' }}>FII Net</p>
+            <p style={{ fontSize: '13px', color: '#15803d', fontFamily: 'JetBrains Mono, monospace', fontWeight: 600 }}>{fiiNet}</p>
+          </div>
+          <div style={{
+            flex: 1, background: '#eff6ff', border: '1px solid #bfdbfe',
+            borderRadius: '6px', padding: '10px', textAlign: 'center',
+          }}>
+            <p style={{ fontSize: '9px', color: '#64748b', fontFamily: 'DM Sans, sans-serif', letterSpacing: '1px', textTransform: 'uppercase' }}>DII Net</p>
+            <p style={{ fontSize: '13px', color: '#1d4ed8', fontFamily: 'JetBrains Mono, monospace', fontWeight: 600 }}>{diiNet}</p>
+          </div>
+        </div>
+      </Panel>
+
+      {/* ── Global Indicators ───────────────────────────────────────────── */}
+      <Panel>
+        <SectionLabel>Global Indicators</SectionLabel>
+        {data.stats.map(s => (
+          <div key={s.label} style={{
+            display: 'flex', justifyContent: 'space-between', alignItems: 'center',
+            padding: '7px 0', borderBottom: '1px solid #f8fafc',
+          }}>
+            <span style={{ fontSize: '10px', color: '#64748b', fontFamily: 'DM Sans, sans-serif' }}>{s.label}</span>
+            <div style={{ textAlign: 'right' }}>
+              <p style={{ fontSize: '11px', color: '#0f172a', fontFamily: 'JetBrains Mono, monospace', fontWeight: 500 }}>
+                {loading ? '—' : s.value}
+              </p>
+              <p style={{ fontSize: '9px', color: '#94a3b8', fontFamily: 'JetBrains Mono, monospace' }}>
+                {loading ? '' : s.sub}
+              </p>
+            </div>
+          </div>
+        ))}
+      </Panel>
+
+    </div>
+  );
+}

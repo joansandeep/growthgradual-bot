@@ -1,0 +1,174 @@
+@import url('https://fonts.googleapis.com/css2?family=Playfair+Display:wght@600;700&family=DM+Sans:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap');
+@import "tailwindcss";
+
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+:root {
+  --col-left: 220px;
+  --col-right: 240px;
+}
+
+html { font-size: 16px; }
+body { background: #f0f4f8; min-height: 100vh; -webkit-font-smoothing: antialiased; }
+
+/* ── Responsive layout grid ──────────────────────────────────────────────── */
+.page-grid {
+  display: grid;
+  grid-template-columns: var(--col-left) minmax(0, 1fr) var(--col-right);
+  gap: 16px;
+  align-items: start;
+}
+
+/* Prevent grid children from overflowing their column */
+.page-grid > * {
+  min-width: 0;
+  overflow: hidden;
+}
+
+/* Tablet: hide right sidebar, shrink left */
+@media (max-width: 1024px) {
+  .page-grid {
+    grid-template-columns: 180px 1fr;
+  }
+  .sidebar-right { display: none !important; }
+}
+
+/* Mobile: single column, hide left panel too */
+@media (max-width: 640px) {
+  .page-grid {
+    grid-template-columns: 1fr;
+  }
+  .stock-panel-left { display: none !important; }
+  .sidebar-right    { display: none !important; }
+}
+
+/* ── Navbar responsive ───────────────────────────────────────────────────── */
+.nav-top {
+  border-bottom: 1px solid #f1f5f9;
+  padding: 6px 20px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  max-width: 1400px;
+  margin: 0 auto;
+}
+.nav-tagline { display: inline; }
+@media (max-width: 640px) {
+  .nav-tagline { display: none; }
+  .nav-top { padding: 6px 12px; }
+}
+
+.nav-links {
+  max-width: 1400px;
+  margin: 0 auto;
+  padding: 0 20px;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  height: 40px;
+  overflow-x: auto;
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+}
+.nav-links::-webkit-scrollbar { display: none; }
+@media (max-width: 640px) {
+  .nav-links { padding: 0 8px; gap: 0; height: 38px; }
+}
+
+/* ── Article grid responsive ─────────────────────────────────────────────── */
+.article-grid-2 {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+  margin-bottom: 14px;
+}
+@media (max-width: 640px) {
+  .article-grid-2 { grid-template-columns: 1fr; }
+}
+
+/* ── Section header responsive ───────────────────────────────────────────── */
+.section-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 10px;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+/* ── Meta badge responsive ───────────────────────────────────────────────── */
+.meta-badge {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+@media (max-width: 640px) {
+  .meta-badge span.fetched-time { display: none; }
+}
+
+/* ── Ticker tape ─────────────────────────────────────────────────────────── */
+.ticker-wrap {
+  background: #0f172a;
+  overflow: hidden;
+  border-bottom: 1px solid #1e293b;
+  height: 32px;
+  display: flex;
+  align-items: center;
+}
+.ticker-track {
+  display: flex;
+  gap: 0;
+  animation: ticker 40s linear infinite;
+  white-space: nowrap;
+}
+@keyframes ticker { from { transform: translateX(0); } to { transform: translateX(-50%); } }
+
+/* ── Animations ──────────────────────────────────────────────────────────── */
+@keyframes pulse { 0%,100%{opacity:1} 50%{opacity:0.5} }
+@keyframes fadeUp { from{opacity:0;transform:translateY(6px)} to{opacity:1;transform:translateY(0)} }
+.fade-up { animation: fadeUp 0.25s ease forwards; }
+
+/* ── Main container ──────────────────────────────────────────────────────── */
+.main-container {
+  max-width: 1400px;
+  margin: 0 auto;
+  padding: 20px 20px;
+}
+@media (max-width: 640px) {
+  .main-container { padding: 12px 12px; }
+}
+
+/* ── Article card title overflow fix ─────────────────────────────────────── */
+.article-title {
+  font-family: 'Playfair Display', serif;
+  font-weight: 700;
+  color: #0f172a;
+  line-height: 1.35;
+  overflow-wrap: break-word;
+  word-break: break-word;
+}
+
+/* ── Mobile bottom nav ───────────────────────────────────────────────────── */
+.mobile-bottom-nav {
+  display: none;
+  position: fixed;
+  bottom: 0; left: 0; right: 0;
+  background: #ffffff;
+  border-top: 1px solid #e2e8f0;
+  z-index: 200;
+  padding: 6px 0 8px;
+  box-shadow: 0 -2px 8px rgba(0,0,0,0.08);
+}
+@media (max-width: 640px) {
+  .mobile-bottom-nav { display: flex; justify-content: space-around; align-items: center; }
+  .main-container { padding-bottom: 72px; }
+}
+
+/* ── Search bar ──────────────────────────────────────────────────────────── */
+.search-wrap { margin-bottom: 14px; }
+
+/* ── Scrollbar ───────────────────────────────────────────────────────────── */
+::-webkit-scrollbar { width: 4px; height: 4px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 4px; }
