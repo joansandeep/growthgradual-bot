@@ -8,9 +8,11 @@ interface Source { title: string; url: string; snippet: string; }
 interface ChartDataPoint { label: string; value: number; }
 interface ChartSeries { name: string; data: ChartDataPoint[]; color?: string; }
 interface ChartSpec { type: 'bar' | 'line' | 'pie'; title: string; series: ChartSeries[]; unit?: string; }
+interface ReportData { report: string; charts: ChartSpec[]; keyStats: {label:string;value:string;change?:string}[]; summary: string; }
 interface Message {
   id: string; role: 'user' | 'assistant'; text: string; ts: number;
   sources?: Source[]; searchPerformed?: boolean; queryType?: string;
+  reportData?: ReportData; reportLoading?: boolean;
 }
 interface Conversation {
   id: string; title: string; messages: Message[]; ts: number;
@@ -229,121 +231,89 @@ function ChartBlock({ spec }: { spec: ChartSpec }) {
 }
 
 // ─── Report Panel ─────────────────────────────────────────────────────────────
-function ReportPanel({ sources, question, queryType }: { sources: Source[]; question: string; queryType?: string }) {
-  const [open, setOpen]       = useState(false);
-  const [report, setReport]   = useState('');
-  const [charts, setCharts]   = useState<ChartSpec[]>([]);
-  const [keyStats, setKeyStats] = useState<{label:string;value:string;change?:string}[]>([]);
-  const [summary, setSummary] = useState('');
-  const [loading, setLoading] = useState(false);
+function ReportPanel({ msg, question }: { msg: Message; question: string }) {
+  const [open, setOpen]     = useState(false);
   const [pdfLoading, setPdfLoading] = useState(false);
-  const [done, setDone]       = useState(false);
 
-  const generate = async () => {
-    if (done) { setOpen(o => !o); return; }
-    setOpen(true); setLoading(true);
-    try {
-      const res = await fetch('/api/chat/report', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ question, sources }),
-      });
-      const data = await res.json();
-      setReport(data.report ?? '');
-      setCharts(data.charts ?? []);
-      setKeyStats(data.keyStats ?? []);
-      setSummary(data.summary ?? '');
-      setDone(true);
-    } catch { setReport('Failed to generate report.'); }
-    finally { setLoading(false); }
-  };
+  const rd = msg.reportData;
+  const loading = msg.reportLoading ?? false;
+  const done = !!rd;
+
+  // Don't render at all if report hasn't started generating yet
+  if (!loading && !done) return null;
 
   const downloadPdf = async () => {
-    if (!report || pdfLoading) return;
+    if (!rd || pdfLoading) return;
     setPdfLoading(true);
     try {
       const res = await fetch('/api/chat/report/pdf', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ report, charts, question, keyStats, summary }),
+        body: JSON.stringify({ report: rd.report, charts: rd.charts, question, keyStats: rd.keyStats, summary: rd.summary }),
       });
-
       const contentType = res.headers.get('Content-Type') ?? '';
-
       if (contentType.includes('application/pdf')) {
         const blob = await res.blob();
         const url = URL.createObjectURL(blob);
         const a = document.createElement('a');
-        const dateStr = new Date().toISOString().slice(0, 10);
         a.href = url;
-        a.download = `growth-gradual-report-${dateStr}.pdf`;
-        document.body.appendChild(a);
-        a.click();
-        a.remove();
+        a.download = `growth-gradual-report-${new Date().toISOString().slice(0,10)}.pdf`;
+        document.body.appendChild(a); a.click(); a.remove();
         setTimeout(() => URL.revokeObjectURL(url), 5000);
       } else {
-        const html = await res.text();
         const win = window.open('', '_blank');
-        if (!win) return;
-        win.document.write(html);
-        win.document.close();
-        win.focus();
-        setTimeout(() => win.print(), 600);
+        if (win) { win.document.write(await res.text()); win.document.close(); win.focus(); setTimeout(() => win.print(), 600); }
       }
-    } catch (e) {
-      console.error('[downloadPdf]', e);
-    } finally {
-      setPdfLoading(false);
-    }
+    } catch(e) { console.error('[downloadPdf]', e); }
+    finally { setPdfLoading(false); }
   };
 
-  // Show for finance queries always; for general queries only when sources exist
-  if (!sources.length && queryType !== 'finance') return null;
   return (
     <div className="report-wrap">
-      <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
-        <button className="report-btn" onClick={generate} disabled={loading}>
-          <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></svg>
-          {loading ? 'Generating…' : done ? (open ? 'Hide report' : 'Show report') : 'Generate report'}
-        </button>
+      <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', alignItems: 'center' }}>
+        {loading && (
+          <div style={{ display:'flex', alignItems:'center', gap:6, fontSize:11, color:'#8b93b5', fontFamily:"'DM Sans',sans-serif" }}>
+            <span className="dots"><i/><i/><i/></span>
+            Generating report…
+          </div>
+        )}
         {done && (
-          <button className="report-btn" onClick={downloadPdf} disabled={pdfLoading}
-            style={{ background: pdfLoading ? '#166534' : '#15803d', opacity: pdfLoading ? 0.8 : 1 }}>
-            {pdfLoading
-              ? <><span className="dots" style={{marginRight:4}}><i/><i/><i/></span>Building PDF…</>
-              : <><svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>Download PDF (3 pages)</>
-            }
-          </button>
+          <>
+            <button className="report-btn" onClick={() => setOpen(o => !o)}>
+              <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></svg>
+              {open ? 'Hide report' : 'Show report'}
+            </button>
+            <button className="report-btn" onClick={downloadPdf} disabled={pdfLoading}
+              style={{ background: pdfLoading ? '#166534' : '#15803d', opacity: pdfLoading ? 0.8 : 1 }}>
+              {pdfLoading
+                ? <><span className="dots" style={{marginRight:4}}><i/><i/><i/></span>Building PDF…</>
+                : <><svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>Download PDF</>
+              }
+            </button>
+          </>
         )}
       </div>
-      {open && (
+      {open && done && (
         <div className="report-body">
-          {loading ? (
-            <div className="report-loading">
-              <span className="dots"><i/><i/><i/></span>
-              <span>Generating 3-page report with charts…</span>
-            </div>
-          ) : (
-            <div className="report-content">
-              {keyStats.length > 0 && (
-                <div className="key-stats-row">
-                  {keyStats.map((s,i) => (
-                    <div key={i} className="key-stat-card">
-                      <div className="key-stat-label">{s.label}</div>
-                      <div className="key-stat-value">{s.value}</div>
-                      {s.change && <div className={`key-stat-change ${s.change.startsWith('+') ? 'pos' : s.change.startsWith('-') ? 'neg' : ''}`}>{s.change}</div>}
-                    </div>
-                  ))}
-                </div>
-              )}
-              {charts.length > 0 && (
-                <div className="charts-grid">
-                  {charts.map((c,i) => <ChartBlock key={i} spec={c}/>)}
-                </div>
-              )}
-              <div dangerouslySetInnerHTML={{ __html: renderMd(report) }}/>
-            </div>
-          )}
+          <div className="report-content">
+            {rd.keyStats.length > 0 && (
+              <div className="key-stats-row">
+                {rd.keyStats.map((s,i) => (
+                  <div key={i} className="key-stat-card">
+                    <div className="key-stat-label">{s.label}</div>
+                    <div className="key-stat-value">{s.value}</div>
+                    {s.change && <div className={`key-stat-change ${s.change.startsWith('+') ? 'pos' : s.change.startsWith('-') ? 'neg' : ''}`}>{s.change}</div>}
+                  </div>
+                ))}
+              </div>
+            )}
+            {rd.charts.length > 0 && (
+              <div className="charts-grid">
+                {rd.charts.map((c,i) => <ChartBlock key={i} spec={c}/>)}
+              </div>
+            )}
+            <div dangerouslySetInnerHTML={{ __html: renderMd(rd.report) }}/>
+          </div>
         </div>
       )}
     </div>
@@ -657,6 +627,31 @@ export default function GrowthGradualChat() {
         setMessages(prev => prev.map(m => m.id === botMsg.id ? { ...m, text:acc } : m));
       }
       historyRef.current = [...historyRef.current, { role:'assistant', content:finalText }];
+
+      // Auto-generate report in background after stream completes
+      const botMsgId = botMsg.id;
+      setMessages(prev => prev.map(m => m.id === botMsgId ? { ...m, reportLoading: true } : m));
+      fetch('/api/chat/report', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ question: q, sources: [] }),
+      })
+        .then(r => r.json())
+        .then(data => {
+          setMessages(prev => prev.map(m => m.id === botMsgId ? {
+            ...m,
+            reportLoading: false,
+            reportData: {
+              report:   data.report   ?? '',
+              charts:   data.charts   ?? [],
+              keyStats: data.keyStats ?? [],
+              summary:  data.summary  ?? '',
+            },
+          } : m));
+        })
+        .catch(() => {
+          setMessages(prev => prev.map(m => m.id === botMsgId ? { ...m, reportLoading: false } : m));
+        });
 
       // Persist conversation
       const title = q.length > 46 ? q.slice(0,46)+'…' : q;
@@ -1294,9 +1289,9 @@ export default function GrowthGradualChat() {
                         {!isUser && msg.sources && msg.sources.length > 0 && (
                           <SourcesPanel sources={msg.sources}/>
                         )}
-                        {!isUser && (msg.sources?.length ?? 0) > 0 || msg.queryType === 'finance' ? (
-                          !isUser && <ReportPanel sources={msg.sources ?? []} question={msg.text.slice(0,300)} queryType={msg.queryType}/>
-                        ) : null}
+                        {!isUser && (msg.reportLoading || msg.reportData) && (
+                          <ReportPanel msg={msg} question={msg.text.slice(0,300)}/>
+                        )}
                         <span className="msg-ts">{fmtTime(msg.ts)}</span>
                       </div>
                     </div>
