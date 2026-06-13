@@ -31,6 +31,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from routes.chat import router as chat_router
 from routes.report import router as report_router
 from routes.pdf import router as pdf_router
+from routes.email import router as email_router
 
 app = FastAPI(title="Growth Gradual API", version="1.0.0")
 
@@ -42,9 +43,10 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-app.include_router(chat_router,   prefix="/api/chat",            tags=["chat"])
-app.include_router(report_router, prefix="/api/chat/report",     tags=["report"])
-app.include_router(pdf_router,    prefix="/api/chat/report/pdf", tags=["pdf"])
+app.include_router(chat_router,   prefix="/api/chat",                  tags=["chat"])
+app.include_router(report_router, prefix="/api/chat/report",           tags=["report"])
+app.include_router(pdf_router,    prefix="/api/chat/report/pdf",       tags=["pdf"])
+app.include_router(email_router,  prefix="/api/chat/report/email",     tags=["email"])
 
 
 @app.middleware("http")

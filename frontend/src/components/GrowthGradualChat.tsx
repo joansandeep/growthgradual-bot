@@ -230,10 +230,201 @@ function ChartBlock({ spec }: { spec: ChartSpec }) {
   return <BarChart spec={spec}/>;
 }
 
+// ─── Email Modal ──────────────────────────────────────────────────────────────
+interface EmailForm {
+  senderEmail: string;
+  appPassword: string;
+  recipientEmail: string;
+  subject: string;
+}
+
+function EmailModal({
+  onClose,
+  onSend,
+  sending,
+  result,
+  defaultSubject,
+}: {
+  onClose: () => void;
+  onSend: (form: EmailForm) => void;
+  sending: boolean;
+  result: { ok: boolean; msg: string } | null;
+  defaultSubject: string;
+}) {
+  const [form, setForm] = useState<EmailForm>({
+    senderEmail: '',
+    appPassword: '',
+    recipientEmail: '',
+    subject: defaultSubject,
+  });
+  const [showPass, setShowPass] = useState(false);
+
+  const set = (k: keyof EmailForm) => (e: React.ChangeEvent<HTMLInputElement>) =>
+    setForm(prev => ({ ...prev, [k]: e.target.value }));
+
+  const valid = form.senderEmail.includes('@') && form.appPassword.length > 0 && form.recipientEmail.includes('@');
+
+  return (
+    <div style={{
+      position:'fixed', inset:0, zIndex:9999,
+      background:'rgba(15,20,50,0.55)', backdropFilter:'blur(4px)',
+      display:'flex', alignItems:'center', justifyContent:'center',
+      padding:'20px',
+    }} onClick={e => { if (e.target === e.currentTarget) onClose(); }}>
+      <div style={{
+        background:'#fff', borderRadius:16, width:'100%', maxWidth:440,
+        boxShadow:'0 20px 60px rgba(26,31,78,.25)',
+        fontFamily:"'DM Sans',sans-serif", overflow:'hidden',
+      }}>
+        {/* Header */}
+        <div style={{ background:'#1a1f4e', padding:'18px 22px', display:'flex', alignItems:'center', justifyContent:'space-between' }}>
+          <div style={{ display:'flex', alignItems:'center', gap:10 }}>
+            <div style={{ width:32, height:32, borderRadius:9, background:'rgba(255,255,255,.12)', display:'flex', alignItems:'center', justifyContent:'center' }}>
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#c8860a" strokeWidth="2.2" strokeLinecap="round">
+                <path d="M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z"/>
+                <polyline points="22,6 12,13 2,6"/>
+              </svg>
+            </div>
+            <div>
+              <div style={{ color:'#fff', fontWeight:700, fontSize:14 }}>Email Report</div>
+              <div style={{ color:'rgba(255,255,255,.5)', fontSize:11 }}>Send via Gmail SMTP</div>
+            </div>
+          </div>
+          <button onClick={onClose} style={{ background:'rgba(255,255,255,.1)', border:'none', borderRadius:8, width:28, height:28, color:'rgba(255,255,255,.7)', cursor:'pointer', display:'flex', alignItems:'center', justifyContent:'center' }}>
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round"><path d="M18 6L6 18M6 6l12 12"/></svg>
+          </button>
+        </div>
+
+        {/* Body */}
+        <div style={{ padding:'22px 22px 18px', display:'flex', flexDirection:'column', gap:14 }}>
+
+          {/* Info banner */}
+          <div style={{ background:'#eff6ff', border:'1px solid #bfdbfe', borderRadius:9, padding:'10px 13px', fontSize:11, color:'#1d4ed8', lineHeight:1.6 }}>
+            Uses your Gmail address + an <strong>App Password</strong> (not your account password).
+            Generate one at{' '}
+            <a href="https://myaccount.google.com/apppasswords" target="_blank" rel="noopener noreferrer" style={{ color:'#1d4ed8' }}>
+              myaccount.google.com/apppasswords
+            </a>
+            {' '}— requires 2FA enabled.
+          </div>
+
+          {/* Fields */}
+          {([
+            { key:'senderEmail',    label:'Your Gmail address',  type:'email',    ph:'you@gmail.com',           icon:'👤' },
+            { key:'recipientEmail', label:'Recipient email',     type:'email',    ph:'recipient@example.com',   icon:'📬' },
+            { key:'subject',        label:'Subject',             type:'text',     ph:'Research Report',         icon:'📝' },
+          ] as { key: keyof EmailForm; label: string; type: string; ph: string; icon: string }[]).map(({ key, label, type, ph, icon }) => (
+            <div key={key}>
+              <label style={{ fontSize:11, fontWeight:600, color:'#4b5680', display:'block', marginBottom:5, textTransform:'uppercase', letterSpacing:'0.04em' }}>
+                {icon} {label}
+              </label>
+              <input
+                type={type}
+                placeholder={ph}
+                value={form[key]}
+                onChange={set(key)}
+                disabled={sending}
+                style={{
+                  width:'100%', boxSizing:'border-box',
+                  padding:'9px 12px', borderRadius:9,
+                  border:'1.5px solid #e2e6f0', background:'#f8f9fc',
+                  fontSize:13, color:'#1a1f4e', fontFamily:"'DM Sans',sans-serif",
+                  outline:'none', transition:'border-color .15s',
+                }}
+                onFocus={e => { e.target.style.borderColor = 'rgba(26,31,78,.4)'; e.target.style.background = '#fff'; }}
+                onBlur={e => { e.target.style.borderColor = '#e2e6f0'; e.target.style.background = '#f8f9fc'; }}
+              />
+            </div>
+          ))}
+
+          {/* App password with toggle */}
+          <div>
+            <label style={{ fontSize:11, fontWeight:600, color:'#4b5680', display:'block', marginBottom:5, textTransform:'uppercase', letterSpacing:'0.04em' }}>
+              🔑 Gmail App Password
+            </label>
+            <div style={{ position:'relative' }}>
+              <input
+                type={showPass ? 'text' : 'password'}
+                placeholder="xxxx xxxx xxxx xxxx"
+                value={form.appPassword}
+                onChange={set('appPassword')}
+                disabled={sending}
+                style={{
+                  width:'100%', boxSizing:'border-box',
+                  padding:'9px 42px 9px 12px', borderRadius:9,
+                  border:'1.5px solid #e2e6f0', background:'#f8f9fc',
+                  fontSize:13, color:'#1a1f4e', fontFamily:"'DM Mono',monospace",
+                  outline:'none', transition:'border-color .15s', letterSpacing:'0.08em',
+                }}
+                onFocus={e => { e.target.style.borderColor = 'rgba(26,31,78,.4)'; e.target.style.background = '#fff'; }}
+                onBlur={e => { e.target.style.borderColor = '#e2e6f0'; e.target.style.background = '#f8f9fc'; }}
+              />
+              <button
+                type="button"
+                onClick={() => setShowPass(s => !s)}
+                style={{ position:'absolute', right:10, top:'50%', transform:'translateY(-50%)', background:'none', border:'none', cursor:'pointer', color:'#8b93b5', padding:4 }}
+              >
+                {showPass
+                  ? <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><path d="M17.94 17.94A10.07 10.07 0 0112 20c-7 0-11-8-11-8a18.45 18.45 0 015.06-5.94"/><path d="M9.9 4.24A9.12 9.12 0 0112 4c7 0 11 8 11 8a18.5 18.5 0 01-2.16 3.19"/><line x1="1" y1="1" x2="23" y2="23"/></svg>
+                  : <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>
+                }
+              </button>
+            </div>
+          </div>
+
+          {/* Result feedback */}
+          {result && (
+            <div style={{
+              padding:'10px 13px', borderRadius:9, fontSize:12, lineHeight:1.5,
+              background: result.ok ? '#f0fdf4' : '#fef2f2',
+              border: `1px solid ${result.ok ? '#bbf7d0' : '#fecaca'}`,
+              color: result.ok ? '#15803d' : '#dc2626',
+              display:'flex', alignItems:'flex-start', gap:8,
+            }}>
+              <span style={{ fontSize:16 }}>{result.ok ? '✅' : '❌'}</span>
+              <span>{result.msg}</span>
+            </div>
+          )}
+
+          {/* Actions */}
+          <div style={{ display:'flex', gap:8, marginTop:2 }}>
+            <button
+              onClick={onClose}
+              style={{ flex:1, padding:'10px', borderRadius:9, border:'1.5px solid #e2e6f0', background:'#f8f9fc', color:'#4b5680', fontSize:13, fontFamily:"'DM Sans',sans-serif", cursor:'pointer', fontWeight:600 }}
+            >
+              Cancel
+            </button>
+            <button
+              onClick={() => onSend(form)}
+              disabled={!valid || sending}
+              style={{
+                flex:2, padding:'10px', borderRadius:9, border:'none',
+                background: !valid || sending ? '#8b93b5' : '#1a1f4e',
+                color:'#fff', fontSize:13, fontFamily:"'DM Sans',sans-serif",
+                cursor: !valid || sending ? 'not-allowed' : 'pointer',
+                fontWeight:700, display:'flex', alignItems:'center', justifyContent:'center', gap:7,
+                transition:'background .15s, opacity .15s',
+              }}
+            >
+              {sending
+                ? <><span className="dots"><i/><i/><i/></span>Sending…</>
+                : <><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round"><path d="M22 2L11 13M22 2L15 22l-4-9-9-4 20-7z"/></svg>Send Report</>
+              }
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // ─── Report Panel ─────────────────────────────────────────────────────────────
 function ReportPanel({ msg, question }: { msg: Message; question: string }) {
-  const [open, setOpen]     = useState(false);
+  const [open, setOpen]           = useState(false);
   const [pdfLoading, setPdfLoading] = useState(false);
+  const [emailOpen, setEmailOpen]   = useState(false);
+  const [emailSending, setEmailSending] = useState(false);
+  const [emailResult, setEmailResult]   = useState<{ ok: boolean; msg: string } | null>(null);
 
   const rd = msg.reportData;
   const loading = msg.reportLoading ?? false;
@@ -268,7 +459,52 @@ function ReportPanel({ msg, question }: { msg: Message; question: string }) {
     finally { setPdfLoading(false); }
   };
 
+  const sendEmail = async (form: EmailForm) => {
+    if (!rd) return;
+    setEmailSending(true);
+    setEmailResult(null);
+    try {
+      const res = await fetch('/api/chat/report/email', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          sender_email:    form.senderEmail,
+          app_password:    form.appPassword,
+          recipient_email: form.recipientEmail,
+          subject:         form.subject,
+          report:          rd.report,
+          title:           (msg.reportData as ReportData & { title?: string })?.title ?? question.slice(0, 80),
+          summary:         rd.summary,
+          keyStats:        rd.keyStats,
+        }),
+      });
+      const data = await res.json();
+      if (data.success) {
+        setEmailResult({ ok: true,  msg: `Report sent to ${form.recipientEmail}` });
+        setTimeout(() => setEmailOpen(false), 2200);
+      } else {
+        setEmailResult({ ok: false, msg: data.error ?? 'Failed to send email.' });
+      }
+    } catch (e) {
+      setEmailResult({ ok: false, msg: 'Network error — could not reach the server.' });
+    } finally {
+      setEmailSending(false);
+    }
+  };
+
+  const defaultSubject = `Growth Gradual Research Report — ${question.slice(0, 50)}${question.length > 50 ? '…' : ''}`;
+
   return (
+    <>
+      {emailOpen && (
+        <EmailModal
+          onClose={() => { setEmailOpen(false); setEmailResult(null); }}
+          onSend={sendEmail}
+          sending={emailSending}
+          result={emailResult}
+          defaultSubject={defaultSubject}
+        />
+      )}
     <div className="report-wrap">
       <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', alignItems: 'center' }}>
         {loading && (
@@ -289,6 +525,14 @@ function ReportPanel({ msg, question }: { msg: Message; question: string }) {
                 ? <><span className="dots" style={{marginRight:4}}><i/><i/><i/></span>Building PDF…</>
                 : <><svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>Download PDF</>
               }
+            </button>
+            <button className="report-btn" onClick={() => { setEmailResult(null); setEmailOpen(true); }}
+              style={{ background:'#6d28d9' }}>
+              <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round">
+                <path d="M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z"/>
+                <polyline points="22,6 12,13 2,6"/>
+              </svg>
+              Email Report
             </button>
           </>
         )}
@@ -317,6 +561,7 @@ function ReportPanel({ msg, question }: { msg: Message; question: string }) {
         </div>
       )}
     </div>
+    </>
   );
 }
 
