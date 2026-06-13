@@ -33,6 +33,21 @@ function fmtDate(ts: number) {
 
 // ─── Storage helpers ──────────────────────────────────────────────────────────
 const STORAGE_KEY = 'growth_gradual_conversations';
+const SESSION_ID_KEY = 'growth_gradual_session_id';
+
+/** Return a stable UUID for this browser — created once, stored in localStorage. */
+function getOrCreateSessionId(): string {
+  try {
+    const existing = localStorage.getItem(SESSION_ID_KEY);
+    if (existing) return existing;
+    const id = crypto.randomUUID();
+    localStorage.setItem(SESSION_ID_KEY, id);
+    return id;
+  } catch {
+    // SSR / incognito fallback
+    return crypto.randomUUID();
+  }
+}
 function loadConversations(): Conversation[] {
   if (typeof window === 'undefined') return [];
   try { return JSON.parse(localStorage.getItem(STORAGE_KEY) ?? '[]'); } catch { return []; }
@@ -230,64 +245,52 @@ function ChartBlock({ spec }: { spec: ChartSpec }) {
   return <BarChart spec={spec}/>;
 }
 
+// ─── Report Panel ─────────────────────────────────────────────────────────────
 // ─── Email Modal ──────────────────────────────────────────────────────────────
-interface EmailForm {
-  senderEmail: string;
-  appPassword: string;
-  recipientEmail: string;
-  subject: string;
-}
-
-function EmailModal({
-  onClose,
-  onSend,
-  sending,
-  result,
-  defaultSubject,
-}: {
+function EmailModal({ onClose, onSend, sending, result, defaultSubject }: {
   onClose: () => void;
-  onSend: (form: EmailForm) => void;
+  onSend: (subject: string, recipients: string, file: File | null) => void;
   sending: boolean;
   result: { ok: boolean; msg: string } | null;
   defaultSubject: string;
 }) {
-  const [form, setForm] = useState<EmailForm>({
-    senderEmail: '',
-    appPassword: '',
-    recipientEmail: '',
-    subject: defaultSubject,
-  });
-  const [showPass, setShowPass] = useState(false);
+  const [subject, setSubject]       = useState(defaultSubject);
+  const [recipients, setRecipients] = useState('');
+  const [csvFile, setCsvFile]       = useState<File | null>(null);
+  const fileRef = useRef<HTMLInputElement>(null);
 
-  const set = (k: keyof EmailForm) => (e: React.ChangeEvent<HTMLInputElement>) =>
-    setForm(prev => ({ ...prev, [k]: e.target.value }));
+  const hasRecipients = recipients.includes('@') || csvFile !== null;
 
-  const valid = form.senderEmail.includes('@') && form.appPassword.length > 0 && form.recipientEmail.includes('@');
+  const fld = (label: string, icon: string, child: React.ReactNode) => (
+    <div>
+      <label style={{ fontSize:11, fontWeight:600, color:'#4b5680', display:'block', marginBottom:5, textTransform:'uppercase', letterSpacing:'.04em' }}>
+        {icon} {label}
+      </label>
+      {child}
+    </div>
+  );
+
+  const inputStyle: React.CSSProperties = {
+    width:'100%', boxSizing:'border-box', padding:'9px 12px', borderRadius:9,
+    border:'1.5px solid #e2e6f0', background:'#f8f9fc',
+    fontSize:13, color:'#1a1f4e', fontFamily:"'DM Sans',sans-serif",
+    outline:'none',
+  };
 
   return (
-    <div style={{
-      position:'fixed', inset:0, zIndex:9999,
-      background:'rgba(15,20,50,0.55)', backdropFilter:'blur(4px)',
-      display:'flex', alignItems:'center', justifyContent:'center',
-      padding:'20px',
-    }} onClick={e => { if (e.target === e.currentTarget) onClose(); }}>
-      <div style={{
-        background:'#fff', borderRadius:16, width:'100%', maxWidth:440,
-        boxShadow:'0 20px 60px rgba(26,31,78,.25)',
-        fontFamily:"'DM Sans',sans-serif", overflow:'hidden',
-      }}>
+    <div style={{ position:'fixed', inset:0, zIndex:9999, background:'rgba(15,20,50,.55)', backdropFilter:'blur(4px)', display:'flex', alignItems:'center', justifyContent:'center', padding:20 }}
+      onClick={e => { if (e.target === e.currentTarget) onClose(); }}>
+      <div style={{ background:'#fff', borderRadius:16, width:'100%', maxWidth:430, boxShadow:'0 20px 60px rgba(26,31,78,.25)', fontFamily:"'DM Sans',sans-serif", overflow:'hidden' }}>
+
         {/* Header */}
-        <div style={{ background:'#1a1f4e', padding:'18px 22px', display:'flex', alignItems:'center', justifyContent:'space-between' }}>
+        <div style={{ background:'#1a1f4e', padding:'16px 20px', display:'flex', alignItems:'center', justifyContent:'space-between' }}>
           <div style={{ display:'flex', alignItems:'center', gap:10 }}>
             <div style={{ width:32, height:32, borderRadius:9, background:'rgba(255,255,255,.12)', display:'flex', alignItems:'center', justifyContent:'center' }}>
-              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#c8860a" strokeWidth="2.2" strokeLinecap="round">
-                <path d="M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z"/>
-                <polyline points="22,6 12,13 2,6"/>
-              </svg>
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#c8860a" strokeWidth="2.2" strokeLinecap="round"><path d="M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z"/><polyline points="22,6 12,13 2,6"/></svg>
             </div>
             <div>
               <div style={{ color:'#fff', fontWeight:700, fontSize:14 }}>Email Report</div>
-              <div style={{ color:'rgba(255,255,255,.5)', fontSize:11 }}>Send via Gmail SMTP</div>
+              <div style={{ color:'rgba(255,255,255,.5)', fontSize:11 }}>Send via Growth Gradual SMTP</div>
             </div>
           </div>
           <button onClick={onClose} style={{ background:'rgba(255,255,255,.1)', border:'none', borderRadius:8, width:28, height:28, color:'rgba(255,255,255,.7)', cursor:'pointer', display:'flex', alignItems:'center', justifyContent:'center' }}>
@@ -296,91 +299,48 @@ function EmailModal({
         </div>
 
         {/* Body */}
-        <div style={{ padding:'22px 22px 18px', display:'flex', flexDirection:'column', gap:14 }}>
+        <div style={{ padding:'20px 20px 16px', display:'flex', flexDirection:'column', gap:14 }}>
 
-          {/* Info banner */}
-          <div style={{ background:'#eff6ff', border:'1px solid #bfdbfe', borderRadius:9, padding:'10px 13px', fontSize:11, color:'#1d4ed8', lineHeight:1.6 }}>
-            Uses your Gmail address + an <strong>App Password</strong> (not your account password).
-            Generate one at{' '}
-            <a href="https://myaccount.google.com/apppasswords" target="_blank" rel="noopener noreferrer" style={{ color:'#1d4ed8' }}>
-              myaccount.google.com/apppasswords
-            </a>
-            {' '}— requires 2FA enabled.
-          </div>
-
-          {/* Fields */}
-          {([
-            { key:'senderEmail',    label:'Your Gmail address',  type:'email',    ph:'you@gmail.com',           icon:'👤' },
-            { key:'recipientEmail', label:'Recipient email',     type:'email',    ph:'recipient@example.com',   icon:'📬' },
-            { key:'subject',        label:'Subject',             type:'text',     ph:'Research Report',         icon:'📝' },
-          ] as { key: keyof EmailForm; label: string; type: string; ph: string; icon: string }[]).map(({ key, label, type, ph, icon }) => (
-            <div key={key}>
-              <label style={{ fontSize:11, fontWeight:600, color:'#4b5680', display:'block', marginBottom:5, textTransform:'uppercase', letterSpacing:'0.04em' }}>
-                {icon} {label}
-              </label>
-              <input
-                type={type}
-                placeholder={ph}
-                value={form[key]}
-                onChange={set(key)}
-                disabled={sending}
-                style={{
-                  width:'100%', boxSizing:'border-box',
-                  padding:'9px 12px', borderRadius:9,
-                  border:'1.5px solid #e2e6f0', background:'#f8f9fc',
-                  fontSize:13, color:'#1a1f4e', fontFamily:"'DM Sans',sans-serif",
-                  outline:'none', transition:'border-color .15s',
-                }}
-                onFocus={e => { e.target.style.borderColor = 'rgba(26,31,78,.4)'; e.target.style.background = '#fff'; }}
-                onBlur={e => { e.target.style.borderColor = '#e2e6f0'; e.target.style.background = '#f8f9fc'; }}
-              />
-            </div>
+          {fld('Subject', '📝', (
+            <input type="text" value={subject} onChange={e => setSubject(e.target.value)}
+              disabled={sending} style={inputStyle} placeholder="Growth Gradual Research Report" />
           ))}
 
-          {/* App password with toggle */}
+          {fld('Recipients (emails, comma-separated)', '📬', (
+            <textarea value={recipients} onChange={e => setRecipients(e.target.value)}
+              disabled={sending} rows={3} placeholder="alice@example.com, bob@example.com"
+              style={{ ...inputStyle, resize:'vertical', lineHeight:1.5 }} />
+          ))}
+
+          {/* CSV / Excel upload */}
           <div>
-            <label style={{ fontSize:11, fontWeight:600, color:'#4b5680', display:'block', marginBottom:5, textTransform:'uppercase', letterSpacing:'0.04em' }}>
-              🔑 Gmail App Password
+            <label style={{ fontSize:11, fontWeight:600, color:'#4b5680', display:'block', marginBottom:5, textTransform:'uppercase', letterSpacing:'.04em' }}>
+              📎 Or upload a CSV / Excel with an &quot;email&quot; column
             </label>
-            <div style={{ position:'relative' }}>
-              <input
-                type={showPass ? 'text' : 'password'}
-                placeholder="xxxx xxxx xxxx xxxx"
-                value={form.appPassword}
-                onChange={set('appPassword')}
-                disabled={sending}
-                style={{
-                  width:'100%', boxSizing:'border-box',
-                  padding:'9px 42px 9px 12px', borderRadius:9,
-                  border:'1.5px solid #e2e6f0', background:'#f8f9fc',
-                  fontSize:13, color:'#1a1f4e', fontFamily:"'DM Mono',monospace",
-                  outline:'none', transition:'border-color .15s', letterSpacing:'0.08em',
-                }}
-                onFocus={e => { e.target.style.borderColor = 'rgba(26,31,78,.4)'; e.target.style.background = '#fff'; }}
-                onBlur={e => { e.target.style.borderColor = '#e2e6f0'; e.target.style.background = '#f8f9fc'; }}
-              />
-              <button
-                type="button"
-                onClick={() => setShowPass(s => !s)}
-                style={{ position:'absolute', right:10, top:'50%', transform:'translateY(-50%)', background:'none', border:'none', cursor:'pointer', color:'#8b93b5', padding:4 }}
-              >
-                {showPass
-                  ? <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><path d="M17.94 17.94A10.07 10.07 0 0112 20c-7 0-11-8-11-8a18.45 18.45 0 015.06-5.94"/><path d="M9.9 4.24A9.12 9.12 0 0112 4c7 0 11 8 11 8a18.5 18.5 0 01-2.16 3.19"/><line x1="1" y1="1" x2="23" y2="23"/></svg>
-                  : <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>
-                }
+            <div style={{ display:'flex', alignItems:'center', gap:8 }}>
+              <button type="button" onClick={() => fileRef.current?.click()} disabled={sending}
+                style={{ padding:'8px 14px', borderRadius:9, border:'1.5px solid #e2e6f0', background:'#f8f9fc', color:'#1a1f4e', fontSize:12, cursor:'pointer', fontFamily:"'DM Sans',sans-serif", fontWeight:600 }}>
+                {csvFile ? '📄 Change file' : '📂 Choose file'}
               </button>
+              {csvFile && (
+                <span style={{ fontSize:12, color:'#15803d', fontWeight:600 }}>
+                  ✓ {csvFile.name}
+                  <button onClick={() => setCsvFile(null)} style={{ marginLeft:6, background:'none', border:'none', color:'#ef4444', cursor:'pointer', fontSize:13 }}>✕</button>
+                </span>
+              )}
+              {!csvFile && <span style={{ fontSize:11, color:'#8b93b5' }}>.csv or .xlsx</span>}
             </div>
+            <input ref={fileRef} type="file" accept=".csv,.xlsx" style={{ display:'none' }}
+              onChange={e => { const f = e.target.files?.[0]; if (f) setCsvFile(f); e.target.value = ''; }} />
           </div>
 
-          {/* Result feedback */}
+          {/* Result */}
           {result && (
-            <div style={{
-              padding:'10px 13px', borderRadius:9, fontSize:12, lineHeight:1.5,
+            <div style={{ padding:'10px 13px', borderRadius:9, fontSize:12, lineHeight:1.5,
               background: result.ok ? '#f0fdf4' : '#fef2f2',
               border: `1px solid ${result.ok ? '#bbf7d0' : '#fecaca'}`,
               color: result.ok ? '#15803d' : '#dc2626',
-              display:'flex', alignItems:'flex-start', gap:8,
-            }}>
+              display:'flex', alignItems:'flex-start', gap:8 }}>
               <span style={{ fontSize:16 }}>{result.ok ? '✅' : '❌'}</span>
               <span>{result.msg}</span>
             </div>
@@ -388,28 +348,17 @@ function EmailModal({
 
           {/* Actions */}
           <div style={{ display:'flex', gap:8, marginTop:2 }}>
-            <button
-              onClick={onClose}
-              style={{ flex:1, padding:'10px', borderRadius:9, border:'1.5px solid #e2e6f0', background:'#f8f9fc', color:'#4b5680', fontSize:13, fontFamily:"'DM Sans',sans-serif", cursor:'pointer', fontWeight:600 }}
-            >
+            <button onClick={onClose} style={{ flex:1, padding:'10px', borderRadius:9, border:'1.5px solid #e2e6f0', background:'#f8f9fc', color:'#4b5680', fontSize:13, cursor:'pointer', fontWeight:600, fontFamily:"'DM Sans',sans-serif" }}>
               Cancel
             </button>
-            <button
-              onClick={() => onSend(form)}
-              disabled={!valid || sending}
-              style={{
-                flex:2, padding:'10px', borderRadius:9, border:'none',
-                background: !valid || sending ? '#8b93b5' : '#1a1f4e',
-                color:'#fff', fontSize:13, fontFamily:"'DM Sans',sans-serif",
-                cursor: !valid || sending ? 'not-allowed' : 'pointer',
-                fontWeight:700, display:'flex', alignItems:'center', justifyContent:'center', gap:7,
-                transition:'background .15s, opacity .15s',
-              }}
-            >
+            <button onClick={() => onSend(subject, recipients, csvFile)} disabled={!hasRecipients || sending}
+              style={{ flex:2, padding:'10px', borderRadius:9, border:'none',
+                background: !hasRecipients || sending ? '#8b93b5' : '#1a1f4e',
+                color:'#fff', fontSize:13, cursor: !hasRecipients || sending ? 'not-allowed' : 'pointer',
+                fontWeight:700, display:'flex', alignItems:'center', justifyContent:'center', gap:7, fontFamily:"'DM Sans',sans-serif" }}>
               {sending
                 ? <><span className="dots"><i/><i/><i/></span>Sending…</>
-                : <><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round"><path d="M22 2L11 13M22 2L15 22l-4-9-9-4 20-7z"/></svg>Send Report</>
-              }
+                : <><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round"><path d="M22 2L11 13M22 2L15 22l-4-9-9-4 20-7z"/></svg>Send Report</>}
             </button>
           </div>
         </div>
@@ -420,17 +369,16 @@ function EmailModal({
 
 // ─── Report Panel ─────────────────────────────────────────────────────────────
 function ReportPanel({ msg, question }: { msg: Message; question: string }) {
-  const [open, setOpen]           = useState(false);
-  const [pdfLoading, setPdfLoading] = useState(false);
-  const [emailOpen, setEmailOpen]   = useState(false);
+  const [open, setOpen]               = useState(false);
+  const [pdfLoading, setPdfLoading]   = useState(false);
+  const [emailOpen, setEmailOpen]     = useState(false);
   const [emailSending, setEmailSending] = useState(false);
-  const [emailResult, setEmailResult]   = useState<{ ok: boolean; msg: string } | null>(null);
+  const [emailResult, setEmailResult] = useState<{ ok: boolean; msg: string } | null>(null);
 
   const rd = msg.reportData;
   const loading = msg.reportLoading ?? false;
   const done = !!rd;
 
-  // Don't render at all if report hasn't started generating yet
   if (!loading && !done) return null;
 
   const downloadPdf = async () => {
@@ -459,40 +407,36 @@ function ReportPanel({ msg, question }: { msg: Message; question: string }) {
     finally { setPdfLoading(false); }
   };
 
-  const sendEmail = async (form: EmailForm) => {
+  const sendEmail = async (subject: string, recipients: string, file: File | null) => {
     if (!rd) return;
     setEmailSending(true);
     setEmailResult(null);
     try {
-      const res = await fetch('/api/chat/report/email', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          sender_email:    form.senderEmail,
-          app_password:    form.appPassword,
-          recipient_email: form.recipientEmail,
-          subject:         form.subject,
-          report:          rd.report,
-          title:           (msg.reportData as ReportData & { title?: string })?.title ?? question.slice(0, 80),
-          summary:         rd.summary,
-          keyStats:        rd.keyStats,
-        }),
-      });
+      const fd = new FormData();
+      fd.append('subject',    subject || 'Growth Gradual Research Report');
+      fd.append('recipients', recipients);
+      fd.append('report',     rd.report   ?? '');
+      fd.append('title',      question.slice(0, 120));
+      fd.append('summary',    rd.summary  ?? '');
+      fd.append('keyStats',   JSON.stringify(rd.keyStats ?? []));
+      if (file) fd.append('file', file);
+
+      const res  = await fetch('/api/chat/report/email', { method: 'POST', body: fd });
       const data = await res.json();
       if (data.success) {
-        setEmailResult({ ok: true,  msg: `Report sent to ${form.recipientEmail}` });
-        setTimeout(() => setEmailOpen(false), 2200);
+        setEmailResult({ ok: true, msg: data.message ?? 'Report sent!' });
+        setTimeout(() => setEmailOpen(false), 2500);
       } else {
-        setEmailResult({ ok: false, msg: data.error ?? 'Failed to send email.' });
+        setEmailResult({ ok: false, msg: data.error ?? 'Failed to send.' });
       }
-    } catch (e) {
-      setEmailResult({ ok: false, msg: 'Network error — could not reach the server.' });
+    } catch {
+      setEmailResult({ ok: false, msg: 'Network error — could not reach server.' });
     } finally {
       setEmailSending(false);
     }
   };
 
-  const defaultSubject = `Growth Gradual Research Report — ${question.slice(0, 50)}${question.length > 50 ? '…' : ''}`;
+  const defaultSubject = `Growth Gradual Research Report — ${question.slice(0, 60)}${question.length > 60 ? '…' : ''}`;
 
   return (
     <>
@@ -505,62 +449,59 @@ function ReportPanel({ msg, question }: { msg: Message; question: string }) {
           defaultSubject={defaultSubject}
         />
       )}
-    <div className="report-wrap">
-      <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', alignItems: 'center' }}>
-        {loading && (
-          <div style={{ display:'flex', alignItems:'center', gap:6, fontSize:11, color:'#8b93b5', fontFamily:"'DM Sans',sans-serif" }}>
-            <span className="dots"><i/><i/><i/></span>
-            Generating report…
+      <div className="report-wrap">
+        <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', alignItems: 'center' }}>
+          {loading && (
+            <div style={{ display:'flex', alignItems:'center', gap:6, fontSize:11, color:'#8b93b5', fontFamily:"'DM Sans',sans-serif" }}>
+              <span className="dots"><i/><i/><i/></span>
+              Generating report…
+            </div>
+          )}
+          {done && (
+            <>
+              <button className="report-btn" onClick={() => setOpen(o => !o)}>
+                <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></svg>
+                {open ? 'Hide report' : 'Show report'}
+              </button>
+              <button className="report-btn" onClick={downloadPdf} disabled={pdfLoading}
+                style={{ background: pdfLoading ? '#166534' : '#15803d', opacity: pdfLoading ? 0.8 : 1 }}>
+                {pdfLoading
+                  ? <><span className="dots" style={{marginRight:4}}><i/><i/><i/></span>Building PDF…</>
+                  : <><svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>Download PDF</>
+                }
+              </button>
+              <button className="report-btn" onClick={() => { setEmailResult(null); setEmailOpen(true); }}
+                style={{ background:'#6d28d9' }}>
+                <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round"><path d="M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z"/><polyline points="22,6 12,13 2,6"/></svg>
+                Email Report
+              </button>
+            </>
+          )}
+        </div>
+        {open && done && (
+          <div className="report-body">
+            <div className="report-content">
+              {rd.keyStats.length > 0 && (
+                <div className="key-stats-row">
+                  {rd.keyStats.map((s,i) => (
+                    <div key={i} className="key-stat-card">
+                      <div className="key-stat-label">{s.label}</div>
+                      <div className="key-stat-value">{s.value}</div>
+                      {s.change && <div className={`key-stat-change ${s.change.startsWith('+') ? 'pos' : s.change.startsWith('-') ? 'neg' : ''}`}>{s.change}</div>}
+                    </div>
+                  ))}
+                </div>
+              )}
+              {rd.charts.length > 0 && (
+                <div className="charts-grid">
+                  {rd.charts.map((c,i) => <ChartBlock key={i} spec={c}/>)}
+                </div>
+              )}
+              <div dangerouslySetInnerHTML={{ __html: renderMd(rd.report) }}/>
+            </div>
           </div>
-        )}
-        {done && (
-          <>
-            <button className="report-btn" onClick={() => setOpen(o => !o)}>
-              <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></svg>
-              {open ? 'Hide report' : 'Show report'}
-            </button>
-            <button className="report-btn" onClick={downloadPdf} disabled={pdfLoading}
-              style={{ background: pdfLoading ? '#166534' : '#15803d', opacity: pdfLoading ? 0.8 : 1 }}>
-              {pdfLoading
-                ? <><span className="dots" style={{marginRight:4}}><i/><i/><i/></span>Building PDF…</>
-                : <><svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>Download PDF</>
-              }
-            </button>
-            <button className="report-btn" onClick={() => { setEmailResult(null); setEmailOpen(true); }}
-              style={{ background:'#6d28d9' }}>
-              <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round">
-                <path d="M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z"/>
-                <polyline points="22,6 12,13 2,6"/>
-              </svg>
-              Email Report
-            </button>
-          </>
         )}
       </div>
-      {open && done && (
-        <div className="report-body">
-          <div className="report-content">
-            {rd.keyStats.length > 0 && (
-              <div className="key-stats-row">
-                {rd.keyStats.map((s,i) => (
-                  <div key={i} className="key-stat-card">
-                    <div className="key-stat-label">{s.label}</div>
-                    <div className="key-stat-value">{s.value}</div>
-                    {s.change && <div className={`key-stat-change ${s.change.startsWith('+') ? 'pos' : s.change.startsWith('-') ? 'neg' : ''}`}>{s.change}</div>}
-                  </div>
-                ))}
-              </div>
-            )}
-            {rd.charts.length > 0 && (
-              <div className="charts-grid">
-                {rd.charts.map((c,i) => <ChartBlock key={i} spec={c}/>)}
-              </div>
-            )}
-            <div dangerouslySetInnerHTML={{ __html: renderMd(rd.report) }}/>
-          </div>
-        </div>
-      )}
-    </div>
     </>
   );
 }
@@ -672,10 +613,11 @@ async function* streamReply(
   signal: AbortSignal,
   onMeta: (m:StreamMeta) => void,
   fileContext?: string,
+  sessionId?: string,
 ): AsyncGenerator<string> {
   const res = await fetch('/api/chat', {
     method:'POST', headers:{'Content-Type':'application/json'},
-    body: JSON.stringify({ messages, fileContext: fileContext ?? '' }), signal,
+    body: JSON.stringify({ messages, fileContext: fileContext ?? '', sessionId: sessionId ?? '' }), signal,
   });
   if (!res.ok) { yield `*Error ${res.status}*`; return; }
   const reader = res.body!.getReader();
@@ -719,8 +661,7 @@ export default function GrowthGradualChat() {
   const [conversations, setConversations] = useState<Conversation[]>([]);
   const [activeId, setActiveId]           = useState<string | null>(null);
   const [messages, setMessages]           = useState<Message[]>([]);
-  const [sidebarOpen, setSidebarOpen] = useState(false);
-  const [isMobile, setIsMobile] = useState(false);
+  const [sidebarOpen, setSidebarOpen]     = useState(true);
 
   // Chat state
   const [input, setInput]       = useState('');
@@ -791,18 +732,6 @@ export default function GrowthGradualChat() {
     setConversations(saved);
   }, []);
 
-  // Mobile detection + sidebar default
-  useEffect(() => {
-    const check = () => {
-      const mobile = window.innerWidth < 768;
-      setIsMobile(mobile);
-      setSidebarOpen(!mobile);
-    };
-    check();
-    window.addEventListener('resize', check);
-    return () => window.removeEventListener('resize', check);
-  }, []);
-
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior:'smooth' });
   }, [messages]);
@@ -840,7 +769,6 @@ export default function GrowthGradualChat() {
     setActiveId(conv.id);
     historyRef.current = conv.messages.map(m => ({ role: m.role, content: m.text }));
     setTimeout(() => bottomRef.current?.scrollIntoView({ behavior:'smooth' }), 50);
-    if (window.innerWidth < 768) setSidebarOpen(false);
   }, []);
 
   // Delete a conversation
@@ -879,7 +807,7 @@ export default function GrowthGradualChat() {
         setSearching(false);
         setMessages(prev => prev.map(m => m.id === botMsg.id
           ? { ...m, searchPerformed: meta.searchPerformed, sources: meta.sources, queryType: meta.queryType } : m));
-      }, fileCtx)) {
+      }, fileCtx, getOrCreateSessionId())) {
         if (!metaDone) { setSearching(false); metaDone = true; }
         acc += chunk;
         finalText = acc;
@@ -984,7 +912,6 @@ export default function GrowthGradualChat() {
           overflow: hidden;
         }
         .sidebar--closed { width: 0; }
-        .sidebar--open { width: 260px; }
 
         .sidebar-hdr {
           padding: 16px 14px 12px;
@@ -1350,58 +1277,6 @@ export default function GrowthGradualChat() {
 
         /* ── Drag highlight ──────────────────────────────────────────────── */
         .chat-shell--drag { outline:2.5px dashed #1a1f4e;outline-offset:-2px; }
-
-        /* ── Mobile responsive ───────────────────────────────────────────── */
-        @media(max-width:767px) {
-          .chat-shell {
-            height: calc(100vh - 80px);
-            border-radius: 0;
-            border-left: none;
-            border-right: none;
-            min-height: 0;
-          }
-          /* Sidebar overlays on mobile instead of pushing content */
-          .sidebar {
-            position: absolute;
-            top: 0; left: 0; bottom: 0;
-            z-index: 40;
-            width: 280px !important;
-            transform: translateX(-100%);
-            transition: transform .25s cubic-bezier(.4,0,.2,1);
-            box-shadow: 4px 0 20px rgba(26,31,78,.15);
-          }
-          .sidebar--open {
-            transform: translateX(0);
-          }
-          .sidebar--closed {
-            transform: translateX(-100%);
-            width: 280px !important;
-          }
-          /* Backdrop when sidebar open on mobile */
-          .sidebar-backdrop {
-            display: block;
-          }
-          .msg-inner { padding: 0 12px; }
-          .chat-input-area { padding: 8px 12px 14px; }
-          .input-row { padding: 8px 10px 8px 14px; }
-          .chat-textarea { font-size: 16px; } /* prevent iOS zoom */
-          .topbar-badge { display: none; }
-          .report-body { max-height: 400px; }
-          .key-stats-row { gap: 6px; }
-          .key-stat-card { min-width: 80px; padding: 9px 10px; }
-          .key-stat-value { font-size: 14px; }
-          .charts-grid { grid-template-columns: 1fr; }
-          .sugs { grid-template-columns: repeat(2,1fr); }
-        }
-        /* Sidebar backdrop (hidden on desktop) */
-        .sidebar-backdrop {
-          display: none;
-          position: absolute;
-          inset: 0;
-          z-index: 39;
-          background: rgba(15,20,50,0.4);
-          backdrop-filter: blur(2px);
-        }
       `}</style>
 
       {/* Hidden file input */}
@@ -1437,13 +1312,8 @@ export default function GrowthGradualChat() {
           </div>
         )}
 
-        {/* ── Mobile backdrop ─────────────────────────────────────────────── */}
-        {isMobile && sidebarOpen && (
-          <div className="sidebar-backdrop" onClick={() => setSidebarOpen(false)} />
-        )}
-
         {/* ── Sidebar ────────────────────────────────────────────────────── */}
-        <aside className={`sidebar${sidebarOpen ? ' sidebar--open' : ' sidebar--closed'}`}>
+        <aside className={`sidebar${sidebarOpen ? '' : ' sidebar--closed'}`}>
           {/* Sidebar header */}
           <div className="sidebar-hdr">
             <div className="sidebar-logo">

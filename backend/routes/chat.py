@@ -24,6 +24,78 @@ from utils.keys import (
 router = APIRouter()
 log = logging.getLogger("chat")
 
+# ─── Supabase persistence ──────────────────────────────────────────────────────
+_SUPABASE_URL  = os.environ.get("SUPABASE_URL", "").rstrip("/")
+_SUPABASE_KEY  = os.environ.get("SUPABASE_ANON_KEY", "")
+
+def _sb_headers() -> dict:
+    return {
+        "apikey": _SUPABASE_KEY,
+        "Authorization": f"Bearer {_SUPABASE_KEY}",
+        "Content-Type": "application/json",
+        "Prefer": "return=minimal",
+    }
+
+async def _upsert_session(session_id: str) -> None:
+    """Insert session row if absent, otherwise bump last_active + query_count."""
+    if not _SUPABASE_URL or not _SUPABASE_KEY:
+        return
+    try:
+        async with httpx.AsyncClient(timeout=8) as client:
+            await client.post(
+                f"{_SUPABASE_URL}/rest/v1/sessions",
+                headers={**_sb_headers(), "Prefer": "resolution=merge-duplicates,return=minimal"},
+                json={
+                    "id": session_id,
+                    "last_active": "now()",
+                    "query_count": 1,           # will be summed on conflict via RPC below
+                },
+            )
+            # Increment query_count in-place via a simple UPDATE
+            await client.patch(
+                f"{_SUPABASE_URL}/rest/v1/sessions",
+                headers=_sb_headers(),
+                params={"id": f"eq.{session_id}"},
+                json={"last_active": "now()"},
+            )
+    except Exception as exc:
+        log.warning("Supabase upsert_session failed: %s", exc)
+
+
+async def _save_messages(session_id: str, user_content: str, assistant_content: str,
+                         llm_provider: str, elapsed_ms: int) -> None:
+    """Persist user + assistant messages into the messages table."""
+    if not _SUPABASE_URL or not _SUPABASE_KEY or not session_id:
+        return
+    rows = [
+        {
+            "session_id": session_id,
+            "role": "user",
+            "content": user_content,
+            "llm_provider": llm_provider,
+            "tokens_used": 0,
+            "response_ms": 0,
+        },
+        {
+            "session_id": session_id,
+            "role": "assistant",
+            "content": assistant_content,
+            "llm_provider": llm_provider,
+            "tokens_used": 0,
+            "response_ms": elapsed_ms,
+        },
+    ]
+    try:
+        async with httpx.AsyncClient(timeout=10) as client:
+            await client.post(
+                f"{_SUPABASE_URL}/rest/v1/messages",
+                headers=_sb_headers(),
+                json=rows,
+            )
+        log.info("Supabase: saved user+assistant messages for session %s", session_id)
+    except Exception as exc:
+        log.warning("Supabase save_messages failed: %s", exc)
+
 # ─── Domain lists ──────────────────────────────────────────────────────────────
 FINANCE_DOMAINS = [
     "moneycontrol.com", "economictimes.indiatimes.com", "livemint.com",
@@ -488,6 +560,28 @@ async def gemini_sse(system_prompt: str, messages: list[dict]) -> AsyncGenerator
     raise RuntimeError("All Gemini key×model combinations failed")
 
 
+# ─── SSE chunk → text extraction ──────────────────────────────────────────────
+def _extract_text_from_chunk(raw: str) -> str:
+    """Pull assistant text out of an OpenAI-style SSE chunk string."""
+    text_parts = []
+    for line in raw.splitlines():
+        if not line.startswith("data:"):
+            continue
+        payload = line[5:].strip()
+        if payload in ("[DONE]", ""):
+            continue
+        try:
+            obj = json.loads(payload)
+            # Skip meta events
+            if obj.get("type") == "meta":
+                continue
+            delta = (obj.get("choices") or [{}])[0].get("delta", {})
+            text_parts.append(delta.get("content", ""))
+        except Exception:
+            pass
+    return "".join(text_parts)
+
+
 # ─── Main handler ──────────────────────────────────────────────────────────────
 @router.post("")
 async def chat(request: Request):
@@ -499,6 +593,9 @@ async def chat(request: Request):
 
     messages: list[dict] = body.get("messages", [])
     file_context: str = body.get("fileContext", "")
+    # sessionId is optional — only persists when provided
+    session_id: str = (body.get("sessionId") or "").strip()
+
     if not messages:
         return JSONResponse({"error": "No messages"}, status_code=400)
 
@@ -507,9 +604,13 @@ async def chat(request: Request):
     qtype = classify_query(last_user_msg)
 
     log.info(
-        "Chat request: msg=%r  search=%s  type=%s  file_ctx=%s",
-        last_user_msg[:80], do_search, qtype, bool(file_context),
+        "Chat request: msg=%r  search=%s  type=%s  file_ctx=%s  session=%s",
+        last_user_msg[:80], do_search, qtype, bool(file_context), session_id or "none",
     )
+
+    # Upsert the session row upfront (fire-and-forget — don't block the stream)
+    if session_id:
+        asyncio.ensure_future(_upsert_session(session_id))
 
     async def _no_search() -> list:
         return []
@@ -538,16 +639,28 @@ async def chat(request: Request):
     )
 
     async def generate() -> AsyncGenerator[bytes, None]:
+        assistant_chunks: list[str] = []
+        provider_used = "unknown"
+
         yield meta_event.encode()
 
         # ── Try Groq (all keys, round-robin) ──────────────────────────────────
         groq_gen = await stream_groq(system_prompt, messages)
         if groq_gen is not None:
+            provider_used = "groq"
             try:
                 async for chunk in groq_gen:
-                    yield chunk.encode() if isinstance(chunk, str) else chunk
-                elapsed = (time.perf_counter() - t0) * 1000
-                log.info("Chat complete via Groq in %.0fms", elapsed)
+                    raw = chunk if isinstance(chunk, str) else chunk.decode(errors="replace")
+                    assistant_chunks.append(_extract_text_from_chunk(raw))
+                    yield raw.encode() if isinstance(chunk, str) else chunk
+                elapsed = int((time.perf_counter() - t0) * 1000)
+                log.info("Chat complete via Groq in %dms", elapsed)
+                # ── Persist to Supabase ──────────────────────────────────────
+                if session_id:
+                    full_reply = "".join(assistant_chunks)
+                    asyncio.ensure_future(
+                        _save_messages(session_id, last_user_msg, full_reply, provider_used, elapsed)
+                    )
                 return
             except Exception as exc:
                 log.warning("Groq stream broke mid-way: %s — falling back to Gemini", exc)
@@ -555,11 +668,20 @@ async def chat(request: Request):
         # ── Gemini fallback (all keys, round-robin) ───────────────────────────
         gemini_keys = get_gemini_keys()
         if gemini_keys:
+            provider_used = "gemini"
             try:
                 async for chunk in gemini_sse(system_prompt, messages):
-                    yield chunk.encode()
-                elapsed = (time.perf_counter() - t0) * 1000
-                log.info("Chat complete via Gemini in %.0fms", elapsed)
+                    raw = chunk if isinstance(chunk, str) else chunk.decode(errors="replace")
+                    assistant_chunks.append(_extract_text_from_chunk(raw))
+                    yield chunk.encode() if isinstance(chunk, str) else chunk
+                elapsed = int((time.perf_counter() - t0) * 1000)
+                log.info("Chat complete via Gemini in %dms", elapsed)
+                # ── Persist to Supabase ──────────────────────────────────────
+                if session_id:
+                    full_reply = "".join(assistant_chunks)
+                    asyncio.ensure_future(
+                        _save_messages(session_id, last_user_msg, full_reply, provider_used, elapsed)
+                    )
                 return
             except Exception as e:
                 log.error("All LLM providers failed: %s", e)

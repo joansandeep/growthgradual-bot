@@ -43,10 +43,10 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-app.include_router(chat_router,   prefix="/api/chat",                  tags=["chat"])
-app.include_router(report_router, prefix="/api/chat/report",           tags=["report"])
-app.include_router(pdf_router,    prefix="/api/chat/report/pdf",       tags=["pdf"])
-app.include_router(email_router,  prefix="/api/chat/report/email",     tags=["email"])
+app.include_router(chat_router,   prefix="/api/chat",                tags=["chat"])
+app.include_router(report_router, prefix="/api/chat/report",         tags=["report"])
+app.include_router(pdf_router,    prefix="/api/chat/report/pdf",     tags=["pdf"])
+app.include_router(email_router,  prefix="/api/chat/report/email",   tags=["email"])
 
 
 @app.middleware("http")
