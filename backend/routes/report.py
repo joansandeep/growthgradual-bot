@@ -40,47 +40,58 @@ CHART RULES — READ CAREFULLY. VIOLATIONS = BROKEN UI.
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 STEP 1 — SCAN sources for chartable data:
-  Look for: tables, rankings, comparisons, time-series, percentages, prices, volumes, growth rates.
-  For each chartable dataset you find, decide the BEST chart type:
-    • bar  → named items compared (stocks, sectors, companies, countries) — need ≥3 items with distinct values
-    • line → data over time (dates, quarters, years, months) — need ≥4 time points with DISTINCT values
-    • pie  → parts of a whole (portfolio breakdown, market share, sector allocation) — need ≥3 distinct slices
+  Look for: tables, rankings, comparisons, time-series, percentages, prices, volumes, growth rates, distributions.
+  For each chartable dataset you find, pick the chart type that actually FITS the data shape — never default to bar:
+    • line    → a single variable changing over time (dates, quarters, years, months) — need ≥4 time points with DISTINCT values
+    • area    → a single variable's cumulative/volume trend over time where magnitude under the curve matters (e.g. trading volume, AUM growth) — need ≥4 time points
+    • bar     → comparing ≥3 DIFFERENT NAMED items (stocks, sectors, companies, countries) at ONE point in time — NEVER use bar for a single item's values across time (that's univariate/line, not categorical comparison)
+    • column-grouped → comparing ≥2 series across the SAME ≥2 categories (e.g. revenue vs profit per quarter, or this-year vs last-year per sector)
+    • pie or donut → parts of a single whole (portfolio breakdown, market share, sector allocation) — need ≥3 distinct slices that sum to ~100% or one total
+    • scatter → relationship/correlation between TWO numeric variables across ≥4 named items (e.g. P/E ratio vs revenue growth per company)
+
+  CRITICAL TYPE-SELECTION RULE: if the dataset is ONE series tracked over time (dates/periods on the x-axis), it is univariate-over-time → use "line" or "area", NEVER "bar". Reserve "bar" strictly for comparing distinct named entities at a single moment.
 
 STEP 2 — ONLY create a chart if ALL conditions are met:
-  ✓ At least 3 data points (bar/pie) or 4 time points (line) — charts with fewer points will be SILENTLY DROPPED from the PDF
+  ✓ At least 3 data points (bar/pie/donut/scatter) or 4 time points (line/area) — charts with fewer points will be SILENTLY DROPPED from the PDF
   ✓ All labels are DIFFERENT from each other — NEVER repeat a label
   ✓ All values are DIFFERENT from each other — NOT all the same number
   ✓ Values come VERBATIM from the source — NEVER invented, estimated, or calculated
   ✓ The source explicitly states each individual data point — NOT inferred from a single current value
   ✗ If these conditions cannot be met → DO NOT create the chart at all
-  ✗ NEVER create a line chart showing historical price levels you calculated or estimated
+  ✗ NEVER create a line/area chart showing historical price levels you calculated or estimated
   ✗ NEVER create a chart from a single number (e.g. "Sensex is at 74,503" is ONE data point — not chartable)
   ✗ A bar chart needs ≥3 NAMED items (e.g. 3 different sector indices) — not 1 item shown 3 ways
+  ✗ NEVER use "bar" for a single series across time periods — use "line" or "area" instead
 
 STEP 3 — Place [CHART_n] inline in the report markdown exactly where each chart should appear — right after the paragraph whose data it visualises. Number from 1. charts[0] = [CHART_1], charts[1] = [CHART_2], etc.
 
-STEP 4 — Number of charts: 0 to 6. Purely driven by what real data exists. Do NOT pad to any minimum. Do NOT chart the same data twice.
+STEP 4 — Number of charts: 0 to 6. Purely driven by what real data exists and what type genuinely fits. Do NOT pad to any minimum. Do NOT chart the same data twice. Vary chart types across the report where the data justifies it — do not make every chart a bar chart.
 
 Chart spec shape:
 {
-  "type": "bar" | "line" | "pie",
+  "type": "bar" | "line" | "area" | "pie" | "donut" | "column-grouped" | "scatter",
   "title": "<specific descriptive title, e.g. 'Nifty Sector Returns Today' not 'Chart 1'>",
   "unit": "%" | "₹" | "Cr" | "B" | "$" | "x" | "",
-  "series": [{ "name": "<series name>", "data": [{ "label": "<unique label>", "value": <number> }] }]
+  "series": [{ "name": "<series name>", "data": [{ "label": "<unique label>", "value": <number>, "value2": <number, ONLY for scatter — the second axis value> }] }]
 }
+For "column-grouped", include one series object per group (e.g. series=[{"name":"This Year","data":[...]}, {"name":"Last Year","data":[...]}]) sharing the same labels.
+For "scatter", use a single series where each data point has "value" (x) and "value2" (y), and "label" is the entity name.
 
 GOOD chart examples — do exactly this:
-  • Nifty 50 Top Gainers → bar, labels=stock names, values=% change each stock, unit="%"
-  • Sector Performance → bar, labels=[Nifty Bank, Nifty IT, Nifty Auto, Nifty FMCG], values=% change, unit="%"
-  • Crude Oil Prices Last Week → line, labels=[Mon, Tue, Wed, Thu, Fri], values=USD per barrel
-  • FII vs DII Net Flows → bar, labels=[Mon, Tue, Wed, Thu, Fri], values=₹ crore, unit="Cr"
-  • Mutual Fund Category Inflows → pie, labels=category names, values=₹ crore inflow each
+  • Nifty 50 Top Gainers Today → bar, labels=stock names, values=% change each stock, unit="%"
+  • Sector Performance Today → bar, labels=[Nifty Bank, Nifty IT, Nifty Auto, Nifty FMCG], values=% change, unit="%"
+  • Crude Oil Prices Last 5 Days → line, labels=[Mon, Tue, Wed, Thu, Fri], values=USD per barrel
+  • Mutual Fund AUM Growth Last 6 Months → area, labels=[Jan..Jun], values=₹ Cr, unit="Cr"
+  • FII vs DII Net Flows This Week → column-grouped, series=[{"name":"FII","data":[...]}, {"name":"DII","data":[...]}], labels=[Mon..Fri], unit="Cr"
+  • Mutual Fund Category Inflows → pie or donut, labels=category names, values=₹ crore inflow each
+  • Sector P/E vs Earnings Growth → scatter, labels=sector names, value=P/E, value2=earnings growth %
 
 BAD chart examples — NEVER do this:
+  ✗ A single stock's price over 5 trading days shown as "bar" — this is univariate-over-time, must be "line"
   ✗ labels=["Today","Today","Today"] — duplicate labels, meaningless
   ✗ values=[0.5, 0.5, 0.6, 0.6] — nearly identical, useless visually
   ✗ "Market Projection" with future values you invented — not from source
-  ✗ Line chart with only 2 data points — use a bar chart instead
+  ✗ Line chart with only 2 data points — use a bar chart instead (only if it's a categorical comparison, not time)
   ✗ [CHART_n] in report without a matching charts[n-1] entry, or vice versa
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -482,24 +493,34 @@ async def generate_report(request: Request):
         def _is_plausible_chart(ch: dict) -> bool:
             """Reject charts that look invented rather than sourced from real data."""
             series = ch.get("series") or []
-            if not series or not ch.get("type") or not ch.get("title"):
+            ctype = ch.get("type")
+            if not series or not ctype or not ch.get("title"):
                 return False
             all_pts = [pt for s in series for pt in (s.get("data") or [])]
             if len(all_pts) < 2:
                 return False
             values = [pt.get("value", 0) for pt in all_pts]
             labels = [str(pt.get("label", "")) for pt in all_pts]
-            # Reject duplicate labels
-            if len(set(labels)) < len(labels):
+            # Reject duplicate labels — but only for single-series chart types,
+            # since column-grouped/scatter legitimately repeat labels across series
+            multi_series_types = {"column-grouped", "scatter", "line", "area"}
+            if ctype not in multi_series_types and len(set(labels)) < len(labels):
                 log.warning("Chart rejected — duplicate labels: %s", labels[:6])
                 return False
+            if ctype in ("column-grouped",) and len(series) > 1:
+                # check duplicates within each series individually
+                for s in series:
+                    s_labels = [str(pt.get("label", "")) for pt in (s.get("data") or [])]
+                    if len(set(s_labels)) < len(s_labels):
+                        log.warning("Chart rejected — duplicate labels within series: %s", s_labels[:6])
+                        return False
             # Reject all-identical values
             if len(set(values)) <= 1:
                 log.warning("Chart rejected — identical values: %s", values[:6])
                 return False
-            # Reject line charts with values that look like evenly-spaced fabricated price levels
+            # Reject line/area charts with values that look like evenly-spaced fabricated price levels
             # (e.g. [36121, 48915, 61709, 74503] — suspiciously arithmetic progression)
-            if ch.get("type") == "line" and len(values) >= 3:
+            if ctype in ("line", "area") and len(values) >= 3:
                 diffs = [abs(values[i+1] - values[i]) for i in range(len(values)-1)]
                 if diffs and max(diffs) > 0:
                     variance = sum((d - sum(diffs)/len(diffs))**2 for d in diffs) / len(diffs)

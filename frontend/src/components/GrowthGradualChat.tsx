@@ -719,7 +719,8 @@ export default function GrowthGradualChat() {
   const [conversations, setConversations] = useState<Conversation[]>([]);
   const [activeId, setActiveId]           = useState<string | null>(null);
   const [messages, setMessages]           = useState<Message[]>([]);
-  const [sidebarOpen, setSidebarOpen]     = useState(true);
+  const [sidebarOpen, setSidebarOpen] = useState(false);
+  const [isMobile, setIsMobile] = useState(false);
 
   // Chat state
   const [input, setInput]       = useState('');
@@ -790,6 +791,18 @@ export default function GrowthGradualChat() {
     setConversations(saved);
   }, []);
 
+  // Mobile detection + sidebar default
+  useEffect(() => {
+    const check = () => {
+      const mobile = window.innerWidth < 768;
+      setIsMobile(mobile);
+      setSidebarOpen(!mobile);
+    };
+    check();
+    window.addEventListener('resize', check);
+    return () => window.removeEventListener('resize', check);
+  }, []);
+
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior:'smooth' });
   }, [messages]);
@@ -827,6 +840,7 @@ export default function GrowthGradualChat() {
     setActiveId(conv.id);
     historyRef.current = conv.messages.map(m => ({ role: m.role, content: m.text }));
     setTimeout(() => bottomRef.current?.scrollIntoView({ behavior:'smooth' }), 50);
+    if (window.innerWidth < 768) setSidebarOpen(false);
   }, []);
 
   // Delete a conversation
@@ -970,6 +984,7 @@ export default function GrowthGradualChat() {
           overflow: hidden;
         }
         .sidebar--closed { width: 0; }
+        .sidebar--open { width: 260px; }
 
         .sidebar-hdr {
           padding: 16px 14px 12px;
@@ -1335,6 +1350,58 @@ export default function GrowthGradualChat() {
 
         /* ── Drag highlight ──────────────────────────────────────────────── */
         .chat-shell--drag { outline:2.5px dashed #1a1f4e;outline-offset:-2px; }
+
+        /* ── Mobile responsive ───────────────────────────────────────────── */
+        @media(max-width:767px) {
+          .chat-shell {
+            height: calc(100vh - 80px);
+            border-radius: 0;
+            border-left: none;
+            border-right: none;
+            min-height: 0;
+          }
+          /* Sidebar overlays on mobile instead of pushing content */
+          .sidebar {
+            position: absolute;
+            top: 0; left: 0; bottom: 0;
+            z-index: 40;
+            width: 280px !important;
+            transform: translateX(-100%);
+            transition: transform .25s cubic-bezier(.4,0,.2,1);
+            box-shadow: 4px 0 20px rgba(26,31,78,.15);
+          }
+          .sidebar--open {
+            transform: translateX(0);
+          }
+          .sidebar--closed {
+            transform: translateX(-100%);
+            width: 280px !important;
+          }
+          /* Backdrop when sidebar open on mobile */
+          .sidebar-backdrop {
+            display: block;
+          }
+          .msg-inner { padding: 0 12px; }
+          .chat-input-area { padding: 8px 12px 14px; }
+          .input-row { padding: 8px 10px 8px 14px; }
+          .chat-textarea { font-size: 16px; } /* prevent iOS zoom */
+          .topbar-badge { display: none; }
+          .report-body { max-height: 400px; }
+          .key-stats-row { gap: 6px; }
+          .key-stat-card { min-width: 80px; padding: 9px 10px; }
+          .key-stat-value { font-size: 14px; }
+          .charts-grid { grid-template-columns: 1fr; }
+          .sugs { grid-template-columns: repeat(2,1fr); }
+        }
+        /* Sidebar backdrop (hidden on desktop) */
+        .sidebar-backdrop {
+          display: none;
+          position: absolute;
+          inset: 0;
+          z-index: 39;
+          background: rgba(15,20,50,0.4);
+          backdrop-filter: blur(2px);
+        }
       `}</style>
 
       {/* Hidden file input */}
@@ -1370,8 +1437,13 @@ export default function GrowthGradualChat() {
           </div>
         )}
 
+        {/* ── Mobile backdrop ─────────────────────────────────────────────── */}
+        {isMobile && sidebarOpen && (
+          <div className="sidebar-backdrop" onClick={() => setSidebarOpen(false)} />
+        )}
+
         {/* ── Sidebar ────────────────────────────────────────────────────── */}
-        <aside className={`sidebar${sidebarOpen ? '' : ' sidebar--closed'}`}>
+        <aside className={`sidebar${sidebarOpen ? ' sidebar--open' : ' sidebar--closed'}`}>
           {/* Sidebar header */}
           <div className="sidebar-hdr">
             <div className="sidebar-logo">

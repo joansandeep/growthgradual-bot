@@ -61,7 +61,7 @@ def _is_valid_chart(spec: dict) -> bool:
         all_data.extend(pts)
     chart_type = spec.get("type", "bar")
     # Enforce minimum data points per chart type
-    min_pts = 4 if chart_type == "line" else 3
+    min_pts = 4 if chart_type in ("line", "area") else 3
     if len(all_data) < min_pts:
         return False
     values = [d.get("value", 0) for d in all_data]
@@ -71,10 +71,12 @@ def _is_valid_chart(spec: dict) -> bool:
     # Reject if max == 0
     if max(abs(v) for v in values) == 0:
         return False
-    # Reject if labels are not unique (duplicate labels = bad chart)
-    labels = [d.get("label", "") for d in all_data]
-    if len(set(labels)) < len(labels):
-        return False
+    # Reject if labels are not unique — except for multi-series chart types
+    # where labels legitimately repeat across series (column-grouped/scatter/line/area)
+    if chart_type not in ("column-grouped", "scatter", "line", "area"):
+        labels = [d.get("label", "") for d in all_data]
+        if len(set(labels)) < len(labels):
+            return False
     return True
 
 
@@ -429,12 +431,184 @@ def _pie(c, spec, x0, y0, w, h):
         c.drawRightString(lx + 12 + 110, iy - 1, f"{pct:.1f}%")
 
 
+# ─── Datawrapper integration ──────────────────────────────────────────────────
+DATAWRAPPER_API_KEY = os.environ.get("DATAWRAPPER_API_KEY", "")
+DATAWRAPPER_TYPE_MAP = {
+    "bar": "d3-bars",
+    "line": "d3-lines",
+    "area": "d3-area",
+    "pie": "d3-pies",
+    "donut": "d3-donuts",
+    "column-grouped": "grouped-column-chart",
+    "scatter": "d3-scatter-plot",
+}
+
+
+def _datawrapper_chart_png(spec: dict, w_px: int = 1000, h_px: int = 600) -> bytes | None:
+    """Create a chart on Datawrapper, publish it, and return PNG bytes. None on any failure."""
+    if not DATAWRAPPER_API_KEY:
+        return None
+    dw_type = DATAWRAPPER_TYPE_MAP.get(spec.get("type", "bar"))
+    if not dw_type:
+        return None
+
+    import csv as _csv
+    import requests
+
+    headers = {
+        "Authorization": f"Bearer {DATAWRAPPER_API_KEY}",
+        "Content-Type": "application/json",
+    }
+
+    try:
+        series = spec.get("series") or []
+        unit = spec.get("unit", "")
+
+        buf_csv = io.StringIO()
+        writer = _csv.writer(buf_csv)
+        if dw_type in ("d3-pies", "d3-donuts", "d3-bars"):
+            data = (series[0] or {}).get("data") or []
+            writer.writerow(["label", "value"])
+            for d in data:
+                writer.writerow([d.get("label", ""), d.get("value", 0)])
+        elif dw_type == "d3-scatter-plot":
+            data = (series[0] or {}).get("data") or []
+            writer.writerow(["label", "x", "y"])
+            for d in data:
+                writer.writerow([d.get("label", ""), d.get("value", 0), d.get("value2", 0)])
+        else:  # d3-lines, d3-area, grouped-column-chart — one column per series, shared label column
+            labels = [d.get("label", "") for d in (series[0] or {}).get("data") or []]
+            header = ["label"] + [s.get("name") or f"Series {i+1}" for i, s in enumerate(series)]
+            writer.writerow(header)
+            for j, lbl in enumerate(labels):
+                row = [lbl]
+                for s in series:
+                    pts = s.get("data") or []
+                    row.append(pts[j].get("value", 0) if j < len(pts) else "")
+                writer.writerow(row)
+        csv_data = buf_csv.getvalue()
+
+        resp = requests.post(
+            "https://api.datawrapper.de/v3/charts",
+            headers=headers,
+            json={
+                "title": spec.get("title", ""),
+                "type": dw_type,
+                "metadata": {
+                    "describe": {"intro": "", "byline": "Growth Gradual"},
+                    "visualize": {"y-axis-format": f"0{unit}" if unit else "0"},
+                },
+            },
+            timeout=20,
+        )
+        if resp.status_code not in (200, 201):
+            log.warning("Datawrapper: create chart failed %s %s", resp.status_code, resp.text[:200])
+            return None
+        chart_id = resp.json().get("id")
+        if not chart_id:
+            return None
+
+        resp = requests.put(
+            f"https://api.datawrapper.de/v3/charts/{chart_id}/data",
+            headers={"Authorization": f"Bearer {DATAWRAPPER_API_KEY}", "Content-Type": "text/csv"},
+            data=csv_data.encode("utf-8"),
+            timeout=20,
+        )
+        if resp.status_code not in (200, 204):
+            log.warning("Datawrapper: data upload failed %s", resp.status_code)
+            return None
+
+        resp = requests.post(
+            f"https://api.datawrapper.de/v3/charts/{chart_id}/publish",
+            headers=headers,
+            timeout=30,
+        )
+        if resp.status_code not in (200, 201):
+            log.warning("Datawrapper: publish failed %s", resp.status_code)
+            return None
+
+        resp = requests.get(
+            f"https://api.datawrapper.de/v3/charts/{chart_id}/export/png",
+            headers={"Authorization": f"Bearer {DATAWRAPPER_API_KEY}"},
+            params={"unit": "px", "width": w_px, "height": h_px, "plain": "false", "zoom": 2},
+            timeout=30,
+        )
+        if resp.status_code != 200:
+            log.warning("Datawrapper: export failed %s", resp.status_code)
+            return None
+
+        return resp.content
+    except Exception as e:
+        log.warning("Datawrapper: chart generation error: %s", e)
+        return None
+
+
+def _scatter(c, spec, x0, y0, w, h):
+    data = (spec.get("series") or [{}])[0].get("data") or []
+    if not data:
+        return
+    unit = spec.get("unit", "")
+    xs = [d.get("value", 0) for d in data]
+    ys = [d.get("value2", 0) for d in data]
+    xmin, xmax = min(xs), max(xs)
+    ymin, ymax = min(ys), max(ys)
+    if xmax - xmin < 1e-9:
+        xmax += 1
+    if ymax - ymin < 1e-9:
+        ymax += 1
+    PL, PB = 44, 32
+    pw, ph = w - PL - 8, h - PB - 22
+
+    for f in (0.25, 0.5, 0.75, 1.0):
+        gy = y0 + PB + f * ph
+        c.setStrokeColorRGB(0.88, 0.9, 0.94); c.setLineWidth(0.4)
+        c.line(x0 + PL, gy, x0 + PL + pw, gy)
+        c.setFillColorRGB(*GREY); c.setFont("Helvetica", 6)
+        c.drawRightString(x0 + PL - 3, gy - 2, f"{ymin + f * (ymax - ymin):.1f}{unit}")
+
+    c.setStrokeColorRGB(0.78, 0.82, 0.88); c.setLineWidth(1)
+    c.line(x0 + PL, y0 + PB, x0 + PL + pw, y0 + PB)
+    c.line(x0 + PL, y0 + PB, x0 + PL, y0 + PB + ph)
+
+    for i, d in enumerate(data):
+        px2 = x0 + PL + ((d.get("value", 0) - xmin) / (xmax - xmin)) * pw
+        py2 = y0 + PB + ((d.get("value2", 0) - ymin) / (ymax - ymin)) * ph
+        color = CHART_COLORS[i % len(CHART_COLORS)]
+        c.setFillColorRGB(*color)
+        c.circle(px2, py2, 3.5, fill=1, stroke=0)
+        c.setFillColorRGB(*BODY_TXT); c.setFont("Helvetica", 6)
+        c.drawCentredString(px2, py2 - 10, d.get("label", "")[:10])
+
+
 def _draw_chart(c, spec, x0, y0, w, h):
     t = spec.get("type", "bar")
-    if t == "pie":
+
+    png_bytes = _datawrapper_chart_png(spec, w_px=int(w * 2), h_px=int(h * 2))
+    if png_bytes:
+        try:
+            from reportlab.lib.utils import ImageReader
+            img = ImageReader(io.BytesIO(png_bytes))
+            iw, ih = img.getSize()
+            scale = min(w / iw, h / ih)
+            dw, dh = iw * scale, ih * scale
+            ox = x0 + (w - dw) / 2
+            oy = y0 + (h - dh) / 2
+            c.drawImage(img, ox, oy, width=dw, height=dh, preserveAspectRatio=True, mask="auto")
+            return
+        except Exception as e:
+            log.warning("Datawrapper: failed to draw PNG, falling back: %s", e)
+
+    # Native ReportLab fallbacks
+    if t in ("pie", "donut"):
         _pie(c, spec, x0, y0, w, h)
-    elif t == "line":
+    elif t in ("line", "area"):
         _line(c, spec, x0, y0, w, h)
+    elif t == "scatter":
+        _scatter(c, spec, x0, y0, w, h)
+    elif t == "column-grouped":
+        # Fall back to rendering the first series as a simple bar chart
+        first = (spec.get("series") or [{}])[0]
+        _bar(c, {**spec, "series": [first]}, x0, y0, w, h)
     else:
         _bar(c, spec, x0, y0, w, h)
 
