@@ -47,7 +47,10 @@ GENERAL_DOMAINS = [
 ]
 
 FINANCE_TERMS = [
+    # Indices & exchanges
     "nifty", "sensex", "bse", "nse", "ipo", "rbi", "sebi", "amfi",
+    "nifty 50", "nifty bank", "nifty it", "nifty auto", "nifty fmcg",
+    # Core finance words
     "stock", "share", "equity", "fund", "mutual fund", "nav", "sip",
     "market", "trading", "invest", "portfolio", "dividend", "earnings",
     "quarter", "q1", "q2", "q3", "q4", "fy", "balance sheet", "revenue",
@@ -55,13 +58,44 @@ FINANCE_TERMS = [
     "rupee", "inr", "forex", "crude", "gold", "silver", "commodity",
     "inflation", "gdp", "repo rate", "monetary policy", "cpi", "wpi",
     "bank", "nbfc", "loan", "emi", "interest rate", "credit", "debit",
+    # Companies
     "lic", "hdfc", "icici", "sbi", "axis", "kotak", "reliance", "tata",
     "infosys", "wipro", "tcs", "adani", "bajaj", "zerodha", "groww",
+    "paytm", "zomato", "ola", "swiggy", "nykaa", "delhivery",
+    # Analysis & report trigger words
+    "sector", "performance", "analysis", "outlook", "forecast", "report",
+    "returns", "rally", "correction", "bearish", "bullish", "momentum",
+    "valuation", "fundamental", "technical", "breakout", "support", "resistance",
+    "52 week", "all time high", "ath", "volume", "liquidity", "fii", "dii",
+    "inflow", "outflow", "net buy", "net sell", "derivative", "futures", "options",
+    "fno", "f&o", "expiry", "index", "benchmark", "mid cap", "small cap", "large cap",
+    "bluechip", "penny stock", "etf", "reit", "aif", "pms", "demat",
+    "ipo allotment", "listing", "grey market", "gmp", "buyback", "split",
+    "bonus", "rights issue", "qip", "ofs", "block deal", "bulk deal",
+    "results", "quarterly", "annual", "fy25", "fy26", "capex", "debt",
+    "leverage", "margin", "return on equity", "roe", "roce", "cash flow",
+    "npa", "provision", "slippage", "credit growth", "deposit",
+    # Macro
+    "rate cut", "rate hike", "policy", "budget", "fiscal", "trade deficit",
+    "current account", "fdi", "fpi", "rupee depreciation", "dollar",
+    "yield", "bond", "gilt", "treasury", "g-sec",
+    # News triggers
+    "latest", "today", "news", "update", "this week", "this month",
+    "recent", "current", "now", "live", "trend",
 ]
 
 SKIP_SEARCH_PREFIXES = [
-    "what is ", "define ", "explain ", "how does ", "tell me about ",
+    "what is ", "define ", "explain how ", "how does ",
     "what are the basics", "difference between",
+]
+
+# Phrases that always need a web search regardless of length
+ALWAYS_SEARCH_PATTERNS = [
+    r"\b(latest|recent|current|today|now|this week|this month|live)\b",
+    r"\b(news|update|report|analysis|outlook|performance|returns?|rally|correction)\b",
+    r"\b(sector|market|stock|nifty|sensex|bse|nse|ipo|rbi|sebi)\b",
+    r"\b(result|quarter|earnings|profit|revenue|forecast|prediction)\b",
+    r"\b(price|rate|yield|index|fii|dii|inflow|outflow)\b",
 ]
 
 SKIP_PAGE_FETCH = [".pdf", "bloomberg.com", "wsj.com", "ft.com", "economist.com"]
@@ -75,10 +109,13 @@ def classify_query(msg: str) -> str:
 
 def needs_web_search(msg: str) -> bool:
     m = msg.lower().strip()
-    if len(m) < 20 and "?" not in m:
+    # Only skip search for empty inputs or trivial one-word greetings
+    if len(m) < 4:
         return False
-    if any(m.startswith(s) for s in SKIP_SEARCH_PREFIXES) and len(m) < 60:
+    TRIVIAL = {"hi", "hey", "hello", "ok", "okay", "thanks", "thank you", "bye", "yes", "no", "sure", "great"}
+    if m in TRIVIAL:
         return False
+    # Everything else gets a web search
     return True
 
 

@@ -388,11 +388,23 @@ async def generate_report(request: Request):
 
     log.info("Report request: question=%r  sources=%d", question[:80], len(sources))
 
+    # If no sources were passed, run our own Tavily search so the report always has real data
     if not sources:
-        log.warning("Report: no sources provided")
-        return JSONResponse({"report": "No sources available.", "charts": [], "keyStats": [], "summary": "", "title": ""})
+        log.info("Report: no sources from client — running own Tavily search for %r", question[:60])
+        from routes.chat import tavily_search as _tavily_search, _looks_like_ai_overview
+        searched = await _tavily_search(question, max_results=25)
+        sources = [
+            {"title": r["title"], "url": r["url"],
+             "snippet": r["snippet"], "fullContent": r.get("fullContent", "")}
+            for r in searched
+        ]
+        log.info("Report: self-search returned %d sources", len(sources))
+    else:
+        from routes.chat import _looks_like_ai_overview
 
-    from routes.chat import _looks_like_ai_overview
+    if not sources:
+        log.warning("Report: still no sources after self-search")
+        return JSONResponse({"report": "Could not retrieve data for this topic. Please try again.", "charts": [], "keyStats": [], "summary": "", "title": ""})
 
     async def enrich(src: dict, idx: int) -> dict:
         if _looks_like_ai_overview(src.get("snippet", "")):

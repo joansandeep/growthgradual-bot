@@ -716,35 +716,46 @@ def build_pdf(report: str, title: str, question: str, summary: str,
             sx = MARGIN + col * (card_w + gap)
             sy = stats_top - row * (CARD_H + gap)
 
+            # Geometry: card bottom = card_bot, card top = card_top
+            card_bot = sy - CARD_H + 8
+            card_top = sy + 8            # = card_bot + CARD_H
+            BAR_H    = 5                 # gold accent bar height at top
+            PAD      = 8                 # inner padding below the bar
+
             # Card background + border
             c.setFillColorRGB(*LIGHT)
-            c.roundRect(sx, sy - CARD_H + 8, card_w, CARD_H, 4, fill=1, stroke=0)
+            c.roundRect(sx, card_bot, card_w, CARD_H, 4, fill=1, stroke=0)
             c.setStrokeColorRGB(0.82, 0.85, 0.93)
-            c.roundRect(sx, sy - CARD_H + 8, card_w, CARD_H, 4, fill=0, stroke=1)
-            # Top accent bar on each card
+            c.roundRect(sx, card_bot, card_w, CARD_H, 4, fill=0, stroke=1)
+            # Top accent bar
             c.setFillColorRGB(*GOLD)
-            c.rect(sx, sy - CARD_H + 8 + CARD_H - 4, card_w, 4, fill=1, stroke=0)
+            c.rect(sx, card_top - BAR_H, card_w, BAR_H, fill=1, stroke=0)
 
+            # Label — starts PAD pts below the bar bottom edge
+            label_y = card_top - BAR_H - PAD
             label = _safe_text(st.get("label", "")).upper()
             label_font_size = 6.5
             max_label_w = card_w - 12
             label_lines = _wrap(c, label, "Helvetica", label_font_size, max_label_w)
             c.setFillColorRGB(*GREY); c.setFont("Helvetica", label_font_size)
             for li, ll in enumerate(label_lines[:2]):
-                c.drawString(sx + 6, sy + 2 - li * 8, ll)
+                c.drawString(sx + 8, label_y - li * 9, ll)
 
+            # Value — 10 pts below last label line
+            val_y = label_y - len(label_lines[:2]) * 9 - 10
             value = _safe_text(st.get("value", ""))[:14]
             val_font = 13 if len(value) <= 9 else 10
             c.setFillColorRGB(*NAVY); c.setFont("Helvetica-Bold", val_font)
-            c.drawString(sx + 6, sy - 18, value)
+            c.drawString(sx + 8, val_y, value)
 
+            # Change indicator — 4 pts below value
             chg = _safe_text(st.get("change", ""))
             if chg:
                 col_c = GREEN if chg.startswith("+") else (RED if chg.startswith("-") else GREY)
                 c.setFillColorRGB(*col_c); c.setFont("Helvetica", 7)
                 chg_lines = _wrap(c, chg, "Helvetica", 7, max_label_w)
                 for li, cl in enumerate(chg_lines[:1]):
-                    c.drawString(sx + 6, sy - 32 - li * 8, cl)
+                    c.drawString(sx + 8, val_y - val_font - 4 - li * 9, cl)
 
         ty = stats_top - cards_total_h - 10
 

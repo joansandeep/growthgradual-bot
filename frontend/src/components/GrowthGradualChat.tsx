@@ -10,7 +10,7 @@ interface ChartSeries { name: string; data: ChartDataPoint[]; color?: string; }
 interface ChartSpec { type: 'bar' | 'line' | 'pie'; title: string; series: ChartSeries[]; unit?: string; }
 interface Message {
   id: string; role: 'user' | 'assistant'; text: string; ts: number;
-  sources?: Source[]; searchPerformed?: boolean;
+  sources?: Source[]; searchPerformed?: boolean; queryType?: string;
 }
 interface Conversation {
   id: string; title: string; messages: Message[]; ts: number;
@@ -229,7 +229,7 @@ function ChartBlock({ spec }: { spec: ChartSpec }) {
 }
 
 // ─── Report Panel ─────────────────────────────────────────────────────────────
-function ReportPanel({ sources, question }: { sources: Source[]; question: string }) {
+function ReportPanel({ sources, question, queryType }: { sources: Source[]; question: string; queryType?: string }) {
   const [open, setOpen]       = useState(false);
   const [report, setReport]   = useState('');
   const [charts, setCharts]   = useState<ChartSpec[]>([]);
@@ -297,7 +297,8 @@ function ReportPanel({ sources, question }: { sources: Source[]; question: strin
     }
   };
 
-  if (!sources.length) return null;
+  // Show for finance queries always; for general queries only when sources exist
+  if (!sources.length && queryType !== 'finance') return null;
   return (
     <div className="report-wrap">
       <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
@@ -449,7 +450,7 @@ function buildAttachmentContext(files: AttachedFile[], pasted: PastedText[]): st
   return `\n\n---\n📎 USER-ATTACHED CONTEXT:\n${parts.join('\n\n')}\n---\n\nUse the attached content above when answering.`;
 }
 
-interface StreamMeta { type:'meta'; searchPerformed:boolean; resultCount:number; sources:Source[]; }
+interface StreamMeta { type:'meta'; searchPerformed:boolean; resultCount:number; queryType:string; sources:Source[]; }
 
 async function* streamReply(
   messages: { role:string; content:string }[],
@@ -648,7 +649,7 @@ export default function GrowthGradualChat() {
         metaDone = true;
         setSearching(false);
         setMessages(prev => prev.map(m => m.id === botMsg.id
-          ? { ...m, searchPerformed: meta.searchPerformed, sources: meta.sources } : m));
+          ? { ...m, searchPerformed: meta.searchPerformed, sources: meta.sources, queryType: meta.queryType } : m));
       }, fileCtx)) {
         if (!metaDone) { setSearching(false); metaDone = true; }
         acc += chunk;
@@ -1291,11 +1292,11 @@ export default function GrowthGradualChat() {
                           dangerouslySetInnerHTML={{ __html: isUser ? msg.text.replace(/\n/g,'<br/>') : renderMd(msg.text) }}
                         />
                         {!isUser && msg.sources && msg.sources.length > 0 && (
-                          <>
-                            <SourcesPanel sources={msg.sources}/>
-                            <ReportPanel sources={msg.sources} question={msg.text.slice(0,300)}/>
-                          </>
+                          <SourcesPanel sources={msg.sources}/>
                         )}
+                        {!isUser && (msg.sources?.length ?? 0) > 0 || msg.queryType === 'finance' ? (
+                          !isUser && <ReportPanel sources={msg.sources ?? []} question={msg.text.slice(0,300)} queryType={msg.queryType}/>
+                        ) : null}
                         <span className="msg-ts">{fmtTime(msg.ts)}</span>
                       </div>
                     </div>
