@@ -36,52 +36,62 @@ Respond with EXACTLY this shape:
 }
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-CHART RULES — READ CAREFULLY. VIOLATIONS = BROKEN UI.
+CHART RULES — READ CAREFULLY. CHARTS ARE MANDATORY WHERE DATA EXISTS.
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-STEP 1 — SCAN sources for chartable data:
-  Look for: tables, rankings, comparisons, time-series, percentages, prices, volumes, growth rates.
-  For each chartable dataset you find, decide the BEST chart type:
-    • bar  → named items compared (stocks, sectors, companies, countries) — need ≥3 items with distinct values
-    • line → data over time (dates, quarters, years, months) — need ≥4 time points with DISTINCT values
-    • pie  → parts of a whole (portfolio breakdown, market share, sector allocation) — need ≥3 distinct slices
+STEP 1 — AGGRESSIVELY SCAN sources for ANY chartable numbers:
+  • Returns/performance of multiple funds, stocks, sectors → bar chart
+  • Rankings with numbers (top 5 SIPs by return, top gainers) → bar chart
+  • Time-series: quarterly results, monthly data, weekly prices → line chart
+  • Allocation/composition (sector weights, portfolio mix) → pie chart
+  • Comparisons: 1yr vs 3yr vs 5yr returns of same fund → bar chart
+  • FII/DII flows by date → line or bar chart
+  • Category-wise data (large cap vs mid cap vs small cap) → bar chart
+
+  For EVERY topic, these charts almost ALWAYS make sense — create them if data exists:
+  • SIP topic → bar chart of top 5 funds by 3-yr return %
+  • Stock topic → bar chart of key financial metrics (revenue, profit growth %)
+  • Banking topic → bar chart of NIM/NPA/ROE across banks
+  • Market topic → bar chart of sector performance %
+  • Mutual fund topic → pie chart of category allocation OR bar of returns by category
 
 STEP 2 — ONLY create a chart if ALL conditions are met:
-  ✓ At least 3 data points (bar/pie) or 4 time points (line) — charts with fewer points will be SILENTLY DROPPED from the PDF
-  ✓ All labels are DIFFERENT from each other — NEVER repeat a label
-  ✓ All values are DIFFERENT from each other — NOT all the same number
-  ✓ Values come VERBATIM from the source — NEVER invented, estimated, or calculated
-  ✓ The source explicitly states each individual data point — NOT inferred from a single current value
-  ✗ If these conditions cannot be met → DO NOT create the chart at all
-  ✗ NEVER create a line chart showing historical price levels you calculated or estimated
-  ✗ NEVER create a chart from a single number (e.g. "Sensex is at 74,503" is ONE data point — not chartable)
-  ✗ A bar chart needs ≥3 NAMED items (e.g. 3 different sector indices) — not 1 item shown 3 ways
+  ✓ At least 3 data points (bar/pie) or 4 time points (line)
+  ✓ All labels are DIFFERENT from each other
+  ✓ All values are DIFFERENT from each other (not all the same)
+  ✓ Values come from the source data — do NOT invent numbers
+  ✗ NEVER create a chart from a single number
+  ✗ NEVER duplicate labels
+  ✗ NEVER use future/projected values you invented
+  ✗ A bar/pie needs ≥3 named distinct items
 
-STEP 3 — Place [CHART_n] inline in the report markdown exactly where each chart should appear — right after the paragraph whose data it visualises. Number from 1. charts[0] = [CHART_1], charts[1] = [CHART_2], etc.
+STEP 3 — Place [CHART_n] inline in the report markdown right after the paragraph whose data it shows.
+  charts[0] = [CHART_1], charts[1] = [CHART_2], etc.
 
-STEP 4 — Number of charts: 0 to 6. Purely driven by what real data exists. Do NOT pad to any minimum. Do NOT chart the same data twice.
+STEP 4 — Aim for 2-4 charts per report when data supports it. Quality over quantity.
+  If sources genuinely lack numeric data → 0 charts is acceptable. But look hard first.
 
 Chart spec shape:
 {
   "type": "bar" | "line" | "pie",
-  "title": "<specific descriptive title, e.g. 'Nifty Sector Returns Today' not 'Chart 1'>",
+  "title": "<specific title e.g. 'Top 5 SIP Funds — 3-Year Returns' not 'Chart 1'>",
   "unit": "%" | "₹" | "Cr" | "B" | "$" | "x" | "",
   "series": [{ "name": "<series name>", "data": [{ "label": "<unique label>", "value": <number> }] }]
 }
 
 GOOD chart examples — do exactly this:
-  • Nifty 50 Top Gainers → bar, labels=stock names, values=% change each stock, unit="%"
-  • Sector Performance → bar, labels=[Nifty Bank, Nifty IT, Nifty Auto, Nifty FMCG], values=% change, unit="%"
-  • Crude Oil Prices Last Week → line, labels=[Mon, Tue, Wed, Thu, Fri], values=USD per barrel
-  • FII vs DII Net Flows → bar, labels=[Mon, Tue, Wed, Thu, Fri], values=₹ crore, unit="Cr"
-  • Mutual Fund Category Inflows → pie, labels=category names, values=₹ crore inflow each
+  • "Top SIP Funds by 3-Yr Return" → bar, labels=[ICICI Pru Value, Nippon India Value, UTI Gold ETF, Quant Small Cap], values=[15.9, 15.8, 35.2, 28.4], unit="%"
+  • "Sectoral PAT Growth Q4FY26" → bar, labels=[Utilities, Metals, Retail, Healthcare, BFSI], values=[61,53,32,32,18], unit="%"  
+  • "Nifty 50 Quarterly EPS" → line, labels=[Q1FY25,Q2FY25,Q3FY25,Q4FY25,Q1FY26], values=[actual numbers from source]
+  • "Top Banking Stocks — ROE %" → bar, labels=[HDFC Bank, ICICI Bank, Kotak, SBI, Axis], values from source
+  • "MF Category Inflows" → pie, labels=[Large Cap, Mid Cap, Small Cap, Flexi Cap, ELSS], values=₹ crore
 
 BAD chart examples — NEVER do this:
-  ✗ labels=["Today","Today","Today"] — duplicate labels, meaningless
-  ✗ values=[0.5, 0.5, 0.6, 0.6] — nearly identical, useless visually
-  ✗ "Market Projection" with future values you invented — not from source
-  ✗ Line chart with only 2 data points — use a bar chart instead
-  ✗ [CHART_n] in report without a matching charts[n-1] entry, or vice versa
+  ✗ labels=["Today","Today","Today"] — duplicate labels
+  ✗ values=[100, 100, 100] — identical values  
+  ✗ Inventing numbers not in sources
+  ✗ Line chart with only 2 data points
+  ✗ [CHART_n] in report without matching charts[n-1] entry
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 REPORT STRUCTURE (each section 100-200 words — be concise, data-dense, no padding):
@@ -90,21 +100,21 @@ REPORT STRUCTURE (each section 100-200 words — be concise, data-dense, no padd
 # [Report Title]
 
 ## 1. Introduction
-2-3 paragraphs: context, key stakeholders, what happened today. Cite [n]. No filler.
+2-3 paragraphs: context, key stakeholders, what happened. Cite [n]. No filler.
 
 ## 2. Data Sources & Methodology
 One markdown table of sources (Publication | URL | Data type). 1 short paragraph on approach.
 
 ## 3. Data Analysis
 
-### 3.1 [Heading that matches the actual topic and data]
-Deep-dive quantitative findings. ALL numbers in markdown tables. Insert [CHART_n] immediately after the paragraph whose data it visualises — only if a valid chart exists for that data.
+### 3.1 [Heading matching actual topic and data]
+Deep-dive quantitative findings. ALL numbers in markdown tables. Insert [CHART_n] immediately after the paragraph whose data it visualises.
 
-### 3.2 [Second dimension of analysis relevant to topic]
-Comparisons, breakdowns, benchmarks. Tables + [CHART_n] only where valid distinct data exists.
+### 3.2 [Second dimension of analysis]
+Comparisons, breakdowns, benchmarks. Tables + [CHART_n] where valid distinct data exists.
 
-### 3.3 [Third dimension — trends or forward-looking data if sources contain it]
-Only include this section if sources have trend/time-series data. Insert [CHART_n] only if ≥4 real distinct time points exist.
+### 3.3 [Trends or forward-looking data — only if sources have it]
+Only include if sources have trend/time-series data with ≥4 distinct time points.
 
 ## 4. Key Findings
 8-10 numbered findings, each with a specific number/stat from sources. Cite [n] on every finding.
@@ -117,7 +127,7 @@ Only include this section if sources have trend/time-series data. Insert [CHART_
 
 GLOBAL RULES:
 - NEVER invent any number, date, name, or statistic
-- TABLE HYGIENE: every column in a table must have real values for EVERY row. If a column would
+- TABLE HYGIENE: every column must have real values for EVERY row. If a column would
   be "-" or empty for some rows (e.g. indices like NIFTY 50/NIFTY BANK have no market cap),
   do NOT include that column for those rows — instead, put indices and individual stocks in
   SEPARATE tables (one for index levels, one for stock market caps), or drop the column entirely

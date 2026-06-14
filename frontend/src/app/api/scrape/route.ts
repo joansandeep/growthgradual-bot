@@ -342,7 +342,13 @@ const FEEDS: Array<{ url: string; backups?: string[]; source: string; category: 
   },
 ];
 
-// ── HTTP helpers ─────────────────────────────────────────────────────────────
+// ── Off-topic title patterns to always reject ─────────────────────────────────
+const REJECT_PATTERNS = [
+  /\b(recipe|cooking|food|restaurant|movie|film|actor|actress|cricket|football|soccer|ipl|bcci|sports|fashion|celebrity|bollywood|hollywood|gossip|entertainment|travel|tourism|health|fitness|yoga|meditation|skincare|beauty|makeup|wedding|relationship|astrology|horoscope|zodiac|cricket\s*score|match\s*result|election\s*result|politics|politician|parliament|congress|bjp|aap|modi|rahul|kejriwal)\b/i,
+  /\b(covid|pandemic|vaccine|cancer|diabetes|heart\s*attack|hospital|doctor|medicine|drug|pharma(?!ceutical\s*stock|ceutical\s*company|ma\s*sector))\b/i,
+];
+
+const FINANCE_MUST_HAVE = /\b(stock|share|market|fund|invest|nifty|sensex|bse|nse|bank|economy|gdp|rbi|sebi|rupee|ipo|nav|sip|equity|debt|bond|yield|trade|finance|fiscal|monetary|inflation|rate|return|portfolio|dividend|earning|profit|loss|revenue|quarter|fy|annual|growth|rally|correction|bull|bear|fii|dii|gold|crude|oil|forex|currency|commodity|real\s*estate|startup|fintech|insurance|mutual)\b/i;
 const FETCH_HEADERS = {
   'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
   'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
@@ -549,6 +555,12 @@ function parseFeed(xml: string, f: typeof FEEDS[number]): ScrapedArticle[] {
     const imgInText = block.match(/https?:\/\/[^\s"'<>]+\.(?:jpe?g|png|webp)(?:[?#][^\s"'<>]*)?/i);
     let image: string | undefined = mediaContent?.[1] || mediaThumbnail?.[1] || enclosure?.[1] || imgInText?.[0];
     if (image && /\/(1x1|pixel|icon|logo|badge)\./i.test(image)) image = undefined;
+    // ── Strict relevance filter — reject off-topic articles ──────────────────
+    const titleAndSummary = `${title} ${summary}`;
+    const isOffTopic = REJECT_PATTERNS.some(p => p.test(titleAndSummary));
+    const isFinanceRelevant = FINANCE_MUST_HAVE.test(titleAndSummary);
+    if (isOffTopic || !isFinanceRelevant) continue;
+
     articles.push({
       id: f.source.replace(/\s/g, '_') + '::' + Math.abs(h).toString(36),
       title: title.slice(0, 160),

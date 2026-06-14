@@ -151,10 +151,25 @@ export default function FeedPage({ category }: { category: Category }) {
     return () => clearInterval(timer);
   }, [loadArticles]);
 
+  // ── Strict category keyword filters ───────────────────────────────────────
+  const CATEGORY_KEYWORDS: Record<string, RegExp> = {
+    stocks: /\b(stock|share|equity|nifty|sensex|bse|nse|ipo|listing|gmp|allotment|sebi|fii|dii|rally|correction|bull|bear|trade|trading|nifty\s*50|smallcap|midcap|largecap|bluechip|dividend|buyback|rights\s*issue|bonus\s*share|circuit|upper\s*circuit|lower\s*circuit|52.week|pe\s*ratio|eps|screener|ticker|portfolio|gain|gainer|loser|analyst|target\s*price|buy\s*call|sell\s*call|hold|outperform|underperform)\b/i,
+    banks: /\b(bank|banking|lender|credit|loan|npa|nim|rbi|repo\s*rate|monetary\s*policy|hdfc\s*bank|icici\s*bank|sbi|axis\s*bank|kotak|yes\s*bank|idfc|federal\s*bank|deposit|savings|current\s*account|nbfc|microfinance|mfi|priority\s*sector|capital\s*adequacy|tier\s*1|tier\s*2|basel|liquidity|clrb|slr|crr|cd\s*ratio|net\s*interest|interest\s*income|advances|disbursement|asset\s*quality|provision)\b/i,
+    mutual_funds: /\b(mutual\s*fund|sip|nav|amc|amfi|nfo|fund\s*house|scheme|folio|elss|liquid\s*fund|debt\s*fund|hybrid\s*fund|equity\s*fund|index\s*fund|etf|exchange\s*traded|large\s*cap\s*fund|mid\s*cap\s*fund|small\s*cap\s*fund|flexi\s*cap|multi\s*cap|sectoral\s*fund|thematic\s*fund|stp|swp|lump\s*sum|returns|cagr|xirr|sharpe|alpha|beta|aum|inflow|outflow|redemption|icici\s*prudential|hdfc\s*mutual|nippon|axis\s*mutual|sbi\s*mutual|kotak\s*mutual|dsp|uti\s*mutual|mirae|motilal\s*oswal\s*mutual|aditya\s*birla|groww|etmoney|kuvera|paytm\s*money)\b/i,
+    finance: /\b(economy|gdp|inflation|cpi|wpi|fiscal|budget|tax|gst|rbi|monetary|interest\s*rate|repo|reverse\s*repo|forex|currency|rupee|dollar|exchange\s*rate|trade\s*deficit|current\s*account|balance\s*of\s*payment|fdi|fpi|capital\s*market|bond|yield|g-sec|treasury|debt|sovereign|imf|world\s*bank|oecd|sebi|irdai|irda|insurance|gold|crude|oil|commodity|real\s*estate|housing|msme|startup|unicorn|fintech|payment|upi|regulatory|policy|reform|subsidy|disinvestment|privatisation|public\s*sector)\b/i,
+  };
+
+  const isRelevant = (article: Article, cat: Category): boolean => {
+    if (cat === 'all') return true;
+    const pattern = CATEGORY_KEYWORDS[cat];
+    if (!pattern) return true;
+    const text = `${article.title} ${article.summary || ''} ${article.tag || ''}`;
+    // Accept if: category matches OR title/summary matches keyword pattern
+    return article.category === cat || article.category === 'all' || pattern.test(text);
+  };
+
   const cat = CATEGORIES.find(c => c.id === category);
-  const filtered = category === 'all'
-    ? articles
-    : articles.filter(a => a.category === category || a.category === 'all');
+  const filtered = articles.filter(a => isRelevant(a, category));
 
   const featured = filtered[0];
   const grid     = filtered.slice(1, 5);
