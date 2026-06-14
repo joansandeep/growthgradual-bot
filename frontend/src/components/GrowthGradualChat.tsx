@@ -615,39 +615,16 @@ async function* streamReply(
   fileContext?: string,
   sessionId?: string,
 ): AsyncGenerator<string> {
-  let res: Response;
-  try {
-    res = await fetch('/api/chat', {
-      method:'POST', headers:{'Content-Type':'application/json'},
-      body: JSON.stringify({ messages, fileContext: fileContext ?? '', sessionId: sessionId ?? '' }), signal,
-    });
-  } catch (err) {
-    throw new Error(`Failed to fetch: ${(err as Error).message}`);
-  }
-
-  if (!res.ok) {
-    const body = await res.text().catch(() => '');
-    if (res.status === 429) {
-      yield '⚠️ AI providers are rate-limited. Please wait 60 seconds and try again.';
-    } else {
-      yield `*Error ${res.status}${body ? ': ' + body.slice(0, 100) : ''}*`;
-    }
-    return;
-  }
-
+  const res = await fetch('/api/chat', {
+    method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({ messages, fileContext: fileContext ?? '', sessionId: sessionId ?? '' }), signal,
+  });
+  if (!res.ok) { yield `*Error ${res.status}*`; return; }
   const reader = res.body!.getReader();
   const dec = new TextDecoder();
   let buf = '';
   while (true) {
-    let value: Uint8Array | undefined, done: boolean;
-    try {
-      ({ value, done } = await reader.read());
-    } catch (err) {
-      if ((err as Error).name !== 'AbortError') {
-        throw new Error(`Stream read error: ${(err as Error).message}`);
-      }
-      return;
-    }
+    const { value, done } = await reader.read();
     if (done) break;
     buf += dec.decode(value, { stream:true });
     const lines = buf.split('\n');
@@ -661,7 +638,7 @@ async function* streamReply(
         if (json.type === 'meta') { onMeta(json as StreamMeta); continue; }
         const t = json.choices?.[0]?.delta?.content;
         if (t) yield t;
-      } catch { /* skip malformed chunk */ }
+      } catch { /* skip */ }
     }
   }
 }
@@ -939,15 +916,9 @@ export default function GrowthGradualChat() {
       });
     } catch(e:unknown) {
       setSearching(false);
-      if ((e as Error)?.name === 'AbortError') return;
-      const errMsg = (e as Error)?.message || '';
-      const isNetwork = errMsg.includes('fetch') || errMsg.includes('network') || errMsg.includes('Failed');
-      setMessages(prev => prev.map(m => m.id === botMsg.id ? {
-        ...m,
-        text: isNetwork
-          ? '*Network error — please check your connection and try again.*'
-          : '*Something went wrong. Please try again.*',
-      } : m));
+      if ((e as Error)?.name !== 'AbortError') {
+        setMessages(prev => prev.map(m => m.id === botMsg.id ? { ...m, text:'*Sorry, something went wrong.*' } : m));
+      }
     } finally {
       setStreaming(false);
       setSearching(false);
