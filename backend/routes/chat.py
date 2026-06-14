@@ -99,15 +99,21 @@ async def _save_messages(session_id: str, user_content: str, assistant_content: 
 
 # ─── Domain lists ──────────────────────────────────────────────────────────────
 FINANCE_DOMAINS = [
-    "moneycontrol.com", "economictimes.indiatimes.com", "livemint.com",
-    "business-standard.com", "ndtvprofit.com", "cnbctv18.com",
-    "financialexpress.com", "thehindubusinessline.com", "bseindia.com", "nseindia.com",
-    "valueresearchonline.com", "cafemutual.com", "capitalmarket.com",
-    "equitymaster.com", "stockanalysis.com", "screener.in", "tickertape.in",
-    "zeebiz.com", "outlookbusiness.com",
-    "reuters.com", "bloomberg.com", "ft.com", "wsj.com", "cnbc.com",
-    "marketwatch.com", "investing.com", "tradingeconomics.com",
-    "rbi.org.in", "sebi.gov.in", "amfiindia.com",
+    # Indian finance — reliable scrapers
+    "economictimes.indiatimes.com", "livemint.com", "business-standard.com",
+    "ndtvprofit.com", "cnbctv18.com", "financialexpress.com",
+    "thehindubusinessline.com", "zeebiz.com", "outlookbusiness.com",
+    "moneycontrol.com", "bseindia.com", "nseindia.com",
+    "screener.in", "tickertape.in", "equitymaster.com",
+    "cafemutual.com", "amfiindia.com", "capitalmarket.com",
+    # MF / SIP data
+    "groww.in", "etmoney.com", "paytmmoney.com", "kuvera.in",
+    "mfuindia.com", "advisorkhoj.com",
+    # Global reliable
+    "reuters.com", "cnbc.com", "marketwatch.com",
+    "investing.com", "tradingeconomics.com",
+    "rbi.org.in", "sebi.gov.in",
+    "forbes.com", "businessinsider.com",
 ]
 
 GENERAL_DOMAINS = [
