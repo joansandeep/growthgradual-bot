@@ -294,34 +294,60 @@ async def send_report_email(
     plain = re.sub(r"\[CHART_\d+\]", "", plain).strip()
     plain_body = f"{title}\n{'='*len(title)}\n\n{summary}\n\n{plain}" if title else plain
 
-    # ── Send ───────────────────────────────────────────────────────────────────
+    # ── Send via Gmail SMTP ────────────────────────────────────────────────────
+    # Try port 465 (SSL) first — more reliable on cloud hosts like Render
+    # Fall back to port 587 (STARTTLS) if 465 fails
     sent, failed = [], []
-    try:
-        with smtplib.SMTP("smtp.gmail.com", 587, timeout=25) as smtp:
-            smtp.ehlo(); smtp.starttls(); smtp.ehlo()
-            smtp.login(sender_email, app_password)
-            for addr in to_list:
-                try:
-                    msg = MIMEMultipart("alternative")
-                    msg["Subject"] = subject or "Growth Gradual Research Report"
-                    msg["From"]    = f"Growth Gradual <{sender_email}>"
-                    msg["To"]      = addr
-                    msg.attach(MIMEText(plain_body, "plain", "utf-8"))
-                    msg.attach(MIMEText(html_body,  "html",  "utf-8"))
-                    smtp.sendmail(sender_email, addr, msg.as_string())
-                    sent.append(addr)
-                except Exception as exc:
-                    log.warning("Failed to send to %s: %s", addr, exc)
-                    failed.append(addr)
-    except smtplib.SMTPAuthenticationError:
-        return JSONResponse(
-            {"success": False, "error": "Gmail authentication failed. Check SMTP_SENDER and SMTP_APP_PASSWORD in your .env (use an App Password, not your account password)."},
-            status_code=401,
-        )
-    except smtplib.SMTPException as exc:
-        return JSONResponse({"success": False, "error": f"SMTP error: {exc}"}, status_code=500)
-    except OSError as exc:
-        return JSONResponse({"success": False, "error": f"Cannot connect to Gmail SMTP: {exc}"}, status_code=503)
+
+    def _do_smtp_send(use_port: int, use_ssl: bool) -> tuple[list, list]:
+        _sent, _failed = [], []
+        try:
+            if use_ssl:
+                import ssl as _ssl
+                ctx = _ssl.create_default_context()
+                smtp_conn = smtplib.SMTP_SSL("smtp.gmail.com", use_port, timeout=20, context=ctx)
+            else:
+                smtp_conn = smtplib.SMTP("smtp.gmail.com", use_port, timeout=20)
+                smtp_conn.ehlo()
+                smtp_conn.starttls()
+                smtp_conn.ehlo()
+
+            with smtp_conn:
+                smtp_conn.login(sender_email, app_password)
+                for addr in to_list:
+                    try:
+                        msg = MIMEMultipart("alternative")
+                        msg["Subject"] = subject or "Growth Gradual Research Report"
+                        msg["From"]    = f"Growth Gradual <{sender_email}>"
+                        msg["To"]      = addr
+                        msg.attach(MIMEText(plain_body, "plain", "utf-8"))
+                        msg.attach(MIMEText(html_body,  "html",  "utf-8"))
+                        smtp_conn.sendmail(sender_email, addr, msg.as_string())
+                        _sent.append(addr)
+                    except Exception as exc:
+                        log.warning("Failed to send to %s: %s", addr, exc)
+                        _failed.append(addr)
+        except Exception:
+            raise
+        return _sent, _failed
+
+    last_exc = None
+    for port, ssl in [(465, True), (587, False)]:
+        try:
+            sent, failed = _do_smtp_send(port, ssl)
+            log.info("SMTP sent via port %d — sent=%d failed=%d", port, len(sent), len(failed))
+            break
+        except smtplib.SMTPAuthenticationError:
+            return JSONResponse(
+                {"success": False, "error": "Gmail authentication failed. Check SMTP_SENDER and SMTP_APP_PASSWORD in your .env (use an App Password, not your account password)."},
+                status_code=401,
+            )
+        except Exception as exc:
+            log.warning("SMTP port %d failed: %s — trying next", port, exc)
+            last_exc = exc
+            continue
+    else:
+        return JSONResponse({"success": False, "error": f"Could not connect to Gmail SMTP on any port: {last_exc}"}, status_code=503)
 
     if not sent:
         return JSONResponse({"success": False, "error": f"All sends failed. Failed: {', '.join(failed)}"}, status_code=500)

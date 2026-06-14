@@ -23,6 +23,7 @@ from utils.keys import (
 
 router = APIRouter()
 log = logging.getLogger("chat")
+from datetime import datetime as _dt
 
 # ─── Supabase persistence ──────────────────────────────────────────────────────
 _SUPABASE_URL  = os.environ.get("SUPABASE_URL", "").rstrip("/")
@@ -37,29 +38,29 @@ def _sb_headers() -> dict:
     }
 
 async def _upsert_session(session_id: str) -> None:
-    """Insert session row if absent, otherwise bump last_active + query_count."""
+    """Insert session row if absent, otherwise bump last_active."""
     if not _SUPABASE_URL or not _SUPABASE_KEY:
         return
     try:
         async with httpx.AsyncClient(timeout=8) as client:
-            await client.post(
+            # Try upsert first
+            r = await client.post(
                 f"{_SUPABASE_URL}/rest/v1/sessions",
                 headers={**_sb_headers(), "Prefer": "resolution=merge-duplicates,return=minimal"},
-                json={
-                    "id": session_id,
-                    "last_active": "now()",
-                    "query_count": 1,           # will be summed on conflict via RPC below
-                },
+                json={"id": session_id, "last_active": _dt.utcnow().isoformat(), "query_count": 1},
             )
-            # Increment query_count in-place via a simple UPDATE
+            if r.status_code in (401, 403):
+                log.debug("Supabase sessions: RLS blocked insert (table may need policy) — skipping")
+                return
+            # Bump last_active
             await client.patch(
                 f"{_SUPABASE_URL}/rest/v1/sessions",
                 headers=_sb_headers(),
                 params={"id": f"eq.{session_id}"},
-                json={"last_active": "now()"},
+                json={"last_active": _dt.utcnow().isoformat()},
             )
     except Exception as exc:
-        log.warning("Supabase upsert_session failed: %s", exc)
+        log.debug("Supabase upsert_session failed (non-critical): %s", exc)
 
 
 async def _save_messages(session_id: str, user_content: str, assistant_content: str,
