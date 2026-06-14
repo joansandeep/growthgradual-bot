@@ -1,0 +1,410 @@
+"""
+POST /api/chat  — SSE streaming chat
+Body: { messages: [{role, content}], fileContext?: string }
+"""
+import asyncio
+import json
+import os
+import re
+import time
+from pathlib import Path
+from typing import AsyncGenerator
+
+import httpx
+from fastapi import APIRouter
+from fastapi.requests import Request
+from fastapi.responses import JSONResponse, StreamingResponse
+
+from utils.keys import (
+    get_gemini_keys, get_groq_keys, get_tavily_keys,
+    is_rate_limited, mark_rate_limited, pick_key, round_robin
+)
+
+router = APIRouter()
+
+# ─── Domain lists ──────────────────────────────────────────────────────────────
+FINANCE_DOMAINS = [
+    "moneycontrol.com", "economictimes.indiatimes.com", "livemint.com",
+    "business-standard.com", "ndtvprofit.com", "cnbctv18.com",
+    "financialexpress.com", "thehindubusinessline.com", "bseindia.com", "nseindia.com",
+    "valueresearchonline.com", "cafemutual.com", "capitalmarket.com",
+    "equitymaster.com", "stockanalysis.com", "screener.in", "tickertape.in",
+    "zeebiz.com", "outlookbusiness.com",
+    "reuters.com", "bloomberg.com", "ft.com", "wsj.com", "cnbc.com",
+    "marketwatch.com", "investing.com", "tradingeconomics.com",
+    "rbi.org.in", "sebi.gov.in", "amfiindia.com",
+]
+
+GENERAL_DOMAINS = [
+    "reuters.com", "apnews.com", "bbc.com", "theguardian.com", "nytimes.com",
+    "thehindu.com", "ndtv.com", "hindustantimes.com", "timesofindia.indiatimes.com",
+    "indianexpress.com", "scroll.in", "thewire.in", "livemint.com",
+    "techcrunch.com", "theverge.com", "wired.com", "arstechnica.com",
+    "scientificamerican.com", "nature.com", "wikipedia.org",
+    "forbes.com", "businessinsider.com", "economist.com",
+]
+
+FINANCE_TERMS = [
+    "nifty", "sensex", "bse", "nse", "ipo", "rbi", "sebi", "amfi",
+    "stock", "share", "equity", "fund", "mutual fund", "nav", "sip",
+    "market", "trading", "invest", "portfolio", "dividend", "earnings",
+    "quarter", "q1", "q2", "q3", "q4", "fy", "balance sheet", "revenue",
+    "profit", "loss", "ebitda", "pe ratio", "p/e", "eps", "book value",
+    "rupee", "inr", "forex", "crude", "gold", "silver", "commodity",
+    "inflation", "gdp", "repo rate", "monetary policy", "cpi", "wpi",
+    "bank", "nbfc", "loan", "emi", "interest rate", "credit", "debit",
+    "lic", "hdfc", "icici", "sbi", "axis", "kotak", "reliance", "tata",
+    "infosys", "wipro", "tcs", "adani", "bajaj", "zerodha", "groww",
+]
+
+SKIP_SEARCH_PREFIXES = [
+    "what is ", "define ", "explain ", "how does ", "tell me about ",
+    "what are the basics", "difference between",
+]
+
+SKIP_PAGE_FETCH = [".pdf", "bloomberg.com", "wsj.com", "ft.com", "economist.com"]
+
+
+# ─── Helpers ───────────────────────────────────────────────────────────────────
+def classify_query(msg: str) -> str:
+    m = msg.lower()
+    return "finance" if any(t in m for t in FINANCE_TERMS) else "general"
+
+
+def needs_web_search(msg: str) -> bool:
+    m = msg.lower().strip()
+    if len(m) < 20 and "?" not in m:
+        return False
+    if any(m.startswith(s) for s in SKIP_SEARCH_PREFIXES) and len(m) < 60:
+        return False
+    return True
+
+
+async def fetch_page_content(url: str, max_chars: int = 4000) -> str:
+    if any(s in url for s in SKIP_PAGE_FETCH):
+        return ""
+    try:
+        async with httpx.AsyncClient(timeout=8) as client:
+            res = await client.get(url, headers={
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+                "Accept": "text/html,application/xhtml+xml",
+                "Accept-Language": "en-IN,en;q=0.9",
+            }, follow_redirects=True)
+            if not res.is_success:
+                return ""
+            html = res.text
+            # Strip tags
+            clean = re.sub(r"<script[\s\S]*?</script>", "", html, flags=re.IGNORECASE)
+            clean = re.sub(r"<style[\s\S]*?</style>", "", clean, flags=re.IGNORECASE)
+            clean = re.sub(r"<[^>]+>", " ", clean)
+            clean = re.sub(r"\s{3,}", "\n", clean)
+            for esc, rep in [("&amp;", "&"), ("&lt;", "<"), ("&gt;", ">"), ("&nbsp;", " ")]:
+                clean = clean.replace(esc, rep)
+            return clean.strip()[:max_chars]
+    except Exception:
+        return ""
+
+
+async def tavily_search(query: str, max_results: int = 25) -> list[dict]:
+    keys = get_tavily_keys()
+    if not keys:
+        return []
+    qtype = classify_query(query)
+    domains = FINANCE_DOMAINS if qtype == "finance" else GENERAL_DOMAINS
+
+    async with httpx.AsyncClient(timeout=15) as client:
+        for key in round_robin(keys):
+            if is_rate_limited(key):
+                continue
+            try:
+                body: dict = {
+                    "api_key": key,
+                    "query": query,
+                    "search_depth": "advanced",
+                    "max_results": max_results,
+                    "include_answer": False,
+                    "include_raw_content": True,
+                    "include_domains": domains,
+                }
+                if qtype == "finance":
+                    body["topic"] = "finance"
+
+                res = await client.post("https://api.tavily.com/search", json=body)
+                if res.status_code == 429:
+                    mark_rate_limited(key, 60_000)
+                    continue
+                if res.status_code in (401, 403):
+                    mark_rate_limited(key, 24 * 60 * 60_000)
+                    continue
+                if not res.is_success:
+                    continue
+
+                data = res.json()
+                results = [
+                    {
+                        "title": r.get("title", ""),
+                        "url": r.get("url", ""),
+                        "snippet": r.get("content", ""),
+                        "fullContent": (r.get("raw_content") or r.get("content") or "")[:5000],
+                        "score": r.get("score"),
+                        "published": r.get("published_date"),
+                    }
+                    for r in (data.get("results") or [])
+                ]
+
+                # Retry without domain filter if too few results
+                if len(results) < 5:
+                    res2 = await client.post("https://api.tavily.com/search", json={
+                        "api_key": key,
+                        "query": query,
+                        "search_depth": "advanced",
+                        "max_results": max_results,
+                        "include_raw_content": True,
+                    })
+                    if res2.is_success:
+                        results = [
+                            {
+                                "title": r.get("title", ""),
+                                "url": r.get("url", ""),
+                                "snippet": r.get("content", ""),
+                                "fullContent": (r.get("raw_content") or r.get("content") or "")[:5000],
+                                "score": r.get("score"),
+                                "published": r.get("published_date"),
+                            }
+                            for r in (res2.json().get("results") or [])
+                        ]
+
+                # Enrich top-10 sparse results
+                enriched = []
+                async def _passthrough(val: str) -> str:
+                    return val
+
+                enrich_tasks = [
+                    fetch_page_content(r["url"], 3000)
+                    if len(r.get("fullContent", "")) < 500 else _passthrough(r.get("fullContent", ""))
+                    for r in results[:10]
+                ]
+                extra_contents = await asyncio.gather(*enrich_tasks, return_exceptions=True)
+                for i, r in enumerate(results[:10]):
+                    extra = extra_contents[i] if not isinstance(extra_contents[i], Exception) else ""
+                    if isinstance(extra, str) and len(extra) > len(r.get("fullContent", "")):
+                        r["fullContent"] = extra
+                    enriched.append(r)
+                return enriched + results[10:]
+
+            except Exception:
+                continue
+    return []
+
+
+async def load_headlines(limit: int = 30) -> str:
+    candidates = [
+        Path(os.getcwd()) / "growth_gradual_cache.json",
+        Path("/tmp/growth_gradual_cache.json"),
+    ]
+    raw = None
+    for p in candidates:
+        try:
+            raw = p.read_text(encoding="utf-8")
+            break
+        except Exception:
+            pass
+    if not raw:
+        return ""
+    try:
+        data = json.loads(raw)
+        articles = (data.get("articles") or [])[:limit]
+        if not articles:
+            return ""
+        from datetime import datetime, timezone
+        fetched_ts = data.get("fetchedAt")
+        try:
+            fetched_dt = datetime.fromtimestamp(fetched_ts / 1000, tz=timezone.utc).strftime("%d %b %Y, %I:%M %p")
+        except Exception:
+            fetched_dt = "recently"
+        lines = "\n".join(f"• [{a['source']}] {a['title']} ({a['time']})" for a in articles)
+        return f"\n\n---\n📰 LIVE HEADLINES (fetched {fetched_dt} IST):\n{lines}\n---"
+    except Exception:
+        return ""
+
+
+def build_system(headlines: str, search_results: list[dict], qtype: str) -> str:
+    from datetime import date
+    today = date.today().strftime("%A, %B %d, %Y")
+    web_ctx = ""
+    if search_results:
+        snippets = []
+        for i, r in enumerate(search_results[:25]):
+            content = r.get("fullContent", "")
+            if len(content) > len(r.get("snippet", "")):
+                content = content[:1200]
+            else:
+                content = r.get("snippet", "")
+            pub = f" ({r['published']})" if r.get("published") else ""
+            snippets.append(f"[{i+1}] {r['title']}\nSource: {r['url']}{pub}\n{content}")
+        web_ctx = f"\n\n---\n🌐 WEB SEARCH RESULTS — TOP {len(search_results)} PAGES (with full page content):\n\n" + "\n\n".join(snippets) + "\n---"
+
+    finance_persona = f"""You are **Growth Gradual** — an expert AI assistant for Indian financial markets, built into the Growth Gradual "In The Money" platform. Today is {today}.
+
+You specialise in NSE/BSE stocks, IPOs, mutual funds, RBI/SEBI policy, macroeconomics, and personal finance for Indian investors.
+
+**Behaviour:**
+- Give sharp, specific, data-driven answers. Cite sources by [number] when using web results.
+- When web results are provided, extract and use ALL numbers, percentages, dates, and figures from them.
+- Use markdown: **bold** key terms, bullet lists, tables where helpful.
+- Always end market-specific answers with "Verify live prices before trading."
+- Be conversational but precise — like a top sell-side analyst."""
+
+    general_persona = f"""You are **Growth Gradual Assistant** — a knowledgeable AI assistant built into the Growth Gradual platform. Today is {today}.
+
+**Behaviour:**
+- Answer comprehensively using the provided web search results from the top 25 pages.
+- Extract and present ALL specific numbers, statistics, data points, dates, and figures found in the sources.
+- Cite sources by [number] when referencing web content.
+- Use markdown for clarity: **bold** key terms, bullet lists, tables where helpful.
+- Be thorough, accurate, and helpful. Where relevant, connect the topic back to financial or economic context."""
+
+    base = finance_persona if qtype == "finance" else general_persona
+    return base + headlines + web_ctx
+
+
+# ─── Groq streaming ────────────────────────────────────────────────────────────
+async def stream_groq(system_prompt: str, messages: list[dict]) -> httpx.Response | None:
+    keys = get_groq_keys()
+    if not keys:
+        return None
+    key = pick_key(keys, "GROQ")
+    try:
+        client = httpx.AsyncClient(timeout=90)
+        res = await client.post(
+            "https://api.groq.com/openai/v1/chat/completions",
+            headers={"Content-Type": "application/json", "Authorization": f"Bearer {key}"},
+            json={
+                "model": "llama-3.3-70b-versatile",
+                "messages": [{"role": "system", "content": system_prompt}] + messages,
+                "stream": True,
+                "max_tokens": 2048,
+                "temperature": 0.5,
+            },
+        )
+        if res.status_code == 429:
+            mark_rate_limited(key)
+            return None
+        if res.is_success:
+            return res
+        return None
+    except Exception:
+        return None
+
+
+async def gemini_sse(system_prompt: str, messages: list[dict]) -> AsyncGenerator[str, None]:
+    keys = get_gemini_keys()
+    if not keys:
+        raise ValueError("No Gemini keys")
+    user_msg = next((m["content"] for m in reversed(messages) if m["role"] == "user"), "")
+    for key in round_robin(keys):
+        if is_rate_limited(key):
+            continue
+        try:
+            async with httpx.AsyncClient(timeout=30) as client:
+                res = await client.post(
+                    f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key={key}",
+                    json={
+                        "system_instruction": {"parts": [{"text": system_prompt}]},
+                        "contents": [{"role": "user", "parts": [{"text": user_msg}]}],
+                        "generationConfig": {"maxOutputTokens": 2048, "temperature": 0.5},
+                    },
+                )
+            if res.status_code == 429:
+                mark_rate_limited(key, 60_000)
+                continue
+            if res.status_code == 403:
+                mark_rate_limited(key, 24 * 60 * 60_000)
+                continue
+            data = res.json()
+            text = (data.get("candidates") or [{}])[0].get("content", {}).get("parts", [{}])[0].get("text", "")
+            if not text:
+                continue
+            for word in text.split(" "):
+                yield f'data: {json.dumps({"choices": [{"delta": {"content": word + " "}}]})}\n\n'
+            yield "data: [DONE]\n\n"
+            return
+        except Exception:
+            continue
+    raise RuntimeError("All Gemini keys failed")
+
+
+# ─── Main handler ──────────────────────────────────────────────────────────────
+@router.post("")
+async def chat(request: Request):
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+
+    messages: list[dict] = body.get("messages", [])
+    file_context: str = body.get("fileContext", "")
+    if not messages:
+        return JSONResponse({"error": "No messages"}, status_code=400)
+
+    last_user_msg = next((m["content"] for m in reversed(messages) if m["role"] == "user"), "")
+    do_search = needs_web_search(last_user_msg)
+    qtype = classify_query(last_user_msg)
+
+    async def _no_search() -> list:
+        return []
+
+    search_results, headlines = await asyncio.gather(
+        tavily_search(last_user_msg, 25) if do_search else _no_search(),
+        load_headlines(30),
+    )
+
+    base_prompt = build_system(headlines, search_results, qtype)
+    system_prompt = base_prompt + file_context if file_context else base_prompt
+
+    meta_event = (
+        "data: "
+        + json.dumps({
+            "type": "meta",
+            "searchPerformed": do_search,
+            "resultCount": len(search_results),
+            "queryType": qtype,
+            "sources": [
+                {"title": r["title"], "url": r["url"], "snippet": r["snippet"][:180]}
+                for r in search_results
+            ],
+        })
+        + "\n\n"
+    )
+
+    async def generate() -> AsyncGenerator[bytes, None]:
+        yield meta_event.encode()
+
+        # Try Groq first
+        groq_res = await stream_groq(system_prompt, messages)
+        if groq_res and groq_res.is_success:
+            async for chunk in groq_res.aiter_bytes():
+                yield chunk
+            return
+
+        # Gemini fallback
+        gemini_keys = get_gemini_keys()
+        if gemini_keys:
+            try:
+                async for chunk in gemini_sse(system_prompt, messages):
+                    yield chunk.encode()
+                return
+            except Exception as e:
+                err = json.dumps({"choices": [{"delta": {"content": f"\n\n[All LLM keys exhausted — please retry] {e}"}}]})
+                yield f"data: {err}\n\n".encode()
+                yield b"data: [DONE]\n\n"
+                return
+
+        yield b'data: {"choices":[{"delta":{"content":"No LLM keys configured"}}]}\n\n'
+        yield b"data: [DONE]\n\n"
+
+    return StreamingResponse(
+        generate(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "Connection": "keep-alive"},
+    )

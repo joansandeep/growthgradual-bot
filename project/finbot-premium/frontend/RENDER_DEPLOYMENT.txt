@@ -1,0 +1,3 @@
+Set BACKEND_URL=https://YOUR-BACKEND-SERVICE.onrender.com in Render frontend environment variables.
+Build Command: npm install && npm run build
+Start Command: npm start
