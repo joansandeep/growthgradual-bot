@@ -543,6 +543,8 @@ interface AttachedFile {
   type: string;
   content: string; // base64 data URL or raw text
   extractedText?: string;
+  status: 'attaching' | 'attached' | 'failed';
+  error?: string;
 }
 interface PastedText {
   id: string;
@@ -575,18 +577,57 @@ function readAsText(file: File): Promise<string> {
     r.onerror = () => reject(new Error('Read failed')); r.readAsText(file);
   });
 }
+
+async function extractPdfText(file: File): Promise<string> {
+  try {
+    // Use pdf.js to extract text from PDF pages
+    const pdfjsLib = await import('pdfjs-dist');
+    pdfjsLib.GlobalWorkerOptions.workerSrc =
+      `https://cdnjs.cloudflare.com/ajax/libs/pdf.js/${pdfjsLib.version}/pdf.worker.min.mjs`;
+    const dataUrl = await readAsDataURL(file);
+    const base64  = dataUrl.split(',')[1];
+    const binary  = atob(base64);
+    const bytes   = new Uint8Array(binary.length);
+    for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+    const pdf       = await pdfjsLib.getDocument({ data: bytes }).promise;
+    const numPages  = Math.min(pdf.numPages, 30);
+    const textParts: string[] = [];
+    for (let p = 1; p <= numPages; p++) {
+      const page    = await pdf.getPage(p);
+      const content = await page.getTextContent();
+      const pageText = content.items
+        .map((item: unknown) => (item as { str?: string }).str ?? '')
+        .join(' ');
+      if (pageText.trim()) textParts.push(`[Page ${p}]\n${pageText.trim()}`);
+    }
+    return textParts.join('\n\n');
+  } catch (e) {
+    console.warn('[processFile] pdf.js extraction failed:', e);
+    return '';
+  }
+}
+
 async function processFile(file: File): Promise<AttachedFile | null> {
   const accepted = ACCEPTED_TYPES.includes(file.type) || file.type.startsWith('image/') || file.type.startsWith('text/');
   if (!accepted) return null;
   const id = Math.random().toString(36).slice(2, 10);
-  let content = '', extractedText = '';
-  if (file.type.startsWith('text/')) {
-    extractedText = await readAsText(file);
-    content = extractedText;
-  } else {
-    content = await readAsDataURL(file);
+  // Return immediately with 'attaching' status
+  const base: AttachedFile = { id, name: file.name, size: file.size, type: file.type, content: '', status: 'attaching' };
+  try {
+    let content = '', extractedText = '';
+    if (file.type.startsWith('text/')) {
+      extractedText = await readAsText(file);
+      content = extractedText;
+    } else if (file.type === 'application/pdf') {
+      content       = await readAsDataURL(file);
+      extractedText = await extractPdfText(file);
+    } else {
+      content = await readAsDataURL(file);
+    }
+    return { ...base, content, extractedText, status: 'attached' };
+  } catch (e) {
+    return { ...base, status: 'failed', error: (e as Error).message };
   }
-  return { id, name: file.name, size: file.size, type: file.type, content, extractedText };
 }
 function buildAttachmentContext(files: AttachedFile[], pasted: PastedText[]): string {
   const parts: string[] = [];
@@ -614,12 +655,18 @@ async function* streamReply(
   onMeta: (m:StreamMeta) => void,
   fileContext?: string,
   sessionId?: string,
+  hasRag?: boolean,
 ): AsyncGenerator<string> {
   let res: Response;
   try {
     res = await fetch('/api/chat', {
       method:'POST', headers:{'Content-Type':'application/json'},
-      body: JSON.stringify({ messages, fileContext: fileContext ?? '', sessionId: sessionId ?? '' }), signal,
+      body: JSON.stringify({
+        messages,
+        fileContext: fileContext ?? '',
+        sessionId:  sessionId  ?? '',
+        hasRag:     hasRag     ?? false,
+      }), signal,
     });
   } catch (err) {
     throw new Error(`Failed to fetch: ${(err as Error).message}`);
@@ -696,6 +743,8 @@ export default function GrowthGradualChat() {
   const [attachedFiles, setAttachedFiles] = useState<AttachedFile[]>([]);
   const [pastedTexts, setPastedTexts]     = useState<PastedText[]>([]);
   const [attachLoading, setAttachLoading] = useState(false);
+  const [ragIndexed, setRagIndexed]       = useState(false);
+  const [ragIndexing, setRagIndexing]     = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const bottomRef      = useRef<HTMLDivElement>(null);
@@ -710,11 +759,78 @@ export default function GrowthGradualChat() {
     if (remaining <= 0) return;
     const toProcess = fileList.slice(0, remaining);
     setAttachLoading(true);
-    const results = await Promise.all(toProcess.map(processFile));
-    const valid = results.filter((f): f is AttachedFile => f !== null);
-    setAttachedFiles(prev => [...prev, ...valid]);
+
+    // Add placeholder chips immediately with 'attaching' status
+    const placeholders: AttachedFile[] = toProcess.map(f => ({
+      id: Math.random().toString(36).slice(2, 10),
+      name: f.name, size: f.size, type: f.type,
+      content: '', status: 'attaching' as const,
+    }));
+    setAttachedFiles(prev => [...prev, ...placeholders]);
+
+    // Process each file and update its chip as it completes
+    await Promise.all(toProcess.map(async (file, idx) => {
+      const placeholder = placeholders[idx];
+      try {
+        const result = await processFile(file);
+        setAttachedFiles(prev => prev.map(f =>
+          f.id === placeholder.id
+            ? (result ? { ...result, id: placeholder.id } : { ...placeholder, status: 'failed' as const, error: 'Unsupported file type' })
+            : f
+        ));
+      } catch (e) {
+        setAttachedFiles(prev => prev.map(f =>
+          f.id === placeholder.id
+            ? { ...placeholder, status: 'failed' as const, error: (e as Error).message }
+            : f
+        ));
+      }
+    }));
+
     setAttachLoading(false);
-  }, [attachedFiles.length]);
+
+    // ── Index successfully processed files in RAG service ─────────────────────
+    const processed = await Promise.all(
+      toProcess.map(async (file, idx) => {
+        const placeholder = placeholders[idx];
+        // Get the final state of this file
+        return new Promise<AttachedFile | null>(resolve => {
+          setAttachedFiles(prev => {
+            const f = prev.find(x => x.id === placeholder.id);
+            resolve(f && f.status === 'attached' ? f : null);
+            return prev;
+          });
+        });
+      })
+    );
+
+    const toIndex = processed.filter((f): f is AttachedFile => f !== null && !!f.extractedText);
+    if (toIndex.length > 0 && sessionId) {
+      setRagIndexing(true);
+      try {
+        const docs = toIndex.map(f => ({
+          id: f.id, name: f.name,
+          text: f.extractedText!,
+          source_type: 'file',
+          file_type: f.type,
+        }));
+        const res = await fetch('/api/rag/index', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ session_id: sessionId, documents: docs }),
+        });
+        const data = await res.json();
+        if (data.chunks_added > 0 || data.total_chunks > 0) {
+          setRagIndexed(true);
+          console.log('[RAG] indexed', data.chunks_added, 'chunks');
+        }
+      } catch (e) {
+        console.warn('[RAG] index failed (non-critical):', e);
+      } finally {
+        setRagIndexing(false);
+      }
+    }
+  }, [attachedFiles.length, sessionId]);
 
   // ── Drag-and-drop ─────────────────────────────────────────────────────────
   const handleDragOver  = (e: React.DragEvent) => { e.preventDefault(); setDragOver(true); };
@@ -782,6 +898,10 @@ export default function GrowthGradualChat() {
     setActiveId(null);
     historyRef.current = [];
     setInput('');
+    setAttachedFiles([]);
+    setPastedTexts([]);
+    setRagIndexed(false);
+    setRagIndexing(false);
     setTimeout(() => inputRef.current?.focus(), 100);
   }, []);
 
@@ -830,7 +950,7 @@ export default function GrowthGradualChat() {
         setSearching(false);
         setMessages(prev => prev.map(m => m.id === botMsg.id
           ? { ...m, searchPerformed: meta.searchPerformed, sources: meta.sources, queryType: meta.queryType } : m));
-      }, fileCtx, getOrCreateSessionId())) {
+      }, fileCtx, getOrCreateSessionId(), ragIndexed)) {
         if (!metaDone) { setSearching(false); metaDone = true; }
         acc += chunk;
         finalText = acc;
@@ -894,10 +1014,12 @@ export default function GrowthGradualChat() {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
-            question: q,
-            sources: [],
+            question:    q,
+            sources:     [],
             fileContext: fileTextContext,
             fileImages,
+            sessionId:   getOrCreateSessionId(),
+            hasRag:      ragIndexed,
           }),
         });
       })
@@ -1581,11 +1703,28 @@ export default function GrowthGradualChat() {
             {(attachedFiles.length > 0 || pastedTexts.length > 0 || attachLoading) && (
               <div className="chips-row">
                 {attachedFiles.map(f => (
-                  <div key={f.id} className="file-chip" title={f.name}>
-                    <span className="chip-dot" style={{ background: f.type.startsWith('image/') ? '#22c55e' : f.type === 'application/pdf' ? '#ef4444' : '#3b82f6' }} />
+                  <div key={f.id} className="file-chip" title={f.status === 'failed' ? (f.error || 'Failed to read file') : f.name}
+                    style={{
+                      borderColor: f.status === 'failed' ? '#fca5a5' : f.status === 'attaching' ? '#c4b5fd' : undefined,
+                      background:  f.status === 'failed' ? '#fef2f2' : f.status === 'attaching' ? '#f5f3ff' : undefined,
+                    }}>
+                    {f.status === 'attaching'
+                      ? <div className="chip-spinner"/>
+                      : <span className="chip-dot" style={{ background: f.status === 'failed' ? '#ef4444' : f.type.startsWith('image/') ? '#22c55e' : f.type === 'application/pdf' ? '#ef4444' : '#3b82f6' }} />
+                    }
                     <span className="chip-name">{f.name.length > 18 ? f.name.slice(0,15)+'…' : f.name}</span>
-                    <span className="chip-size">{fmtSize(f.size)}</span>
-                    <button className="chip-x" onClick={() => setAttachedFiles(prev => prev.filter(x => x.id !== f.id))} title={`Remove ${f.name}`}>×</button>
+                    <span className="chip-size" style={{
+                      color: f.status === 'failed' ? '#dc2626' : f.status === 'attaching' ? '#7c3aed' : undefined,
+                      fontWeight: f.status !== 'attached' ? 600 : undefined,
+                    }}>
+                      {f.status === 'attaching' ? 'reading…'
+                        : f.status === 'failed' ? 'failed'
+                        : f.extractedText ? `${wordCount(f.extractedText).toLocaleString()}w`
+                        : fmtSize(f.size)}
+                    </span>
+                    {f.status !== 'attaching' && (
+                      <button className="chip-x" onClick={() => setAttachedFiles(prev => prev.filter(x => x.id !== f.id))} title={`Remove ${f.name}`}>×</button>
+                    )}
                   </div>
                 ))}
                 {pastedTexts.map(p => (
@@ -1596,10 +1735,18 @@ export default function GrowthGradualChat() {
                     <button className="chip-x" onClick={() => setPastedTexts(prev => prev.filter(x => x.id !== p.id))}>×</button>
                   </div>
                 ))}
-                {attachLoading && (
-                  <div className="file-chip">
+                {ragIndexing && (
+                  <div className="file-chip" style={{ borderColor:'#c4b5fd', background:'#f5f3ff' }}>
                     <div className="chip-spinner"/>
-                    <span className="chip-name">Processing…</span>
+                    <span className="chip-name">Indexing…</span>
+                    <span className="chip-size" style={{ color:'#7c3aed', fontWeight:600 }}>RAG</span>
+                  </div>
+                )}
+                {ragIndexed && !ragIndexing && (
+                  <div className="file-chip" style={{ borderColor:'#86efac', background:'#f0fdf4' }}>
+                    <span style={{ fontSize:11 }}>🧠</span>
+                    <span className="chip-name">RAG ready</span>
+                    <span className="chip-size" style={{ color:'#15803d', fontWeight:600 }}>indexed</span>
                   </div>
                 )}
               </div>
@@ -1633,9 +1780,9 @@ export default function GrowthGradualChat() {
                 }}
                 onKeyDown={onKey}
                 onPaste={handlePaste}
-                disabled={streaming}
+                disabled={streaming || attachedFiles.some(f => f.status === 'attaching')}
               />
-              <button className="send-btn" onClick={() => send(input)} disabled={!input.trim() || streaming} aria-label="Send">
+              <button className="send-btn" onClick={() => send(input)} disabled={!input.trim() || streaming || attachedFiles.some(f => f.status === 'attaching')} aria-label="Send">
                 <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
                   <path d="M22 2L11 13M22 2L15 22l-4-9-9-4 20-7z"/>
                 </svg>

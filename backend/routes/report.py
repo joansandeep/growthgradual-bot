@@ -18,6 +18,8 @@ from utils.keys import (
     is_rate_limited, mark_rate_limited, round_robin
 )
 
+from utils.rag_client import rag_report as _rag_report
+
 router = APIRouter()
 log = logging.getLogger("report")
 
@@ -468,10 +470,29 @@ async def generate_report(request: Request):
     question: str       = body.get("question", "")
     sources: list[dict] = body.get("sources", [])
     file_context: str   = body.get("fileContext", "")
-    file_images: list[dict] = body.get("fileImages", [])  # [{name, mimeType, data (base64)}]
+    file_images: list[dict] = body.get("fileImages", [])
+    session_id: str     = body.get("sessionId", "").strip()
+    has_rag: bool       = bool(body.get("hasRag", False))
 
-    log.info("Report request: question=%r  sources=%d  fileImages=%d  fileContext=%d chars",
-             question[:80], len(sources), len(file_images), len(file_context))
+    log.info("Report request: question=%r  sources=%d  fileImages=%d  fileContext=%d chars  rag=%s",
+             question[:80], len(sources), len(file_images), len(file_context), has_rag)
+
+    # ── RAG-grounded report: if files were indexed, use RAG full-coverage retrieval ──
+    if has_rag and session_id:
+        log.info("Report: RAG mode — full-coverage retrieval for session %s", session_id[:8])
+        rag_result = await _rag_report(
+            session_id=session_id,
+            report_spec=question,
+            report_type="comprehensive",
+        )
+        if rag_result.get("has_content") and rag_result.get("system_prompt"):
+            # Build a rich user prompt that includes the RAG grounded system prompt
+            rag_file_context = rag_result["system_prompt"]
+            log.info("Report: RAG retrieved %d chunks from %s",
+                     rag_result.get("retrieved", 0), rag_result.get("source_files", []))
+            # Inject RAG context into file_context so the existing pipeline uses it
+            file_context = rag_file_context
+            has_rag = False  # prevent double-calling
 
     # ── If file images were uploaded, use Gemini Vision to extract data ───────
     extracted_image_context = ""

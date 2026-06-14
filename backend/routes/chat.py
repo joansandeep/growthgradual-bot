@@ -24,6 +24,7 @@ from utils.keys import (
 router = APIRouter()
 log = logging.getLogger("chat")
 from datetime import datetime as _dt
+from utils.rag_client import rag_query as _rag_query
 
 # ─── Supabase persistence ──────────────────────────────────────────────────────
 _SUPABASE_URL  = os.environ.get("SUPABASE_URL", "").rstrip("/")
@@ -670,6 +671,7 @@ async def chat(request: Request):
 
     messages: list[dict] = body.get("messages", [])
     file_context: str = body.get("fileContext", "")
+    has_rag:      bool = bool(body.get("hasRag", False))
     # sessionId is optional — only persists when provided
     session_id: str = (body.get("sessionId") or "").strip()
 
@@ -681,8 +683,8 @@ async def chat(request: Request):
     qtype = classify_query(last_user_msg)
 
     log.info(
-        "Chat request: msg=%r  search=%s  type=%s  file_ctx=%s  session=%s",
-        last_user_msg[:80], do_search, qtype, bool(file_context), session_id or "none",
+        "Chat request: msg=%r  search=%s  type=%s  file_ctx=%s  rag=%s  session=%s",
+        last_user_msg[:80], do_search, qtype, bool(file_context), has_rag, session_id or "none",
     )
 
     # Upsert the session row upfront (fire-and-forget — don't block the stream)
@@ -698,7 +700,27 @@ async def chat(request: Request):
     )
 
     base_prompt = build_system(headlines, search_results, qtype)
-    system_prompt = base_prompt + file_context if file_context else base_prompt
+
+    # ── RAG grounding: use RAG service system prompt when files are indexed ───
+    rag_system_prompt = ""
+    if has_rag and session_id:
+        log.info("Chat: RAG mode — querying for session %s", session_id[:8])
+        rag_result = await _rag_query(
+            session_id=session_id,
+            question=last_user_msg,
+            top_k=8,
+            min_score=0.15,
+        )
+        if rag_result.get("has_content") and rag_result.get("system_prompt"):
+            rag_system_prompt = rag_result["system_prompt"]
+            log.info("Chat: RAG grounded — %d chunks from %s",
+                     rag_result.get("retrieved", 0), rag_result.get("source_files", []))
+
+    if rag_system_prompt:
+        # RAG takes full control of the system prompt — ignore web search
+        system_prompt = rag_system_prompt
+    else:
+        system_prompt = base_prompt + file_context if file_context else base_prompt
 
     meta_event = (
         "data: "
