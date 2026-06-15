@@ -15,6 +15,8 @@ const DISK_TTL_MS = 300_000; // 5min disk cache (serves cold starts + API failur
 const STALE_OK_MS = 3_600_000; // 1hr — still serve stale data rather than nothing
 
 let memCache: { data: MarketData; fetchedAt: number } | null = null;
+// In-flight deduplication — if a fetch is already running, return the same promise
+let inflightFetch: Promise<MarketData> | null = null;
 
 // ── Types ─────────────────────────────────────────────────────────────────
 export interface QuoteItem {
@@ -224,8 +226,8 @@ async function buildMarketData(): Promise<MarketData> {
 
   let yf = yfMap.status === 'fulfilled' ? yfMap.value : new Map<string, QuoteResult>();
 
-  // If crumb approach got < 30% symbols, supplement with per-symbol chart endpoint
-  if (yf.size < allYFSyms.length * 0.3) {
+  // YF crumb is unreliable in server environments — always supplement with v8 chart endpoint
+  if (yf.size < allYFSyms.length) {
     log.info('YF crumb got few results — supplementing with v8 chart');
     const chartFetches = allYFSyms.map(async sym => {
       if (yf.has(sym)) return;
@@ -324,10 +326,13 @@ export async function GET() {
     return NextResponse.json({ ...memCache.data, fromCache: true, cacheAge: fmtAge(memCache.fetchedAt) });
   }
 
-  // 2. Try fresh fetch
+  // 2. Try fresh fetch — deduplicate concurrent requests
   log.info('→ GET /api/market  fetching live data');
   try {
-    const data = await buildMarketData();
+    if (!inflightFetch) {
+      inflightFetch = buildMarketData().finally(() => { inflightFetch = null; });
+    }
+    const data = await inflightFetch;
     const hasRealData = data.stocks.some(s => s.raw > 0);
 
     if (hasRealData) {

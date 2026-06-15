@@ -57,10 +57,13 @@ def _is_valid_chart(spec: dict) -> bool:
         return False
     chart_type = spec.get("type", "bar")
 
-    # For multi-series (comparison charts): validate each series individually
+    # For multi-series (comparison charts): validate each series individually.
+    # Single-point series are allowed (e.g. a one-bar snapshot or a single
+    # comparison value per company) — line charts still need at least 2
+    # points per series since a single point can't be plotted as a line.
     for s in series:
         pts = s.get("data") or []
-        min_pts = 2 if (chart_type == "line" and len(series) > 1) else (4 if chart_type == "line" else 3)
+        min_pts = 2 if chart_type == "line" else 1
         if len(pts) < min_pts:
             return False
 
@@ -69,7 +72,9 @@ def _is_valid_chart(spec: dict) -> bool:
     values   = [d.get("value", 0) for d in all_data]
     if not values:
         return False
-    if len(set(values)) <= 1:
+    # A single overall data point trivially has one "unique" value — only
+    # reject for flat/identical values when there's more than one point.
+    if len(values) > 1 and len(set(values)) <= 1:
         return False
     if max(abs(v) for v in values) == 0:
         return False

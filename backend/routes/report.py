@@ -23,7 +23,7 @@ from utils.rag_client import rag_report as _rag_report
 router = APIRouter()
 log = logging.getLogger("report")
 
-SKIP_PAGE_FETCH = [".pdf", "bloomberg.com", "wsj.com", "ft.com", "economist.com"]
+SKIP_PAGE_FETCH = [".pdf", "bloomberg.com", "wsj.com", "ft.com", "economist.com", "investing.com"]
 
 SYSTEM_PROMPT = """You are a senior research analyst at Growth Gradual. Write a COMPREHENSIVE, well-structured research report on ANY topic using the scraped web sources provided.
 You MUST respond with valid JSON only — no markdown fences, no preamble, no text outside JSON.
@@ -149,6 +149,8 @@ GLOBAL RULES:
 - At least 3 markdown data tables
 - keyStats: 6-8 real metrics with values and change indicators
 - Target 800-1200 words total — quality over quantity, every sentence must add data or insight
+- CRITICAL: NEVER write raw JSON inside the "report" string. Charts go ONLY in the "charts" array.
+  Use [CHART_1], [CHART_2] placeholders in the report text — never paste the chart JSON object itself.
 """
 
 
@@ -191,6 +193,74 @@ async def fetch_page_content(url: str, max_chars: int = 6000) -> str:
     except Exception as exc:
         log.debug("fetch_page_content failed for %s: %s", url, exc)
         return ""
+
+
+def _extract_inline_chart_jsons(report_text: str, existing_charts: list) -> tuple[str, list]:
+    """Find raw {"type": ..., "series": ...} chart objects the LLM leaked
+    inline into the report body, replace each with a [CHART_n] placeholder
+    (appending to existing_charts so it actually renders), and return the
+    cleaned text + updated charts list.
+
+    Uses brace-matched scanning instead of a single regex so nested objects
+    (e.g. each data point's own {"label": ..., "value": ...}) don't cause the
+    match to terminate early on the first inner "}".
+    """
+    charts = list(existing_charts)
+    out = []
+    i = 0
+    n = len(report_text)
+    while i < n:
+        ch = report_text[i]
+        if ch == "{":
+            # Find the matching closing brace via depth counting, honoring
+            # quoted strings so braces inside string values don't confuse it.
+            depth = 0
+            j = i
+            in_str = False
+            esc = False
+            while j < n:
+                c = report_text[j]
+                if in_str:
+                    if esc:
+                        esc = False
+                    elif c == "\\":
+                        esc = True
+                    elif c == '"':
+                        in_str = False
+                elif c == '"':
+                    in_str = True
+                elif c == "{":
+                    depth += 1
+                elif c == "}":
+                    depth -= 1
+                    if depth == 0:
+                        j += 1
+                        break
+                j += 1
+
+            candidate = report_text[i:j]
+            if depth == 0 and '"type"' in candidate and '"series"' in candidate:
+                try:
+                    spec = json.loads(candidate)
+                except Exception:
+                    spec = None
+                if isinstance(spec, dict) and spec.get("series") is not None:
+                    charts.append(spec)
+                    out.append(f"[CHART_{len(charts)}]")
+                    i = j
+                    continue
+            # Not a chart object (or invalid JSON) — emit the opening brace
+            # as-is and continue scanning from the next character.
+            out.append(ch)
+            i += 1
+        else:
+            out.append(ch)
+            i += 1
+
+    cleaned = "".join(out)
+    # Collapse any blank-line runs left behind by removed blobs
+    cleaned = re.sub(r"\n{3,}", "\n\n", cleaned).strip()
+    return cleaned, charts
 
 
 # Groq context limit: ~6K tokens input. Trim prompt to avoid 413.
@@ -648,14 +718,14 @@ async def generate_report(request: Request):
             for s in series:
                 pts = s.get("data") or []
                 # Multi-series line charts only need 2+ pts per series
-                min_pts = 2 if (chart_type == "line" and n_series > 1) else (3 if chart_type == "line" else 2)
+                min_pts = 2 if chart_type == "line" else 1
                 if len(pts) < min_pts:
                     log.warning("Chart rejected — series '%s' has only %d points", s.get("name","?"), len(pts))
                     return False
 
             all_pts = [pt for s in series for pt in (s.get("data") or [])]
             values  = [pt.get("value", 0) for pt in all_pts]
-            if len(set(values)) <= 1:
+            if len(values) > 1 and len(set(values)) <= 1:
                 log.warning("Chart rejected — identical values: %s", values[:6])
                 return False
 
@@ -690,6 +760,9 @@ async def generate_report(request: Request):
             report_text = report_text.replace("\\n", "\n")
         report_text = re.sub(r"^```(?:json|markdown)?\s*", "", report_text.strip())
         report_text = re.sub(r"```\s*$", "", report_text).strip()
+        # Strip raw JSON chart blobs the LLM leaked into the report body and
+        # convert each into a [CHART_n] placeholder so it still renders.
+        report_text, charts = _extract_inline_chart_jsons(report_text, charts)
 
         for _attempt in range(2):
             stripped = report_text.strip()
@@ -899,13 +972,13 @@ async def generate_report(request: Request):
             chart_type = ch.get("type", "bar")
             for s in series:
                 pts = s.get("data") or []
-                min_pts = 2 if (chart_type == "line" and n_series > 1) else (3 if chart_type == "line" else 2)
+                min_pts = 2 if chart_type == "line" else 1
                 if len(pts) < min_pts:
                     log.warning("Chart rejected — series '%s' has only %d points", s.get("name","?"), len(pts))
                     return False
             all_pts = [pt for s in series for pt in (s.get("data") or [])]
             values  = [pt.get("value", 0) for pt in all_pts]
-            if len(set(values)) <= 1:
+            if len(values) > 1 and len(set(values)) <= 1:
                 log.warning("Chart rejected — identical values: %s", values[:6])
                 return False
             for s in series:
@@ -940,6 +1013,10 @@ async def generate_report(request: Request):
         # Safety pass 2: strip markdown/json fences
         report_text = re.sub(r"^```(?:json|markdown)?\s*", "", report_text.strip())
         report_text = re.sub(r"```\s*$", "", report_text).strip()
+
+        # Safety pass 2b: convert any raw JSON chart blobs the LLM leaked into
+        # the report body into [CHART_n] placeholders so they still render.
+        report_text, charts = _extract_inline_chart_jsons(report_text, charts)
 
         # Safety pass 3: if the model stuffed the ENTIRE JSON response into the report field,
         # unwrap it. This happens when Gemini/Groq returns JSON inside the "report" string.
