@@ -805,7 +805,8 @@ export default function GrowthGradualChat() {
     );
 
     const toIndex = processed.filter((f): f is AttachedFile => f !== null && !!f.extractedText);
-    if (toIndex.length > 0 && sessionId) {
+    if (toIndex.length > 0) {
+      const sessionId = getOrCreateSessionId();
       setRagIndexing(true);
       try {
         const docs = toIndex.map(f => ({
@@ -830,7 +831,7 @@ export default function GrowthGradualChat() {
         setRagIndexing(false);
       }
     }
-  }, [attachedFiles.length, sessionId]);
+  }, [attachedFiles.length]);
 
   // ── Drag-and-drop ─────────────────────────────────────────────────────────
   const handleDragOver  = (e: React.DragEvent) => { e.preventDefault(); setDragOver(true); };
