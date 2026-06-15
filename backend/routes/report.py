@@ -107,33 +107,33 @@ BAD chart examples — NEVER do this:
   ✗ [CHART_n] in report without matching charts[n-1] entry
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-REPORT STRUCTURE (each section 100-200 words — be concise, data-dense, no padding):
+REPORT STRUCTURE (each section MUST be substantive — minimum 150 words per section):
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 # [Report Title]
 
 ## 1. Introduction
-2-3 paragraphs: context, key stakeholders, what happened. Cite [n]. No filler.
+3-4 paragraphs (minimum 150 words): Provide rich context — explain the sector/topic, why it matters now, who the key stakeholders are, what macro or market forces are driving interest, and what this report covers. Cite [n]. No filler, every sentence must add context or data.
 
 ## 2. Data Sources & Methodology
-One markdown table of sources (Publication | URL | Data type). 1 short paragraph on approach.
+One markdown table of sources (Publication | URL | Data type). 2 short paragraphs: describe what sources were used, what metrics were collected, how comparisons were made, and any caveats in the data.
 
 ## 3. Data Analysis
 
 ### 3.1 [Heading matching actual topic and data]
-Deep-dive quantitative findings. ALL numbers in markdown tables. Insert [CHART_n] immediately after the paragraph whose data it visualises.
+Deep-dive quantitative findings (minimum 120 words). ALL numbers in markdown tables. Explain what the data shows, why the leaders are ahead, what the numbers mean in context. Insert [CHART_n] immediately after the paragraph whose data it visualises.
 
 ### 3.2 [Second dimension of analysis]
-Comparisons, breakdowns, benchmarks. Tables + [CHART_n] where valid distinct data exists.
+Comparisons, breakdowns, benchmarks (minimum 120 words). Tables + [CHART_n] where valid distinct data exists. Explain trends and what differentiates top performers.
 
 ### 3.3 [Trends or forward-looking data — only if sources have it]
-Only include if sources have trend/time-series data with ≥4 distinct time points.
+Only include if sources have trend/time-series data with ≥4 distinct time points. Minimum 100 words if included.
 
 ## 4. Key Findings
-8-10 numbered findings, each with a specific number/stat from sources. Cite [n] on every finding.
+8-10 numbered findings, each with a specific number/stat from sources AND a 1-2 sentence explanation of what it means. Cite [n] on every finding.
 
 ## 5. Conclusion
-2 paragraphs: synthesise findings + forward outlook from sources only.
+2-3 paragraphs (minimum 120 words): synthesise findings, explain implications for different types of investors/stakeholders, and give forward outlook from sources only.
 
 ## 6. References
 [n] Publication. Title. URL (date if known)
@@ -148,7 +148,7 @@ GLOBAL RULES:
 - Cite [n] throughout every section
 - At least 3 markdown data tables
 - keyStats: 6-8 real metrics with values and change indicators
-- Target 800-1200 words total — quality over quantity, every sentence must add data or insight
+- Target 1000-1400 words total — every section must be substantive; never stub a section with a single sentence
 - CRITICAL: NEVER write raw JSON inside the "report" string. Charts go ONLY in the "charts" array.
   Use [CHART_1], [CHART_2] placeholders in the report text — never paste the chart JSON object itself.
 """

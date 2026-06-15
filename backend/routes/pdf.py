@@ -329,12 +329,13 @@ def _bar(c, spec, x0, y0, w, h):
     bw_total   = min(sp * 0.78, 70.0)
     bw         = max(4, bw_total / n_ser)
 
+    safe_unit = _safe_text(unit)
     # Grid lines
     for f in (0.25, 0.5, 0.75, 1.0):
         gy = y0 + PB + f * ph
         c.setStrokeColorRGB(0.88, 0.9, 0.94); c.setLineWidth(0.4)
         c.line(x0 + PL, gy, x0 + PL + pw, gy)
-        lbl = f"{f * max_v:.1f}{unit}" if max_v < 10 else f"{f * max_v:.0f}{unit}"
+        lbl = f"{f * max_v:.1f}{safe_unit}" if max_v < 10 else f"{f * max_v:.0f}{safe_unit}"
         c.setFillColorRGB(*GREY); c.setFont("Helvetica", 6.5)
         c.drawRightString(x0 + PL - 3, gy - 2.5, lbl)
 
@@ -357,7 +358,7 @@ def _bar(c, spec, x0, y0, w, h):
             c.rect(bx, y0 + PB, bw - 1, bh, fill=1, stroke=0)
             # Value label on top
             if n_ser == 1 or bw > 14:
-                vs = f"{v:+.1f}{unit}" if unit == "%" else f"{v:.1f}{unit}" if max_v < 10 else f"{v:.0f}{unit}"
+                vs = f"{v:+.1f}{safe_unit}" if safe_unit == "%" else f"{v:.1f}{safe_unit}" if max_v < 10 else f"{v:.0f}{safe_unit}"
                 c.setFillColorRGB(*bar_color); c.setFont("Helvetica-Bold", 5.5)
                 c.drawCentredString(bx + (bw - 1) / 2, y0 + PB + bh + 2, vs)
 
@@ -396,6 +397,7 @@ def _line(c, spec, x0, y0, w, h):
     if not series:
         return
     unit  = spec.get("unit", "")
+    safe_unit = _safe_text(unit)
     title = spec.get("title", "")
 
     # Collect all values across ALL series for unified Y scale
@@ -420,7 +422,7 @@ def _line(c, spec, x0, y0, w, h):
         gy = y0 + PB + f * ph
         c.setStrokeColorRGB(0.88, 0.9, 0.94); c.setLineWidth(0.4)
         c.line(x0 + PL, gy, x0 + PL + pw, gy)
-        lbl = f"{mn + f * rng:.2f}{unit}" if rng < 5 else f"{mn + f * rng:.1f}{unit}"
+        lbl = f"{mn + f * rng:.2f}{safe_unit}" if rng < 5 else f"{mn + f * rng:.1f}{safe_unit}"
         c.setFillColorRGB(*GREY); c.setFont("Helvetica", 6.5)
         c.drawRightString(x0 + PL - 3, gy - 2.5, lbl)
 
@@ -459,7 +461,7 @@ def _line(c, spec, x0, y0, w, h):
                 val = pts[j].get("value", 0)
                 c.setFont("Helvetica-Bold", 5.5)
                 c.setFillColorRGB(*color)
-                c.drawCentredString(px2, py2 + 5, f"{val:.1f}{unit}")
+                c.drawCentredString(px2, py2 + 5, f"{val:.1f}{safe_unit}")
                 c.setFillColorRGB(*color)
 
     # X-axis labels — use full label, no truncation
