@@ -520,7 +520,7 @@ async def generate_report(request: Request):
         # File provided — use it as primary source, do a small web search for supplemental data only
         log.info("Report: file-first mode — supplementing with web search")
         from routes.chat import tavily_search as _tavily_search, _looks_like_ai_overview
-        searched = await _tavily_search(question, max_results=8)
+        searched = await _tavily_search(question, max_results=25, min_results=18)
         sources = [
             {"title": r["title"], "url": r["url"],
              "snippet": r["snippet"], "fullContent": r.get("fullContent", "")}

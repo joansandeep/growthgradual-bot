@@ -246,7 +246,7 @@ def _clean_result_content(r: dict) -> dict:
     return r
 
 
-async def tavily_search(query: str, max_results: int = 25) -> list[dict]:
+async def tavily_search(query: str, max_results: int = 25, min_results: int = 18) -> list[dict]:
     keys = get_tavily_keys()
     if not keys:
         log.warning("Tavily search skipped — no keys configured")
@@ -301,29 +301,9 @@ async def tavily_search(query: str, max_results: int = 25) -> list[dict]:
                 ]
                 results = [_clean_result_content(r) for r in results]
 
-                # Retry without domain filter if too few results
-                if len(results) < 5:
-                    log.info("Tavily: only %d results with domain filter — retrying without", len(results))
-                    res2 = await client.post("https://api.tavily.com/search", json={
-                        "api_key": key,
-                        "query": query,
-                        "search_depth": "advanced",
-                        "max_results": max_results,
-                        "include_raw_content": True,
-                    })
-                    if res2.is_success:
-                        results = [
-                            {
-                                "title": r.get("title", ""),
-                                "url": r.get("url", ""),
-                                "snippet": r.get("content", ""),
-                                "fullContent": (r.get("raw_content") or r.get("content") or "")[:5000],
-                                "score": r.get("score"),
-                                "published": r.get("published_date"),
-                            }
-                            for r in (res2.json().get("results") or [])
-                        ]
-                        results = [_clean_result_content(r) for r in results]
+                # Domain filter is always kept — fewer than min_results is acceptable
+                if len(results) < min_results:
+                    log.info("Tavily: %d results with domain filter (target min=%d) — keeping domain filter", len(results), min_results)
 
                 # Enrich top-10 sparse results
                 enriched = []
@@ -333,10 +313,10 @@ async def tavily_search(query: str, max_results: int = 25) -> list[dict]:
                 enrich_tasks = [
                     fetch_page_content(r["url"], 3000)
                     if len(r.get("fullContent", "")) < 500 else _passthrough(r.get("fullContent", ""))
-                    for r in results[:10]
+                    for r in results[:18]
                 ]
                 extra_contents = await asyncio.gather(*enrich_tasks, return_exceptions=True)
-                for i, r in enumerate(results[:10]):
+                for i, r in enumerate(results[:18]):
                     extra = extra_contents[i] if not isinstance(extra_contents[i], Exception) else ""
                     if isinstance(extra, str) and len(extra) > len(r.get("fullContent", "")):
                         r["fullContent"] = extra
@@ -344,7 +324,7 @@ async def tavily_search(query: str, max_results: int = 25) -> list[dict]:
 
                 elapsed = (time.perf_counter() - t0) * 1000
                 log.info("Tavily done: %d results in %.0fms", len(results), elapsed)
-                return enriched + results[10:]
+                return enriched + results[18:]
 
             except Exception as exc:
                 log.warning("Tavily exception: %s", exc)
@@ -395,7 +375,7 @@ def build_system(headlines: str, search_results: list[dict], qtype: str) -> str:
     web_ctx = ""
     if search_results:
         snippets = []
-        for i, r in enumerate(search_results[:25]):
+        for i, r in enumerate(search_results[:18]):
             content = r.get("fullContent", "")
             if len(content) > len(r.get("snippet", "")):
                 content = content[:1200]
@@ -419,7 +399,7 @@ You specialise in NSE/BSE stocks, IPOs, mutual funds, RBI/SEBI policy, macroecon
     general_persona = f"""You are **Growth Gradual Assistant** — a knowledgeable AI assistant built into the Growth Gradual platform. Today is {today}.
 
 **Behaviour:**
-- Answer comprehensively using the provided web search results from the top 25 pages.
+- Answer comprehensively using the provided web search results from the top 18 pages.
 - Extract and present ALL specific numbers, statistics, data points, dates, and figures found in the sources.
 - Cite sources by [number] when referencing web content.
 - Use markdown for clarity: **bold** key terms, bullet lists, tables where helpful.
@@ -695,7 +675,7 @@ async def chat(request: Request):
         return []
 
     search_results, headlines = await asyncio.gather(
-        tavily_search(last_user_msg, 25) if do_search else _no_search(),
+        tavily_search(last_user_msg, max_results=25, min_results=18) if do_search else _no_search(),
         load_headlines(30),
     )
 

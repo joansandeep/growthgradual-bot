@@ -506,33 +506,6 @@ function ReportPanel({ msg, question }: { msg: Message; question: string }) {
   );
 }
 
-// ─── Sources Panel ────────────────────────────────────────────────────────────
-function SourcesPanel({ sources }: { sources: Source[] }) {
-  const [open, setOpen] = useState(false);
-  if (!sources.length) return null;
-  return (
-    <div className="sources-wrap">
-      <button className="sources-btn" onClick={() => setOpen(o => !o)}>
-        <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/></svg>
-        {sources.length} web sources
-        <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" style={{ transform: open?'rotate(180deg)':'none', transition:'transform .2s' }}><path d="M6 9l6 6 6-6"/></svg>
-      </button>
-      {open && (
-        <div className="sources-list">
-          {sources.slice(0,10).map((s,i) => (
-            <a key={i} href={s.url} target="_blank" rel="noopener noreferrer" className="source-item">
-              <span className="source-num">{i+1}</span>
-              <span>
-                <div className="source-title">{s.title}</div>
-                <div className="source-url">{new URL(s.url).hostname}</div>
-              </span>
-            </a>
-          ))}
-        </div>
-      )}
-    </div>
-  );
-}
 
 // ─── Stream ───────────────────────────────────────────────────────────────────
 // ─── File attachment types ─────────────────────────────────────────────────────
@@ -963,6 +936,14 @@ export default function GrowthGradualChat() {
       for await (const chunk of streamReply(historyRef.current, ctrl.signal, (meta) => {
         metaDone = true;
         setSearching(false);
+        // Source count + search metadata — logs only, never rendered in UI
+        if (meta.searchPerformed) {
+          console.log(
+            `[Search] Web search · ${meta.sources?.length ?? 0} sources · type=${meta.queryType}`,
+            meta.sources?.map((s: { url?: string }) => s.url) ?? [],
+          );
+        }
+        // Store metadata on message for future reference — intentionally NOT rendered in JSX
         setMessages(prev => prev.map(m => m.id === botMsg.id
           ? { ...m, searchPerformed: meta.searchPerformed, sources: meta.sources, queryType: meta.queryType } : m));
       }, fileCtx, getOrCreateSessionId(), ragIndexed)) {
@@ -1309,8 +1290,6 @@ export default function GrowthGradualChat() {
         .msg-ts { font-size:10px; color:#b0b8d4; padding:0 4px; }
         .msg-row--user .msg-ts { text-align:right; }
 
-        /* Web search badge */
-        .web-badge { display:inline-flex; align-items:center; gap:4px; font-size:10px; color:#1d4ed8; background:#eff6ff; border:1px solid #bfdbfe; border-radius:6px; padding:2px 8px; margin-bottom:7px; }
 
         /* Markdown inside bubbles */
         .msg-text .md-p { margin:0 0 8px; }
@@ -1349,15 +1328,7 @@ export default function GrowthGradualChat() {
         .typing-dot:nth-child(2){animation-delay:.15s;} .typing-dot:nth-child(3){animation-delay:.3s;}
 
         /* Sources */
-        .sources-wrap { margin-top:7px; }
-        .sources-btn { display:flex; align-items:center; gap:5px; background:none; border:1px solid #e2e6f0; border-radius:7px; padding:5px 11px; font-size:11px; color:#4b5680; cursor:pointer; font-family:'DM Sans',sans-serif; transition:background .15s; }
-        .sources-btn:hover { background:#f0f2f7; }
-        .sources-list { margin-top:6px; display:flex; flex-direction:column; gap:5px; max-height:220px; overflow-y:auto; }
-        .source-item { display:flex; gap:9px; padding:7px 10px; border:1px solid #e2e6f0; border-radius:9px; background:#f8f9fc; text-decoration:none; transition:background .15s; }
-        .source-item:hover { background:#f0f2f7; }
-        .source-num { width:18px;height:18px;border-radius:5px;background:#1a1f4e;color:#fff;font-size:9px;display:flex;align-items:center;justify-content:center;flex-shrink:0;font-family:'DM Mono',monospace; }
-        .source-title { font-size:11px;color:#1a1f4e;font-weight:500;font-family:'DM Sans',sans-serif;line-height:1.4; }
-        .source-url { font-size:10px;color:#8b93b5;margin-top:2px;font-family:'DM Sans',sans-serif; }
+
 
         /* Report */
         .report-wrap { margin-top:7px; }
@@ -1685,19 +1656,12 @@ export default function GrowthGradualChat() {
                       </div>
                       {/* Bubble */}
                       <div className="msg-bubble">
-                        {!isUser && msg.searchPerformed && (
-                          <div className="web-badge">
-                            <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/></svg>
-                            Web search · {msg.sources?.length ?? 0} sources
-                          </div>
-                        )}
+
                         <div
                           className="msg-text"
                           dangerouslySetInnerHTML={{ __html: isUser ? msg.text.replace(/\n/g,'<br/>') : renderMd(msg.text) }}
                         />
-                        {!isUser && msg.sources && msg.sources.length > 0 && (
-                          <SourcesPanel sources={msg.sources}/>
-                        )}
+
                         {!isUser && (msg.reportLoading || msg.reportData) && (
                           <ReportPanel msg={msg} question={msg.text.slice(0,300)}/>
                         )}

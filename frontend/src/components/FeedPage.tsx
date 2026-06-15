@@ -81,6 +81,8 @@ export default function FeedPage({ category }: { category: Category }) {
       if (data.articles?.length > 0) {
         setArticles(mapArticles(data.articles));
         setMeta({ total: data.total, sources: data.sources ?? [], fromCache: data.fromCache, fetchedAt: data.fetchedAt });
+        // Log source count to console only — not shown in UI
+        console.log(`[Feed] ${data.sources?.length ?? 0} sources · ${data.total} articles · ${data.fromCache ? 'cached' : 'live'}`);
         setLoading(false);
         setRefreshing(false);
         setIsScraping(false);
@@ -222,7 +224,7 @@ export default function FeedPage({ category }: { category: Category }) {
                   fontSize: '9px', color: meta.fromCache ? '#92400e' : '#15803d',
                   fontFamily: 'JetBrains Mono, monospace',
                 }}>
-                  {meta.fromCache ? 'CACHED' : 'LIVE'} · {meta.total} articles · {meta.sources.length} sources
+                  {meta.fromCache ? 'CACHED' : 'LIVE'} · {meta.total} articles
                 </span>
                 {fetchedLabel && (
                   <span style={{ fontSize: '9px', color: '#94a3b8', fontFamily: 'JetBrains Mono, monospace' }}>
