@@ -789,47 +789,61 @@ export default function GrowthGradualChat() {
 
     setAttachLoading(false);
 
-    // ── Index successfully processed files in RAG service ─────────────────────
-    const processed = await Promise.all(
-      toProcess.map(async (file, idx) => {
-        const placeholder = placeholders[idx];
-        // Get the final state of this file
-        return new Promise<AttachedFile | null>(resolve => {
-          setAttachedFiles(prev => {
-            const f = prev.find(x => x.id === placeholder.id);
-            resolve(f && f.status === 'attached' ? f : null);
-            return prev;
-          });
-        });
-      })
-    );
-
-    const toIndex = processed.filter((f): f is AttachedFile => f !== null && !!f.extractedText);
-    if (toIndex.length > 0) {
-      const sessionId = getOrCreateSessionId();
-      setRagIndexing(true);
-      try {
-        const docs = toIndex.map(f => ({
-          id: f.id, name: f.name,
-          text: f.extractedText!,
-          source_type: 'file',
-          file_type: f.type,
-        }));
-        const res = await fetch('/api/rag/index', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ session_id: sessionId, documents: docs }),
-        });
-        const data = await res.json();
-        if (data.chunks_added > 0 || data.total_chunks > 0) {
-          setRagIndexed(true);
-          console.log('[RAG] indexed', data.chunks_added, 'chunks');
-        }
-      } catch (e) {
-        console.warn('[RAG] index failed (non-critical):', e);
-      } finally {
-        setRagIndexing(false);
+    // ── Upload files through Paperly pipeline (file-service → extraction-service → rag-service) ──
+    // This gives us proper OCR via Gemini Vision, Supabase storage, and RAG indexing all in one step.
+    const sessionId = getOrCreateSessionId();
+    setRagIndexing(true);
+    try {
+      const fd = new FormData();
+      fd.append('sessionId', sessionId);
+      for (const file of toProcess) {
+        fd.append('files', file, file.name);
       }
+      const res = await fetch('/api/upload', {
+        method: 'POST',
+        body: fd,
+        signal: AbortSignal.timeout(300_000), // 5 min — OCR can be slow
+      });
+      const data = await res.json().catch(() => ({}));
+      if (res.ok) {
+        setRagIndexed(true);
+        console.log('[Upload] Paperly pipeline succeeded:', data);
+      } else {
+        console.warn('[Upload] Paperly pipeline error:', res.status, data);
+        // Fall back to local RAG index if extraction-service is unavailable
+        const processed = await Promise.all(
+          placeholders.map(ph => new Promise<AttachedFile | null>(resolve => {
+            setAttachedFiles(prev => {
+              const f = prev.find(x => x.id === ph.id);
+              resolve(f && f.status === 'attached' ? f : null);
+              return prev;
+            });
+          }))
+        );
+        const toIndex = processed.filter((f): f is AttachedFile => f !== null && !!f.extractedText);
+        if (toIndex.length > 0) {
+          const docs = toIndex.map(f => ({
+            id: f.id, name: f.name,
+            text: f.extractedText!,
+            source_type: 'file',
+            file_type: f.type,
+          }));
+          const r2 = await fetch('/api/rag/index', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ session_id: sessionId, documents: docs }),
+          });
+          const d2 = await r2.json();
+          if (d2.chunks_added > 0 || d2.total_chunks > 0) {
+            setRagIndexed(true);
+            console.log('[RAG] fallback indexed', d2.chunks_added, 'chunks');
+          }
+        }
+      }
+    } catch (e) {
+      console.warn('[Upload] pipeline failed (non-critical):', e);
+    } finally {
+      setRagIndexing(false);
     }
   }, [attachedFiles.length]);
 
