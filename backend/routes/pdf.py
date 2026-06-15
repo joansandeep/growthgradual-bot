@@ -55,26 +55,32 @@ def _is_valid_chart(spec: dict) -> bool:
     series = spec.get("series") or []
     if not series:
         return False
-    all_data = []
+    chart_type = spec.get("type", "bar")
+
+    # For multi-series (comparison charts): validate each series individually
     for s in series:
         pts = s.get("data") or []
-        all_data.extend(pts)
-    chart_type = spec.get("type", "bar")
-    # Enforce minimum data points per chart type
-    min_pts = 4 if chart_type == "line" else 3
-    if len(all_data) < min_pts:
+        min_pts = 2 if (chart_type == "line" and len(series) > 1) else (4 if chart_type == "line" else 3)
+        if len(pts) < min_pts:
+            return False
+
+    # All values across all series
+    all_data = [d for s in series for d in (s.get("data") or [])]
+    values   = [d.get("value", 0) for d in all_data]
+    if not values:
         return False
-    values = [d.get("value", 0) for d in all_data]
-    # Reject if all values identical or all zero
     if len(set(values)) <= 1:
         return False
-    # Reject if max == 0
     if max(abs(v) for v in values) == 0:
         return False
-    # Reject if labels are not unique (duplicate labels = bad chart)
-    labels = [d.get("label", "") for d in all_data]
-    if len(set(labels)) < len(labels):
-        return False
+
+    # For single-series: labels must be unique within the series
+    # For multi-series: labels within EACH series must be unique
+    for s in series:
+        labels = [d.get("label", "") for d in (s.get("data") or [])]
+        if len(set(labels)) < len(labels):
+            return False
+
     return True
 
 
@@ -296,105 +302,192 @@ def _wrap(canvas, text: str, font: str, size: float, max_width: float) -> list[s
 
 # ─── Chart renderers ──────────────────────────────────────────────────────────
 def _bar(c, spec, x0, y0, w, h):
-    data = (spec.get("series") or [{}])[0].get("data") or []
+    series_list = spec.get("series") or [{}]
+    data = series_list[0].get("data") or []
     if not data:
         return
-    unit = spec.get("unit", "")
-    values = [abs(d.get("value", 0)) for d in data]
-    max_v = max(values) if values else 1
-    PL, PB = 44, 32
-    pw, ph = w - PL - 8, h - PB - 22
-    n = max(len(data), 1)
-    sp = pw / n
-    # Cap bar width: no wider than 80% of slot, min 4pt, max 60pt
-    # Extra defensive clamp: for n==1 (single bar), cap at 60pt regardless
-    bw = max(4, min(60, sp * 0.62))
-    if n == 1:
-        bw = min(bw, 60)
+    unit  = spec.get("unit", "")
+    n_ser = len(series_list)
 
+    # All values across all series for unified Y scale
+    all_vals = [abs(d.get("value", 0)) for s in series_list for d in s.get("data", [])]
+    max_v    = max(all_vals) if all_vals else 1
+
+    has_legend = n_ser > 1
+    LEGEND_H   = 16 if has_legend else 0
+    PL, PB     = 52, 32
+    pw         = w - PL - 12
+    ph         = h - PB - 24 - LEGEND_H
+    n          = max(len(data), 1)
+    sp         = pw / n
+    # Per-series bar width — grouped layout
+    bw_total   = min(sp * 0.78, 70.0)
+    bw         = max(4, bw_total / n_ser)
+
+    # Grid lines
     for f in (0.25, 0.5, 0.75, 1.0):
         gy = y0 + PB + f * ph
         c.setStrokeColorRGB(0.88, 0.9, 0.94); c.setLineWidth(0.4)
         c.line(x0 + PL, gy, x0 + PL + pw, gy)
-        lbl = f"{f * max_v:.0f}{unit}"
-        c.setFillColorRGB(*GREY); c.setFont("Helvetica", 6)
-        c.drawRightString(x0 + PL - 3, gy - 2, lbl)
+        lbl = f"{f * max_v:.1f}{unit}" if max_v < 10 else f"{f * max_v:.0f}{unit}"
+        c.setFillColorRGB(*GREY); c.setFont("Helvetica", 6.5)
+        c.drawRightString(x0 + PL - 3, gy - 2.5, lbl)
 
-    c.setStrokeColorRGB(0.78, 0.82, 0.88); c.setLineWidth(1)
+    c.setStrokeColorRGB(0.78, 0.82, 0.88); c.setLineWidth(0.8)
     c.line(x0 + PL, y0 + PB, x0 + PL + pw, y0 + PB)
 
+    # Draw grouped bars
+    for si, ser in enumerate(series_list):
+        ser_data = ser.get("data") or []
+        color    = CHART_COLORS[si % len(CHART_COLORS)]
+        for i, d in enumerate(ser_data):
+            if i >= n: continue
+            v  = d.get("value", 0)
+            bh = max(2, (abs(v) / max_v) * ph)
+            group_x = x0 + PL + i * sp + (sp - bw_total) / 2
+            bx = group_x + si * bw
+            bx = min(bx, x0 + PL + pw - bw)
+            bar_color = RED if v < 0 else color
+            c.setFillColorRGB(*bar_color)
+            c.rect(bx, y0 + PB, bw - 1, bh, fill=1, stroke=0)
+            # Value label on top
+            if n_ser == 1 or bw > 14:
+                vs = f"{v:+.1f}{unit}" if unit == "%" else f"{v:.1f}{unit}" if max_v < 10 else f"{v:.0f}{unit}"
+                c.setFillColorRGB(*bar_color); c.setFont("Helvetica-Bold", 5.5)
+                c.drawCentredString(bx + (bw - 1) / 2, y0 + PB + bh + 2, vs)
+
+    # X-axis labels — full text, no truncation
     for i, d in enumerate(data):
-        v = d.get("value", 0)
-        bh = max(2, (abs(v) / max_v) * ph)
-        bx = x0 + PL + i * sp + (sp - bw) / 2
-        # Ensure bar stays within plot area
-        bx = min(bx, x0 + PL + pw - bw)
-        color = RED if v < 0 else CHART_COLORS[i % len(CHART_COLORS)]
-        c.setFillColorRGB(*color)
-        c.rect(bx, y0 + PB, bw, bh, fill=1, stroke=0)
-        lbl = d.get("label", "")[:9]
-        c.setFillColorRGB(*GREY); c.setFont("Helvetica", 6)
-        c.drawCentredString(bx + bw / 2, y0 + PB - 11, lbl)
-        vs = f"{v:+.1f}{unit}" if unit == "%" else f"{v:.0f}{unit}"
-        c.setFillColorRGB(*color); c.setFont("Helvetica-Bold", 6)
-        c.drawCentredString(bx + bw / 2, y0 + PB + bh + 2, vs)
+        lbl = d.get("label", "")
+        bx  = x0 + PL + i * sp + sp / 2
+        c.setFillColorRGB(*GREY)
+        if len(lbl) > 8:
+            c.saveState()
+            c.translate(bx, y0 + PB - 4)
+            c.rotate(30)
+            c.setFont("Helvetica", 6)
+            c.drawString(0, 0, lbl[:18])
+            c.restoreState()
+        else:
+            c.setFont("Helvetica", 6.5)
+            c.drawCentredString(bx, y0 + PB - 11, lbl[:12])
+
+    # Legend for multi-series
+    if has_legend:
+        lx = x0 + PL
+        ly = y0 + PB + ph + 14
+        for si, ser in enumerate(series_list):
+            color = CHART_COLORS[si % len(CHART_COLORS)]
+            sname = ser.get("name", f"Series {si+1}")[:22]
+            c.setFillColorRGB(*color)
+            c.rect(lx, ly - 4, 12, 6, fill=1, stroke=0)
+            c.setFillColorRGB(*BODY_TXT); c.setFont("Helvetica", 7)
+            c.drawString(lx + 15, ly - 2, sname)
+            lx += 15 + c.stringWidth(sname, "Helvetica", 7) + 22
 
 
 def _line(c, spec, x0, y0, w, h):
     series = spec.get("series") or []
     if not series:
         return
-    unit = spec.get("unit", "")
+    unit  = spec.get("unit", "")
+    title = spec.get("title", "")
+
+    # Collect all values across ALL series for unified Y scale
     all_v = [d.get("value", 0) for s in series for d in s.get("data", [])]
     if not all_v:
         return
     mn, mx = min(all_v), max(all_v)
     rng = mx - mn
-    if rng < 1e-9:  # all values identical — add padding so line isn't invisible
+    if rng < 1e-9:
         rng = max(abs(mx) * 0.1, 1.0)
         mn -= rng / 2
         mx += rng / 2
-    PL, PB = 44, 32
-    pw, ph = w - PL - 8, h - PB - 22
-    max_pts = max(len(s.get("data", [])) for s in series)
-    step = max(1, max_pts // 7)
 
-    for f in (0.25, 0.5, 0.75, 1.0):
+    has_legend = len(series) > 1
+    LEGEND_H   = 16 if has_legend else 0
+    PL, PB     = 52, 32
+    pw         = w - PL - 12
+    ph         = h - PB - 24 - LEGEND_H
+
+    # Grid lines
+    for f in (0.0, 0.25, 0.5, 0.75, 1.0):
         gy = y0 + PB + f * ph
         c.setStrokeColorRGB(0.88, 0.9, 0.94); c.setLineWidth(0.4)
         c.line(x0 + PL, gy, x0 + PL + pw, gy)
-        c.setFillColorRGB(*GREY); c.setFont("Helvetica", 6)
-        c.drawRightString(x0 + PL - 3, gy - 2, f"{mn + f * rng:.1f}{unit}")
+        lbl = f"{mn + f * rng:.2f}{unit}" if rng < 5 else f"{mn + f * rng:.1f}{unit}"
+        c.setFillColorRGB(*GREY); c.setFont("Helvetica", 6.5)
+        c.drawRightString(x0 + PL - 3, gy - 2.5, lbl)
 
-    c.setStrokeColorRGB(0.78, 0.82, 0.88); c.setLineWidth(1)
+    # X axis baseline
+    c.setStrokeColorRGB(0.78, 0.82, 0.88); c.setLineWidth(0.8)
     c.line(x0 + PL, y0 + PB, x0 + PL + pw, y0 + PB)
+
+    # Draw each series
+    max_pts = max(len(s.get("data", [])) for s in series)
+    step    = max(1, max_pts // 8)
 
     for si, s in enumerate(series):
         pts = s.get("data", [])
         if not pts:
             continue
-        color = CHART_COLORS[si % len(CHART_COLORS)]
+        color  = CHART_COLORS[si % len(CHART_COLORS)]
+        n      = len(pts)
         coords = [
-            (x0 + PL + (j / max(len(pts) - 1, 1)) * pw,
+            (x0 + PL + (j / max(n - 1, 1)) * pw,
              y0 + PB + ((d.get("value", 0) - mn) / rng) * ph)
             for j, d in enumerate(pts)
         ]
-        c.setStrokeColorRGB(*color); c.setLineWidth(1.8)
+        # Line
+        c.setStrokeColorRGB(*color); c.setLineWidth(2.0)
         p = c.beginPath(); p.moveTo(*coords[0])
         for cx2, cy2 in coords[1:]:
             p.lineTo(cx2, cy2)
         c.drawPath(p, fill=0, stroke=1)
+        # Dots + value labels on key points
         c.setFillColorRGB(*color)
         for j, (px2, py2) in enumerate(coords):
-            if j % step == 0 or j == len(coords) - 1:
-                c.circle(px2, py2, 2.5, fill=1, stroke=0)
+            show = (j % step == 0 or j == n - 1)
+            c.circle(px2, py2, 2.8 if show else 1.8, fill=1, stroke=0)
+            if show and has_legend:
+                # Small value tooltip above dot
+                val = pts[j].get("value", 0)
+                c.setFont("Helvetica-Bold", 5.5)
+                c.setFillColorRGB(*color)
+                c.drawCentredString(px2, py2 + 5, f"{val:.1f}{unit}")
+                c.setFillColorRGB(*color)
 
+    # X-axis labels — use full label, no truncation
     labels = series[0].get("data", [])
     for j, d in enumerate(labels):
         if j % step == 0 or j == len(labels) - 1:
             px2 = x0 + PL + (j / max(len(labels) - 1, 1)) * pw
-            c.setFillColorRGB(*GREY); c.setFont("Helvetica", 6)
-            c.drawCentredString(px2, y0 + PB - 11, d.get("label", "")[:9])
+            lbl = d.get("label", "")
+            # Rotate long labels
+            c.setFillColorRGB(*GREY)
+            if len(lbl) > 7:
+                c.saveState()
+                c.translate(px2, y0 + PB - 4)
+                c.rotate(30)
+                c.setFont("Helvetica", 6)
+                c.drawString(0, 0, lbl[:14])
+                c.restoreState()
+            else:
+                c.setFont("Helvetica", 6.5)
+                c.drawCentredString(px2, y0 + PB - 11, lbl[:12])
+
+    # Legend for multi-series
+    if has_legend:
+        lx = x0 + PL
+        ly = y0 + PB + ph + 14
+        for si, s in enumerate(series):
+            color = CHART_COLORS[si % len(CHART_COLORS)]
+            sname = s.get("name", f"Series {si+1}")[:20]
+            c.setFillColorRGB(*color)
+            c.rect(lx, ly - 4, 12, 6, fill=1, stroke=0)
+            c.setFillColorRGB(*BODY_TXT); c.setFont("Helvetica", 7)
+            c.drawString(lx + 15, ly - 2, sname)
+            lx += 15 + c.stringWidth(sname, "Helvetica", 7) + 20
 
 
 def _pie(c, spec, x0, y0, w, h):

@@ -50,6 +50,17 @@ STEP 1 — AGGRESSIVELY SCAN sources for ANY chartable numbers:
   • FII/DII flows by date → line or bar chart
   • Category-wise data (large cap vs mid cap vs small cap) → bar chart
 
+  COMPARISON TOPICS (X vs Y, A vs B) — MANDATORY MULTI-SERIES CHART:
+  When the question compares TWO OR MORE assets (e.g. "Gold vs Silver",
+  "Nifty vs Sensex", "HDFC vs ICICI", "equity vs debt"):
+  → Create ONE line chart with BOTH items as SEPARATE SERIES sharing the SAME date labels
+  → Example: series: [{"name":"Gold","data":[{"label":"Jun 1","value":1820},{"label":"Jun 5","value":1810}]},
+                       {"name":"Silver","data":[{"label":"Jun 1","value":86},{"label":"Jun 5","value":81}]}]
+  → NEVER make two separate single-series charts for each item — always combine into one
+  → If price scales differ wildly (e.g. gold $1800 vs silver $30), use % change from start:
+     → {"label":"Jun 1","value":0.0} for both, then show % change from that base
+  → Also add a bar chart comparing key stats (1-month return %, all-time high, current price)
+
   For EVERY topic, these charts almost ALWAYS make sense — create them if data exists:
   • SIP topic → bar chart of top 5 funds by 3-yr return %
   • Stock topic → bar chart of key financial metrics (revenue, profit growth %)
@@ -630,18 +641,33 @@ async def generate_report(request: Request):
             series = ch.get("series") or []
             if not series or not ch.get("type") or not ch.get("title"):
                 return False
+            n_series = len(series)
+            chart_type = ch.get("type", "bar")
+
+            # For multi-series (comparison charts): validate each series individually
+            for s in series:
+                pts = s.get("data") or []
+                # Multi-series line charts only need 2+ pts per series
+                min_pts = 2 if (chart_type == "line" and n_series > 1) else (3 if chart_type == "line" else 2)
+                if len(pts) < min_pts:
+                    log.warning("Chart rejected — series '%s' has only %d points", s.get("name","?"), len(pts))
+                    return False
+
             all_pts = [pt for s in series for pt in (s.get("data") or [])]
-            if len(all_pts) < 2:
-                return False
-            values = [pt.get("value", 0) for pt in all_pts]
-            labels = [str(pt.get("label", "")) for pt in all_pts]
-            if len(set(labels)) < len(labels):
-                log.warning("Chart rejected — duplicate labels: %s", labels[:6])
-                return False
+            values  = [pt.get("value", 0) for pt in all_pts]
             if len(set(values)) <= 1:
                 log.warning("Chart rejected — identical values: %s", values[:6])
                 return False
-            if ch.get("type") == "line" and len(values) >= 3:
+
+            # Check labels unique WITHIN each series (not across series)
+            for s in series:
+                labels = [str(pt.get("label", "")) for pt in (s.get("data") or [])]
+                if len(set(labels)) < len(labels):
+                    log.warning("Chart rejected — duplicate labels in series '%s': %s", s.get("name","?"), labels[:6])
+                    return False
+
+            # For single-series line charts: reject if values look arithmetically generated
+            if chart_type == "line" and n_series == 1 and len(values) >= 3:
                 diffs = [abs(values[i+1] - values[i]) for i in range(len(values)-1)]
                 if diffs and max(diffs) > 0:
                     variance = sum((d - sum(diffs)/len(diffs))**2 for d in diffs) / len(diffs)
@@ -869,27 +895,30 @@ async def generate_report(request: Request):
             series = ch.get("series") or []
             if not series or not ch.get("type") or not ch.get("title"):
                 return False
+            n_series   = len(series)
+            chart_type = ch.get("type", "bar")
+            for s in series:
+                pts = s.get("data") or []
+                min_pts = 2 if (chart_type == "line" and n_series > 1) else (3 if chart_type == "line" else 2)
+                if len(pts) < min_pts:
+                    log.warning("Chart rejected — series '%s' has only %d points", s.get("name","?"), len(pts))
+                    return False
             all_pts = [pt for s in series for pt in (s.get("data") or [])]
-            if len(all_pts) < 2:
-                return False
-            values = [pt.get("value", 0) for pt in all_pts]
-            labels = [str(pt.get("label", "")) for pt in all_pts]
-            # Reject duplicate labels
-            if len(set(labels)) < len(labels):
-                log.warning("Chart rejected — duplicate labels: %s", labels[:6])
-                return False
-            # Reject all-identical values
+            values  = [pt.get("value", 0) for pt in all_pts]
             if len(set(values)) <= 1:
                 log.warning("Chart rejected — identical values: %s", values[:6])
                 return False
-            # Reject line charts with values that look like evenly-spaced fabricated price levels
-            # (e.g. [36121, 48915, 61709, 74503] — suspiciously arithmetic progression)
-            if ch.get("type") == "line" and len(values) >= 3:
+            for s in series:
+                labels = [str(pt.get("label", "")) for pt in (s.get("data") or [])]
+                if len(set(labels)) < len(labels):
+                    log.warning("Chart rejected — duplicate labels in '%s': %s", s.get("name","?"), labels[:6])
+                    return False
+            if chart_type == "line" and n_series == 1 and len(values) >= 3:
                 diffs = [abs(values[i+1] - values[i]) for i in range(len(values)-1)]
                 if diffs and max(diffs) > 0:
                     variance = sum((d - sum(diffs)/len(diffs))**2 for d in diffs) / len(diffs)
                     cv = (variance ** 0.5) / (sum(diffs)/len(diffs))
-                    if cv < 0.05:  # coefficient of variation <5% = suspiciously even spacing
+                    if cv < 0.05:
                         log.warning("Chart rejected — values look arithmetically generated (cv=%.3f): %s", cv, values)
                         return False
             return True
