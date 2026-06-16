@@ -5,6 +5,7 @@ Serves:
   POST /api/chat/report       — Multi-source research report (JSON)
   POST /api/chat/report/pdf   — PDF from report data (binary)
 """
+import asyncio
 import logging
 import time
 from pathlib import Path
@@ -63,6 +64,33 @@ async def log_requests(request: Request, call_next):
     return response
 
 
+async def _keepalive_rag():
+    """Ping the RAG service every 10 min to prevent HF Space cold-starts."""
+    import os
+    import httpx
+
+    rag_url = os.environ.get(
+        "RAG_SERVICE_URL", "https://sandy31-paperly-rag-service.hf.space"
+    ).rstrip("/")
+    ping_url = f"{rag_url}/ping"
+    interval = 10 * 60  # seconds
+
+    # Wait a bit after startup before first ping
+    await asyncio.sleep(30)
+
+    while True:
+        try:
+            async with httpx.AsyncClient(timeout=httpx.Timeout(15)) as c:
+                res = await c.get(ping_url)
+            if res.is_success:
+                log.info("RAG keepalive ✓  %s  →  %s", ping_url, res.json())
+            else:
+                log.warning("RAG keepalive HTTP %d", res.status_code)
+        except Exception as exc:
+            log.warning("RAG keepalive failed: %s", exc)
+        await asyncio.sleep(interval)
+
+
 @app.on_event("startup")
 async def on_startup():
     import os
@@ -74,6 +102,15 @@ async def on_startup():
     log.info("  Groq keys: %d  |  Tavily keys: %d  |  Gemini keys: %d", groq_n, tavily_n, gemini_n)
     log.info("  Listening on http://0.0.0.0:8000")
     log.info("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+    # Start background RAG keepalive (supplements external cron)
+    asyncio.create_task(_keepalive_rag())
+    log.info("  RAG keepalive task started (interval: 10 min)")
+
+
+@app.get("/ping")
+@app.head("/ping")
+def ping():
+    return {"pong": True, "service": "growth-gradual-backend"}
 
 
 @app.get("/")

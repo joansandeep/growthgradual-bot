@@ -982,7 +982,7 @@ export default function GrowthGradualChat() {
     setMessages(newMessages);
     setStreaming(true);
     setSearching(true);
-    setStatusMsg(ragIndexed ? 'Indexing…' : 'Loading…');
+    setStatusMsg(ragIndexed ? 'Reading your documents…' : 'Searching the web for latest data…');
     historyRef.current = [...historyRef.current, { role:'user', content:q }];
 
     const ctrl = new AbortController();
@@ -996,7 +996,7 @@ export default function GrowthGradualChat() {
       for await (const chunk of streamReply(historyRef.current, ctrl.signal, (meta) => {
         metaDone = true;
         setSearching(false);
-        setStatusMsg('Generating response…');
+        setStatusMsg(meta.searchPerformed ? `Web search · ${meta.sources?.length ?? 0} sources found — generating…` : 'Analysing…');
         // Source count + search metadata — logs only, never rendered in UI
         if (meta.searchPerformed) {
           console.log(
@@ -1299,8 +1299,8 @@ export default function GrowthGradualChat() {
         .topbar-name { font-size:14px; font-weight:700; color:#1a1f4e; font-family:'Playfair Display',serif; }
         .topbar-sub { font-size:10px; color:#8b93b5; display:flex; align-items:center; gap:5px; }
         .topbar-dot { width:6px;height:6px;border-radius:50%;background:#22c55e;box-shadow:0 0 5px #22c55e;animation:blink 2s ease-in-out infinite; }
+        .topbar-web-badge { margin-left:auto; display:flex;align-items:center;gap:5px; padding:5px 11px; background:#eff6ff; border:1px solid #bfdbfe; border-radius:20px; font-size:11px; color:#1d4ed8; font-family:'DM Sans',sans-serif; font-weight:500; white-space:nowrap; }
         @keyframes blink { 0%,100%{opacity:1;}50%{opacity:.3;} }
-        .topbar-badge { font-size:9px; background:#eff6ff; border:1px solid #bfdbfe; color:#1d4ed8; padding:3px 9px; border-radius:20px; display:flex; align-items:center; gap:4px; white-space:nowrap; }
 
         /* ── Messages ───────────────────────────────────────────────────────── */
         .chat-msgs {
@@ -1390,6 +1390,15 @@ export default function GrowthGradualChat() {
         .typing-dots { display:flex; gap:4px; padding:12px 16px; background:#fff; border:1px solid #e2e6f0; border-radius:18px; border-bottom-left-radius:5px; box-shadow:0 1px 4px rgba(26,31,78,.05); }
         .typing-dot { width:6px;height:6px;border-radius:50%;background:#1a1f4e;animation:bd .9s ease-in-out infinite; }
         .typing-dot:nth-child(2){animation-delay:.15s;} .typing-dot:nth-child(3){animation-delay:.3s;}
+
+        /* Web search chip (shown on completed bot messages) */
+        .web-search-chip {
+          display:inline-flex; align-items:center; gap:4px;
+          margin-top:7px; padding:3px 8px;
+          background:#eff6ff; border:1px solid #bfdbfe;
+          border-radius:20px; font-size:11px; color:#1d4ed8;
+          font-family:'DM Sans',sans-serif; font-weight:500;
+        }
 
         /* Sources */
 
@@ -1642,10 +1651,11 @@ export default function GrowthGradualChat() {
                 In The Money · Indian Markets AI
               </div>
             </div>
-            <div className="topbar-badge">
-              <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/></svg>
+            <div className="topbar-web-badge">
+              <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/></svg>
               Web search enabled
             </div>
+
           </div>
 
           {/* Messages */}
@@ -1682,8 +1692,12 @@ export default function GrowthGradualChat() {
                       </div>
                       <div className="msg-bubble">
                         <div className="searching">
-                          <div className="chip-spinner" style={{ width:12, height:12, borderWidth:2 }}/>
-                          {statusMsg || 'Loading…'}
+                          {statusMsg?.startsWith('Web search') ? (
+                            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#1d4ed8" strokeWidth="2.5" strokeLinecap="round"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/></svg>
+                          ) : (
+                            <div className="chip-spinner" style={{ width:12, height:12, borderWidth:2 }}/>
+                          )}
+                          {statusMsg || 'Thinking…'}
                           <div className="search-dots"><span/><span/><span/></div>
                         </div>
                       </div>
@@ -1712,6 +1726,12 @@ export default function GrowthGradualChat() {
 
                         {!isUser && (msg.reportLoading || msg.reportData) && (
                           <ReportPanel msg={msg} question={msg.text.slice(0,300)}/>
+                        )}
+                        {!isUser && msg.searchPerformed && msg.text && (
+                          <div className="web-search-chip">
+                            <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/></svg>
+                            Web search · {msg.sources?.length ?? 0} sources
+                          </div>
                         )}
                         <span className="msg-ts">{fmtTime(msg.ts)}</span>
                       </div>
