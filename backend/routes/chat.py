@@ -753,6 +753,7 @@ async def chat(request: Request):
 
     messages: list[dict] = body.get("messages", [])
     file_context: str = body.get("fileContext", "")
+    file_images: list[dict] = body.get("fileImages", [])
     has_rag:      bool = bool(body.get("hasRag", False))
     # sessionId is optional — only persists when provided
     session_id: str = (body.get("sessionId") or "").strip()
@@ -782,6 +783,17 @@ async def chat(request: Request):
     )
 
     base_prompt = build_system(headlines, search_results, qtype)
+
+    # ── Image vision: extract content from attached images via Gemini Vision ─
+    if file_images:
+        try:
+            from routes.report import extract_data_from_images
+            image_context = await extract_data_from_images(last_user_msg, file_images)
+            if image_context:
+                file_context += f"\n\n━━ IMAGE CONTENT ━━\n{image_context}\n━━ END ━━"
+                log.info("Chat: image context extracted — %d chars from %d image(s)", len(image_context), len(file_images))
+        except Exception as exc:
+            log.warning("Chat: image extraction failed: %s", exc)
 
     # ── RAG grounding: use RAG service system prompt when files are indexed ───
     rag_system_prompt = ""

@@ -654,6 +654,7 @@ async function* streamReply(
   fileContext?: string,
   sessionId?: string,
   hasRag?: boolean,
+  fileImages?: { name:string; mimeType:string; data:string }[],
 ): AsyncGenerator<string> {
   let res: Response;
   try {
@@ -664,6 +665,7 @@ async function* streamReply(
         fileContext: fileContext ?? '',
         sessionId:  sessionId  ?? '',
         hasRag:     hasRag     ?? false,
+        fileImages: fileImages ?? [],
       }), signal,
     });
   } catch (err) {
@@ -991,6 +993,15 @@ export default function GrowthGradualChat() {
     let finalText = '';
     const fileCtx = buildAttachmentContext(attachedFiles, pastedTexts);
 
+    // Build image payloads for vision-capable main chat (mirrors buildFilePayload logic)
+    const chatFileImages: { name:string; mimeType:string; data:string }[] = [];
+    for (const f of attachedFiles) {
+      if (f.status === 'attached' && f.type.startsWith('image/') && f.content) {
+        const base64 = f.content.split(',')[1];
+        if (base64) chatFileImages.push({ name: f.name, mimeType: f.type, data: base64 });
+      }
+    }
+
     try {
       let acc = '';
       for await (const chunk of streamReply(historyRef.current, ctrl.signal, (meta) => {
@@ -1007,7 +1018,7 @@ export default function GrowthGradualChat() {
         // Store metadata on message for future reference — intentionally NOT rendered in JSX
         setMessages(prev => prev.map(m => m.id === botMsg.id
           ? { ...m, searchPerformed: meta.searchPerformed, sources: meta.sources, queryType: meta.queryType } : m));
-      }, fileCtx, getOrCreateSessionId(), ragIndexed)) {
+      }, fileCtx, getOrCreateSessionId(), ragIndexed, chatFileImages)) {
         if (!metaDone) { setSearching(false); metaDone = true; }
         acc += chunk;
         if (acc.length > 0) setStatusMsg('');
@@ -1513,6 +1524,9 @@ export default function GrowthGradualChat() {
         .file-chip--text {
           background:#f0fdf4;border-color:rgba(34,197,94,0.35);
         }
+        .file-chip--img {
+          background:#f0fdf4;border-color:rgba(34,197,94,0.35);
+        }
         .chip-dot { width:7px;height:7px;border-radius:50%;flex-shrink:0; }
         .chip-name { font-size:11.5px;color:#1a1f4e;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:130px; }
         .chip-size { font-size:10px;color:#8b93b5;font-family:'DM Mono',monospace;flex-shrink:0; }
@@ -1748,27 +1762,51 @@ export default function GrowthGradualChat() {
 
             {/* File + text chips */}
             {(attachedFiles.length > 0 || pastedTexts.length > 0 || attachLoading) && (
-              <div className="chips-row">
+              <div className="chips-row" style={{ position:'relative' }}>
+                {attachedFiles.length > 0 && (
+                  <div style={{
+                    position:'absolute', top:-28, left:'50%', transform:'translateX(-50%)',
+                    background:'#1a1f4e', color:'#fff', borderRadius:20,
+                    fontSize:11, fontWeight:600, padding:'3px 10px',
+                    display:'flex', alignItems:'center', gap:5, whiteSpace:'nowrap',
+                    boxShadow:'0 2px 8px rgba(26,31,78,.25)',
+                    pointerEvents:'none',
+                  }}>
+                    📎 {attachedFiles.filter(f => f.status==='attached').length} of {attachedFiles.length} file{attachedFiles.length>1?'s':''} attached
+                  </div>
+                )}
                 {attachedFiles.map(f => (
-                  <div key={f.id} className="file-chip" title={f.status === 'failed' ? (f.error || 'Failed to read file') : f.name}
+                  <div key={f.id}
+                    className={`file-chip${f.type.startsWith('image/') ? ' file-chip--img' : ''}`}
+                    title={f.status === 'failed' ? (f.error || 'Failed to read file') : f.name}
                     style={{
                       borderColor: f.status === 'failed' ? '#fca5a5' : f.status === 'attaching' ? '#c4b5fd' : undefined,
                       background:  f.status === 'failed' ? '#fef2f2' : f.status === 'attaching' ? '#f5f3ff' : undefined,
-                    }}>
-                    {f.status === 'attaching'
-                      ? <div className="chip-spinner"/>
-                      : <span className="chip-dot" style={{ background: f.status === 'failed' ? '#ef4444' : f.type.startsWith('image/') ? '#22c55e' : f.type === 'application/pdf' ? '#ef4444' : '#3b82f6' }} />
+                    }}
+                  >
+                    {/* Image thumbnail OR icon dot */}
+                    {f.type.startsWith('image/') && f.content && f.status === 'attached'
+                      ? <img src={f.content} alt="" style={{ width:22, height:22, borderRadius:5, objectFit:'cover', flexShrink:0 }} />
+                      : f.status === 'attaching'
+                        ? <div className="chip-spinner"/>
+                        : <span className="chip-dot" style={{ background: f.status === 'failed' ? '#ef4444' : f.type === 'application/pdf' ? '#ef4444' : '#3b82f6' }} />
                     }
-                    <span className="chip-name">{f.name.length > 18 ? f.name.slice(0,15)+'…' : f.name}</span>
-                    <span className="chip-size" style={{
-                      color: f.status === 'failed' ? '#dc2626' : f.status === 'attaching' ? '#7c3aed' : undefined,
-                      fontWeight: f.status !== 'attached' ? 600 : undefined,
-                    }}>
-                      {f.status === 'attaching' ? 'reading…'
-                        : f.status === 'failed' ? 'failed'
-                        : f.extractedText ? `${wordCount(f.extractedText).toLocaleString()}w`
-                        : fmtSize(f.size)}
+
+                    {/* Label: Loading… → ✓ name */}
+                    <span className="chip-name">
+                      {f.status === 'attaching'
+                        ? `Loading ${f.name.length > 12 ? f.name.slice(0,10)+'…' : f.name}`
+                        : f.status === 'failed'
+                          ? `✗ ${f.name.length > 14 ? f.name.slice(0,12)+'…' : f.name}`
+                          : `✓ ${f.name.length > 16 ? f.name.slice(0,14)+'…' : f.name}`
+                      }
                     </span>
+
+                    {/* Size — only when attached */}
+                    {f.status === 'attached' && (
+                      <span className="chip-size">{(f.size/1024).toFixed(0)}K</span>
+                    )}
+
                     {f.status !== 'attaching' && (
                       <button className="chip-x" onClick={() => setAttachedFiles(prev => prev.filter(x => x.id !== f.id))} title={`Remove ${f.name}`}>×</button>
                     )}
