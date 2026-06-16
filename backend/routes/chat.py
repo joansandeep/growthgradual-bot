@@ -3,6 +3,8 @@ POST /api/chat  — SSE streaming chat
 Body: { messages: [{role, content}], fileContext?: string }
 """
 import asyncio
+import base64
+import hashlib
 import json
 import logging
 import os
@@ -98,6 +100,152 @@ async def _save_messages(session_id: str, user_content: str, assistant_content: 
     except Exception as exc:
         log.warning("Supabase save_messages failed: %s", exc)
 
+
+def _image_hash(data: str) -> str:
+    """SHA-256 of the raw base64 string — stable fingerprint for dedup."""
+    return hashlib.sha256(data.encode()).hexdigest()
+
+
+async def _load_cached_extractions(session_id: str, img_hashes: list[str]) -> dict[str, str]:
+    """
+    Query the existing `files` table for rows matching this session + hash.
+    Returns {file_hash: extracted_text} for any already-processed images.
+    Falls back to cross-session lookup so the same image is never re-processed
+    even across different sessions (e.g. user re-uploads same chart).
+    """
+    if not _SUPABASE_URL or not _SUPABASE_KEY or not img_hashes:
+        return {}
+    try:
+        hashes_csv = "(" + ",".join(f'"{h}"' for h in img_hashes) + ")"
+        async with httpx.AsyncClient(timeout=8) as client:
+            # 1. Try session-scoped lookup first (fastest, most relevant)
+            params: dict = {
+                "file_hash": f"in.{hashes_csv}",
+                "select": "file_hash,extracted_text",
+                "extracted_text": "neq.",          # non-empty
+            }
+            if session_id:
+                params["session_id"] = f"eq.{session_id}"
+
+            r = await client.get(
+                f"{_SUPABASE_URL}/rest/v1/files",
+                headers={**_sb_headers(), "Prefer": "return=representation"},
+                params=params,
+            )
+            if r.is_success and r.json():
+                result = {row["file_hash"]: row["extracted_text"]
+                          for row in r.json() if row.get("extracted_text")}
+                if result:
+                    log.info("Supabase image cache: %d/%d hit(s) for session %s",
+                             len(result), len(img_hashes), (session_id or "?")[:8])
+                    return result
+
+            # 2. Cross-session fallback — same image uploaded in any session
+            if session_id:
+                r2 = await client.get(
+                    f"{_SUPABASE_URL}/rest/v1/files",
+                    headers={**_sb_headers(), "Prefer": "return=representation"},
+                    params={
+                        "file_hash": f"in.{hashes_csv}",
+                        "select": "file_hash,extracted_text",
+                        "extracted_text": "neq.",
+                        "limit": "10",
+                    },
+                )
+                if r2.is_success and r2.json():
+                    result = {row["file_hash"]: row["extracted_text"]
+                              for row in r2.json() if row.get("extracted_text")}
+                    if result:
+                        log.info("Supabase image cache: %d/%d cross-session hit(s)",
+                                 len(result), len(img_hashes))
+                    return result
+    except Exception as exc:
+        log.debug("Supabase _load_cached_extractions failed: %s", exc)
+    return {}
+
+
+async def _store_image_extractions(
+    session_id: str,
+    images: list[dict],
+    extractions: dict[str, str],
+) -> None:
+    """
+    Persist newly extracted image text back into the existing `files` table
+    (upsert on file_hash) and upload raw bytes to the `paperly-uploads` bucket
+    so the file-service and RAG pipeline can also see them.
+    """
+    if not _SUPABASE_URL or not _SUPABASE_KEY:
+        return
+
+    async with httpx.AsyncClient(timeout=30) as client:
+        for img in images:
+            h = _image_hash(img["data"])
+            text = extractions.get(h, "")
+            if not text:
+                continue
+
+            mime  = img.get("mimeType", "image/jpeg")
+            fname = img.get("name", f"{h[:8]}.jpg")
+            ext   = mime.split("/")[-1].replace("jpeg", "jpg")
+            bucket_path = f"{session_id}/{h}.{ext}" if session_id else f"chat-images/{h}.{ext}"
+
+            # 1. Upload raw image to paperly-uploads bucket (x-upsert so safe to repeat)
+            try:
+                raw_bytes = base64.b64decode(img["data"])
+                up = await client.post(
+                    f"{_SUPABASE_URL}/storage/v1/object/paperly-uploads/{bucket_path}",
+                    headers={
+                        "apikey": _SUPABASE_KEY,
+                        "Authorization": f"Bearer {_SUPABASE_KEY}",
+                        "Content-Type": mime,
+                        "x-upsert": "true",
+                    },
+                    content=raw_bytes,
+                )
+                stored_url = (
+                    f"{_SUPABASE_URL}/storage/v1/object/public/paperly-uploads/{bucket_path}"
+                    if up.is_success else fname
+                )
+                if up.is_success:
+                    log.info("Supabase Storage: image saved → paperly-uploads/%s", bucket_path)
+                else:
+                    log.debug("Supabase Storage upload %d: %s", up.status_code, up.text[:80])
+            except Exception as exc:
+                log.debug("Supabase Storage upload error: %s", exc)
+                stored_url = fname
+                raw_bytes  = b""
+
+            # 2. Upsert into files table (reuses existing schema — no migration needed)
+            if session_id:
+                try:
+                    row = {
+                        "session_id":    session_id,
+                        "original_name": fname,
+                        "stored_name":   stored_url,
+                        "mime_type":     mime,
+                        "file_type":     "image",
+                        "size_bytes":    len(raw_bytes),
+                        "extracted_text": text,
+                        "has_text":      True,
+                        "ocr_processed": True,
+                        "word_count":    len(text.split()),
+                        "file_hash":     h,
+                    }
+                    ins = await client.post(
+                        f"{_SUPABASE_URL}/rest/v1/files",
+                        headers={**_sb_headers(),
+                                 "Prefer": "resolution=merge-duplicates,return=minimal"},
+                        json=row,
+                    )
+                    if ins.is_success:
+                        log.info("Supabase files: upserted image record hash=%s session=%s",
+                                 h[:8], session_id[:8])
+                    else:
+                        log.warning("Supabase files upsert %d: %s",
+                                    ins.status_code, ins.text[:200])
+                except Exception as exc:
+                    log.warning("Supabase _store_image_extractions upsert failed: %s", exc)
+
 # ─── Domain lists ──────────────────────────────────────────────────────────────
 FINANCE_DOMAINS = [
     # Indian finance — reliable scrapers
@@ -187,15 +335,26 @@ def classify_query(msg: str) -> str:
     return "finance" if any(t in m for t in FINANCE_TERMS) else "general"
 
 
-def needs_web_search(msg: str) -> bool:
+_FILE_INTENT_RE = re.compile(
+    r"""\b(explain|summaris[e]?|summariz[e]?|describe|analys[e]?|analyz[e]?|read|
+    translate|what.s|tell\sme|extract|find|list|show|convert|interpret|transcribe|
+    what\s(can|do)\syou\s(see|say)|ocr|what\sdoes\sit\ssay)\b""",
+    re.IGNORECASE | re.VERBOSE,
+)
+
+def needs_web_search(msg: str, has_files: bool = False) -> bool:
     m = msg.lower().strip()
-    # Only skip search for empty inputs or trivial one-word greetings
     if len(m) < 4:
         return False
     TRIVIAL = {"hi", "hey", "hello", "ok", "okay", "thanks", "thank you", "bye", "yes", "no", "sure", "great"}
     if m in TRIVIAL:
         return False
-    # Everything else gets a web search
+    # If files are attached, skip web search for file-directed queries
+    if has_files:
+        if len(m) <= 80:
+            return False
+        if _FILE_INTENT_RE.search(m):
+            return False
     return True
 
 
@@ -762,7 +921,7 @@ async def chat(request: Request):
         return JSONResponse({"error": "No messages"}, status_code=400)
 
     last_user_msg = next((m["content"] for m in reversed(messages) if m["role"] == "user"), "")
-    do_search = needs_web_search(last_user_msg)
+    do_search = needs_web_search(last_user_msg, has_files=bool(file_context or file_images))
     qtype = classify_query(last_user_msg)
 
     log.info(
@@ -785,13 +944,38 @@ async def chat(request: Request):
     base_prompt = build_system(headlines, search_results, qtype)
 
     # ── Image vision: extract content from attached images via Gemini Vision ─
+    # ── Image vision: check cache first, then Gemini Vision for new images ──
     if file_images:
         try:
             from routes.report import extract_data_from_images
-            image_context = await extract_data_from_images(last_user_msg, file_images)
+
+            # Check Supabase cache first — avoid re-running Vision on same image
+            img_hashes = [_image_hash(img["data"]) for img in file_images]
+            cached = await _load_cached_extractions(session_id, img_hashes) if session_id else {}
+
+            cached_texts  = [cached[h] for h in img_hashes if h in cached]
+            uncached_imgs = [img for img, h in zip(file_images, img_hashes) if h not in cached]
+
+            image_context_parts = cached_texts[:]
+
+            if uncached_imgs:
+                fresh_text = await extract_data_from_images(last_user_msg, uncached_imgs)
+                if fresh_text:
+                    image_context_parts.append(fresh_text)
+                    # Map each uncached image hash → the fresh extraction text,
+                    # then persist to Supabase in the background
+                    fresh_extractions = {_image_hash(img["data"]): fresh_text for img in uncached_imgs}
+                    asyncio.ensure_future(
+                        _store_image_extractions(session_id, uncached_imgs, fresh_extractions)
+                    )
+
+            image_context = "\n\n".join(image_context_parts)
             if image_context:
-                file_context += f"\n\n━━ IMAGE CONTENT ━━\n{image_context}\n━━ END ━━"
-                log.info("Chat: image context extracted — %d chars from %d image(s)", len(image_context), len(file_images))
+                src = ("cache+vision" if cached_texts and uncached_imgs
+                       else "cache" if cached_texts else "vision")
+                file_context += f"\n\n━━ IMAGE CONTENT ({src}) ━━\n{image_context}\n━━ END ━━"
+                log.info("Chat: image context %s — %d chars, %d image(s), %d cached",
+                         src, len(image_context), len(file_images), len(cached_texts))
         except Exception as exc:
             log.warning("Chat: image extraction failed: %s", exc)
 

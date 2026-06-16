@@ -401,9 +401,11 @@ async def call_groq(user_prompt: str) -> str:
 
 # Gemini model priority: try best model first, fall back on 503/429/404
 GEMINI_MODELS = [
-    "gemini-2.5-flash",        # best quality — try first
-    "gemini-2.0-flash",        # reliable fallback (replaced deprecated 1.5-flash)
-    "gemini-2.5-flash-8b",     # lighter/faster — good for overload situations
+    "gemini-2.5-flash",        # best quality, 5 RPM free tier
+    "gemini-3.1-flash-lite",   # 15 RPM — highest free quota, great fallback
+    "gemini-3.5-flash",        # 5 RPM
+    "gemini-2.5-flash-lite",   # 10 RPM
+    "gemini-2.0-flash",        # older reliable fallback
     "gemini-2.0-flash-lite",   # last resort
 ]
 
@@ -414,13 +416,20 @@ async def call_gemini(user_prompt: str) -> str:
         log.warning("Gemini: no keys configured for report generation")
         return ""
 
-    log.info("Gemini: attempting report generation with %d key(s), %d models", len(keys), len(GEMINI_MODELS))
+    # Filter to AIzaSy* keys only — gen-lang-client-* are Vertex AI keys that
+    # return 400 Bad Request on generativelanguage.googleapis.com REST API.
+    rest_keys = [k for k in keys if k.startswith("AIzaSy")]
+    if not rest_keys:
+        log.warning("Gemini: no AIzaSy* keys available — all keys are gen-lang-client type")
+        return ""
+
+    log.info("Gemini: attempting report generation with %d key(s), %d models", len(rest_keys), len(GEMINI_MODELS))
 
     # Build a flat attempt list: (key, model) — cycle through all key×model combos
     # Priority: try each model with the least-used key first, then next model, etc.
-    available_keys = [k for k in round_robin(keys) if not is_rate_limited(k)]
+    available_keys = [k for k in round_robin(rest_keys) if not is_rate_limited(k)]
     if not available_keys:
-        available_keys = keys  # all rate-limited — try anyway as last resort
+        available_keys = rest_keys  # all rate-limited — try anyway as last resort
 
     # Build attempt queue: [(key, model), ...] — model varies slowest
     attempts = []
@@ -520,12 +529,20 @@ async def extract_data_from_images(question: str, file_images: list[dict]) -> st
         })
         parts.append({"text": f"[Above is page {i+1}: {img.get('name', f'page {i+1}')}]"})
 
-    available_keys = [k for k in keys if not is_rate_limited(k)]
+    # Filter out gen-lang-client-* keys — these are Vertex AI / Google Cloud keys
+    # that return 400 Bad Request on the generativelanguage.googleapis.com REST endpoint.
+    # Only AIzaSy* keys work with the standard REST API used here.
+    vision_keys = [k for k in keys if k.startswith("AIzaSy")]
+    if not vision_keys:
+        log.warning("extract_data_from_images: no AIzaSy* Gemini keys available for vision")
+        return ""
+
+    available_keys = [k for k in vision_keys if not is_rate_limited(k)]
     if not available_keys:
-        available_keys = keys
+        available_keys = vision_keys
 
     for key in available_keys[:3]:  # try up to 3 keys
-        for model in ["gemini-2.0-flash", "gemini-2.5-flash", "gemini-2.0-flash-lite"]:
+        for model in ["gemini-2.5-flash", "gemini-3.1-flash-lite", "gemini-3.5-flash", "gemini-2.5-flash-lite", "gemini-2.0-flash", "gemini-2.0-flash-lite"]:
             try:
                 async with httpx.AsyncClient(timeout=60) as client:
                     res = await client.post(
