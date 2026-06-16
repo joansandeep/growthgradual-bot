@@ -710,6 +710,7 @@ export default function GrowthGradualChat() {
   const [input, setInput]       = useState('');
   const [streaming, setStreaming] = useState(false);
   const [searching, setSearching] = useState(false);
+  const [statusMsg, setStatusMsg] = useState('');
   const [dragOver, setDragOver]   = useState(false);
 
   // File attachment state
@@ -741,8 +742,8 @@ export default function GrowthGradualChat() {
     }));
     setAttachedFiles(prev => [...prev, ...placeholders]);
 
-    // Process each file and update its chip as it completes
-    await Promise.all(toProcess.map(async (file, idx) => {
+    // Process each file (extract text) and update chip as it completes
+    const results = await Promise.all(toProcess.map(async (file, idx) => {
       const placeholder = placeholders[idx];
       try {
         const result = await processFile(file);
@@ -751,70 +752,75 @@ export default function GrowthGradualChat() {
             ? (result ? { ...result, id: placeholder.id } : { ...placeholder, status: 'failed' as const, error: 'Unsupported file type' })
             : f
         ));
+        return result ? { ...result, id: placeholder.id } : null;
       } catch (e) {
         setAttachedFiles(prev => prev.map(f =>
           f.id === placeholder.id
             ? { ...placeholder, status: 'failed' as const, error: (e as Error).message }
             : f
         ));
+        return null;
       }
     }));
 
     setAttachLoading(false);
 
-    // ── Upload files through Paperly pipeline (file-service → extraction-service → rag-service) ──
-    // This gives us proper OCR via Gemini Vision, Supabase storage, and RAG indexing all in one step.
     const sessionId = getOrCreateSessionId();
     setRagIndexing(true);
+
+    // ── Strategy: index directly to HF Space immediately (don't wait for gateway) ──
+    // The Paperly gateway does OCR + storage (useful) but its RAG index step
+    // silently fails ~100% of the time (133s upload → 0 chunks indexed).
+    // We index directly using the text already extracted by processFile() — this
+    // is instant and reliable. The gateway upload runs in the background for storage.
     try {
+      const toIndex = results.filter((f): f is AttachedFile => f !== null && !!f.extractedText);
+
+      if (toIndex.length > 0) {
+        const docs = toIndex.map(f => ({
+          id: f.id,
+          name: f.name,
+          text: f.extractedText!,
+          source_type: 'file',
+          file_type: f.type,
+        }));
+
+        console.log('[RAG] Indexing', docs.length, 'doc(s) directly to HF Space...');
+        const r = await fetch('/api/rag/index', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ session_id: sessionId, documents: docs }),
+        });
+        const d = await r.json().catch(() => ({}));
+
+        if (d.chunks_added > 0 || d.total_chunks > 0) {
+          setRagIndexed(true);
+          console.log('[RAG] Indexed', d.chunks_added, 'chunks ✅');
+        } else {
+          console.error('[RAG] HF Space index returned 0 chunks:', d);
+        }
+      } else {
+        console.warn('[RAG] No extracted text available to index');
+      }
+
+      // ── Fire gateway upload in background for Supabase storage / OCR ──
+      // We don't await this — it takes 60-180s and we already have RAG working.
       const fd = new FormData();
       fd.append('sessionId', sessionId);
-      for (const file of toProcess) {
-        fd.append('files', file, file.name);
-      }
-      const res = await fetch('/api/upload', {
+      for (const file of toProcess) fd.append('files', file, file.name);
+      fetch('/api/upload', {
         method: 'POST',
         body: fd,
-        signal: AbortSignal.timeout(300_000), // 5 min — OCR can be slow
+        signal: AbortSignal.timeout(300_000),
+      }).then(res => {
+        if (res.ok) console.log('[Upload] Paperly gateway storage complete (background)');
+        else console.warn('[Upload] Paperly gateway storage failed (non-critical):', res.status);
+      }).catch(e => {
+        console.warn('[Upload] Paperly gateway storage error (non-critical):', e);
       });
-      const data = await res.json().catch(() => ({}));
-      if (res.ok) {
-        setRagIndexed(true);
-        console.log('[Upload] Paperly pipeline succeeded:', data);
-      } else {
-        console.warn('[Upload] Paperly pipeline error:', res.status, data);
-        // Fall back to local RAG index if extraction-service is unavailable
-        const processed = await Promise.all(
-          placeholders.map(ph => new Promise<AttachedFile | null>(resolve => {
-            setAttachedFiles(prev => {
-              const f = prev.find(x => x.id === ph.id);
-              resolve(f && f.status === 'attached' ? f : null);
-              return prev;
-            });
-          }))
-        );
-        const toIndex = processed.filter((f): f is AttachedFile => f !== null && !!f.extractedText);
-        if (toIndex.length > 0) {
-          const docs = toIndex.map(f => ({
-            id: f.id, name: f.name,
-            text: f.extractedText!,
-            source_type: 'file',
-            file_type: f.type,
-          }));
-          const r2 = await fetch('/api/rag/index', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ session_id: sessionId, documents: docs }),
-          });
-          const d2 = await r2.json();
-          if (d2.chunks_added > 0 || d2.total_chunks > 0) {
-            setRagIndexed(true);
-            console.log('[RAG] fallback indexed', d2.chunks_added, 'chunks');
-          }
-        }
-      }
+
     } catch (e) {
-      console.warn('[Upload] pipeline failed (non-critical):', e);
+      console.warn('[RAG] Direct index failed:', e);
     } finally {
       setRagIndexing(false);
     }
@@ -923,6 +929,7 @@ export default function GrowthGradualChat() {
     setMessages(newMessages);
     setStreaming(true);
     setSearching(true);
+    setStatusMsg(ragIndexed ? 'Indexing…' : 'Loading…');
     historyRef.current = [...historyRef.current, { role:'user', content:q }];
 
     const ctrl = new AbortController();
@@ -936,6 +943,7 @@ export default function GrowthGradualChat() {
       for await (const chunk of streamReply(historyRef.current, ctrl.signal, (meta) => {
         metaDone = true;
         setSearching(false);
+        setStatusMsg('Generating response…');
         // Source count + search metadata — logs only, never rendered in UI
         if (meta.searchPerformed) {
           console.log(
@@ -949,6 +957,7 @@ export default function GrowthGradualChat() {
       }, fileCtx, getOrCreateSessionId(), ragIndexed)) {
         if (!metaDone) { setSearching(false); metaDone = true; }
         acc += chunk;
+        if (acc.length > 0) setStatusMsg('');
         finalText = acc;
         setMessages(prev => prev.map(m => m.id === botMsg.id ? { ...m, text:acc } : m));
       }
@@ -1057,6 +1066,7 @@ export default function GrowthGradualChat() {
       });
     } catch(e:unknown) {
       setSearching(false);
+      setStatusMsg('');
       if ((e as Error)?.name === 'AbortError') return;
       const errMsg = (e as Error)?.message || '';
       const isNetwork = errMsg.includes('fetch') || errMsg.includes('network') || errMsg.includes('Failed');
@@ -1069,6 +1079,7 @@ export default function GrowthGradualChat() {
     } finally {
       setStreaming(false);
       setSearching(false);
+      setStatusMsg('');
     }
   }, [streaming, messages, activeId, attachedFiles, pastedTexts]);
 
@@ -1609,8 +1620,8 @@ export default function GrowthGradualChat() {
                 const isLast = i === messages.length - 1;
                 const isUser = msg.role === 'user';
 
-                // Searching state
-                if (isLast && streaming && !isUser && searching) return (
+                // Status / loading state (searching, indexing, generating)
+                if (isLast && streaming && !isUser && (!msg.text || searching || statusMsg)) return (
                   <div key={msg.id} className="msg-row msg-row--bot">
                     <div className="msg-inner">
                       <div className="msg-avatar msg-avatar--bot">
@@ -1618,25 +1629,9 @@ export default function GrowthGradualChat() {
                       </div>
                       <div className="msg-bubble">
                         <div className="searching">
-                          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/></svg>
-                          Searching the web…
+                          <div className="chip-spinner" style={{ width:12, height:12, borderWidth:2 }}/>
+                          {statusMsg || 'Loading…'}
                           <div className="search-dots"><span/><span/><span/></div>
-                        </div>
-                      </div>
-                    </div>
-                  </div>
-                );
-
-                // Typing dots
-                if (isLast && streaming && !isUser && !msg.text) return (
-                  <div key={msg.id} className="msg-row msg-row--bot">
-                    <div className="msg-inner">
-                      <div className="msg-avatar msg-avatar--bot">
-                        <Image src="/growth-gradual-icon-transparent.png" alt="" width={28} height={28} style={{ objectFit:'contain' }}/>
-                      </div>
-                      <div className="msg-bubble">
-                        <div className="typing-dots">
-                          <div className="typing-dot"/><div className="typing-dot"/><div className="typing-dot"/>
                         </div>
                       </div>
                     </div>
@@ -1714,20 +1709,6 @@ export default function GrowthGradualChat() {
                     <button className="chip-x" onClick={() => setPastedTexts(prev => prev.filter(x => x.id !== p.id))}>×</button>
                   </div>
                 ))}
-                {ragIndexing && (
-                  <div className="file-chip" style={{ borderColor:'#c4b5fd', background:'#f5f3ff' }}>
-                    <div className="chip-spinner"/>
-                    <span className="chip-name">Indexing…</span>
-                    <span className="chip-size" style={{ color:'#7c3aed', fontWeight:600 }}>RAG</span>
-                  </div>
-                )}
-                {ragIndexed && !ragIndexing && (
-                  <div className="file-chip" style={{ borderColor:'#86efac', background:'#f0fdf4' }}>
-                    <span style={{ fontSize:11 }}>🧠</span>
-                    <span className="chip-name">RAG ready</span>
-                    <span className="chip-size" style={{ color:'#15803d', fontWeight:600 }}>indexed</span>
-                  </div>
-                )}
               </div>
             )}
 

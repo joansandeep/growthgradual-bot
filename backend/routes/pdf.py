@@ -49,6 +49,23 @@ CHART_COLORS = [BLUE, GREEN, AMBER, RED, PURPLE, CYAN, PINK, NAVY]
 SECTION_ACCENTS = [GOLD, BLUE, GREEN, AMBER, RED, PURPLE]
 
 
+def _coerce_value(v) -> float:
+    """Safely coerce a chart data value to float.
+    Handles ints, floats, and strings like '-3%', '1,25,957', '₹72119', '$1820.5'.
+    Returns 0.0 on anything unparseable.
+    """
+    if isinstance(v, (int, float)):
+        return float(v)
+    if isinstance(v, str):
+        # Strip currency symbols, commas, spaces, percent signs
+        cleaned = re.sub(r"[₹$€£,\s]", "", v).replace("%", "").strip()
+        try:
+            return float(cleaned)
+        except (ValueError, TypeError):
+            return 0.0
+    return 0.0
+
+
 # ─── Chart data validator ─────────────────────────────────────────────────────
 def _is_valid_chart(spec: dict) -> bool:
     """Return False for charts with no data, all-zero, or all-identical values."""
@@ -69,7 +86,7 @@ def _is_valid_chart(spec: dict) -> bool:
 
     # All values across all series
     all_data = [d for s in series for d in (s.get("data") or [])]
-    values   = [d.get("value", 0) for d in all_data]
+    values   = [_coerce_value(d.get("value", 0)) for d in all_data]
     if not values:
         return False
     # A single overall data point trivially has one "unique" value — only
@@ -315,7 +332,7 @@ def _bar(c, spec, x0, y0, w, h):
     n_ser = len(series_list)
 
     # All values across all series for unified Y scale
-    all_vals = [abs(d.get("value", 0)) for s in series_list for d in s.get("data", [])]
+    all_vals = [abs(_coerce_value(d.get("value", 0))) for s in series_list for d in s.get("data", [])]
     max_v    = max(all_vals) if all_vals else 1
 
     has_legend = n_ser > 1
@@ -348,7 +365,7 @@ def _bar(c, spec, x0, y0, w, h):
         color    = CHART_COLORS[si % len(CHART_COLORS)]
         for i, d in enumerate(ser_data):
             if i >= n: continue
-            v  = d.get("value", 0)
+            v  = _coerce_value(d.get("value", 0))
             bh = max(2, (abs(v) / max_v) * ph)
             group_x = x0 + PL + i * sp + (sp - bw_total) / 2
             bx = group_x + si * bw
@@ -401,7 +418,7 @@ def _line(c, spec, x0, y0, w, h):
     title = spec.get("title", "")
 
     # Collect all values across ALL series for unified Y scale
-    all_v = [d.get("value", 0) for s in series for d in s.get("data", [])]
+    all_v = [_coerce_value(d.get("value", 0)) for s in series for d in s.get("data", [])]
     if not all_v:
         return
     mn, mx = min(all_v), max(all_v)
@@ -442,7 +459,7 @@ def _line(c, spec, x0, y0, w, h):
         n      = len(pts)
         coords = [
             (x0 + PL + (j / max(n - 1, 1)) * pw,
-             y0 + PB + ((d.get("value", 0) - mn) / rng) * ph)
+             y0 + PB + ((_coerce_value(d.get("value", 0)) - mn) / rng) * ph)
             for j, d in enumerate(pts)
         ]
         # Line
@@ -458,7 +475,7 @@ def _line(c, spec, x0, y0, w, h):
             c.circle(px2, py2, 2.8 if show else 1.8, fill=1, stroke=0)
             if show and has_legend:
                 # Small value tooltip above dot
-                val = pts[j].get("value", 0)
+                val = _coerce_value(pts[j].get("value", 0))
                 c.setFont("Helvetica-Bold", 5.5)
                 c.setFillColorRGB(*color)
                 c.drawCentredString(px2, py2 + 5, f"{val:.1f}{safe_unit}")
@@ -501,13 +518,13 @@ def _pie(c, spec, x0, y0, w, h):
     data = (spec.get("series") or [{}])[0].get("data") or []
     if not data:
         return
-    total = sum(abs(d.get("value", 0)) for d in data) or 1
+    total = sum(abs(_coerce_value(d.get("value", 0))) for d in data) or 1
     R = min(w * 0.38, h * 0.42)
     cx2, cy2 = x0 + R + 12, y0 + h / 2
     angle = math.pi / 2
 
     for i, d in enumerate(data):
-        frac = abs(d.get("value", 0)) / total
+        frac = abs(_coerce_value(d.get("value", 0))) / total
         sweep = frac * 2 * math.pi
         color = CHART_COLORS[i % len(CHART_COLORS)]
         c.setFillColorRGB(*color); c.setStrokeColorRGB(1, 1, 1); c.setLineWidth(1)
@@ -523,7 +540,7 @@ def _pie(c, spec, x0, y0, w, h):
     ly = cy2 + R * 0.8
     for i, d in enumerate(data):
         color = CHART_COLORS[i % len(CHART_COLORS)]
-        pct = abs(d.get("value", 0)) / total * 100
+        pct = abs(_coerce_value(d.get("value", 0))) / total * 100
         lbl = d.get("label", "")[:22]
         iy = ly - i * 15
         c.setFillColorRGB(*color); c.rect(lx, iy - 5, 8, 8, fill=1, stroke=0)

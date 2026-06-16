@@ -31,11 +31,22 @@ You MUST respond with valid JSON only — no markdown fences, no preamble, no te
 Respond with EXACTLY this shape:
 {
   "title": "<concise report title, max 12 words — a noun-phrase headline like 'Global Growth Slowdown and AI Investment Trends', NEVER a sentence starting with 'Here are', 'Based on', 'The following', or similar preamble/instruction phrasing>",
-  "report": "<full markdown report — target 800-1200 words, structured and data-rich>",
+  "report": "<full markdown report — target 1000-1400 words, structured and data-rich>",
   "charts": [...],
   "keyStats": [{ "label": "<short label>", "value": "<value string>", "change": "<+/- % or empty string>" }],
   "summary": "<2-3 sentence executive summary>"
 }
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+CRITICAL DATA INTEGRITY RULES — VIOLATIONS DEGRADE REPORT QUALITY:
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+✗ NEVER invent, estimate, or hallucinate numbers. Only use figures explicitly present in the provided sources.
+✗ NEVER use your training-data knowledge for specific numbers (index levels, stock prices, rates, percentages).
+   Your training data is STALE — e.g. Sensex, Nifty, gold prices, FII flows MUST come from the sources provided.
+✗ If a specific number is NOT in the sources, write "data not available from sources" rather than guessing.
+✓ You MAY use your knowledge for definitions, context, explanations, and general market dynamics.
+✓ Every key metric in keyStats and every chart data point must be traceable to the scraped source content.
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 CHART RULES — READ CAREFULLY. CHARTS ARE MANDATORY WHERE DATA EXISTS.
@@ -57,9 +68,13 @@ STEP 1 — AGGRESSIVELY SCAN sources for ANY chartable numbers:
   → Example: series: [{"name":"Gold","data":[{"label":"Jun 1","value":1820},{"label":"Jun 5","value":1810}]},
                        {"name":"Silver","data":[{"label":"Jun 1","value":86},{"label":"Jun 5","value":81}]}]
   → NEVER make two separate single-series charts for each item — always combine into one
-  → If price scales differ wildly (e.g. gold $1800 vs silver $30), use % change from start:
+  → If price scales differ wildly (e.g. gold Rs.1,25,000 vs silver Rs.72,000 when % change is small),
+     use % change from start for ALL series so both fit on the same Y axis:
      → {"label":"Jun 1","value":0.0} for both, then show % change from that base
-  → Also add a bar chart comparing key stats (1-month return %, all-time high, current price)
+  → NEVER mix price values and percentage changes in the same chart series or bar group.
+     BAD: series=[{name:"Gold",data:[{label:"Current Price",value:125957},{label:"Change",value:-3}]}, ...]
+     GOOD: Make ONE chart for price trend (line, % change), ONE separate bar chart for key stats like 1-month return %
+  → Also add a bar chart comparing key stats (1-month return %, 52-week high/low, current price) — but ONLY if you have ≥3 distinct comparable stats from the sources
 
   For EVERY topic, these charts almost ALWAYS make sense — create them if data exists:
   • SIP topic → bar chart of top 5 funds by 3-yr return %
@@ -314,7 +329,7 @@ async def call_groq(user_prompt: str) -> str:
                             {"role": "system", "content": SYSTEM_PROMPT},
                             {"role": "user", "content": trimmed_prompt},
                         ],
-                        "max_tokens": 8000,
+                        "max_tokens": 12000,
                         "temperature": 0.2,
                         "response_format": {"type": "json_object"},
                     },
@@ -335,7 +350,7 @@ async def call_groq(user_prompt: str) -> str:
                                     {"role": "system", "content": SYSTEM_PROMPT},
                                     {"role": "user", "content": trimmed_prompt},
                                 ],
-                                "max_tokens": 8000,
+                                "max_tokens": 12000,
                                 "temperature": 0.2,
                                 "response_format": {"type": "json_object"},
                             },
@@ -728,6 +743,22 @@ async def generate_report(request: Request):
             if len(values) > 1 and len(set(values)) <= 1:
                 log.warning("Chart rejected — identical values: %s", values[:6])
                 return False
+
+            # Reject bar charts where a single series mixes wildly different scales
+            # (e.g. price 125957 and % change -3 as two bars in the same series)
+            if chart_type == "bar":
+                for s in series:
+                    pts_vals = [pt.get("value", 0) for pt in (s.get("data") or [])]
+                    if len(pts_vals) >= 2:
+                        pos_vals = [v for v in pts_vals if v > 0]
+                        neg_vals = [v for v in pts_vals if v < 0]
+                        if pos_vals and neg_vals:
+                            max_pos = max(pos_vals)
+                            max_neg = abs(min(neg_vals))
+                            if max_pos > 0 and max_neg > 0 and max_pos / max_neg > 100:
+                                log.warning("Chart rejected — mixed scale in '%s': pos=%.0f neg=%.0f",
+                                            s.get("name", "?"), max_pos, min(neg_vals))
+                                return False
 
             # Check labels unique WITHIN each series (not across series)
             for s in series:

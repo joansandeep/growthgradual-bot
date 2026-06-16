@@ -76,7 +76,14 @@ async def on_startup():
     log.info("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
 
 
+@app.get("/")
+@app.head("/")
+def root():
+    return {"service": "Growth Gradual Backend", "status": "ok"}
+
+
 @app.get("/health")
+@app.head("/health")
 def health():
     import os
     return {

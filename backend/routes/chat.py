@@ -684,7 +684,7 @@ async def chat(request: Request):
     # ── RAG grounding: use RAG service system prompt when files are indexed ───
     rag_system_prompt = ""
     if has_rag and session_id:
-        log.info("Chat: RAG mode — querying for session %s", session_id[:8])
+        log.info("Chat: RAG mode — querying for session %s question=%r", session_id[:8], last_user_msg[:60])
         rag_result = await _rag_query(
             session_id=session_id,
             question=last_user_msg,
@@ -695,6 +695,9 @@ async def chat(request: Request):
             rag_system_prompt = rag_result["system_prompt"]
             log.info("Chat: RAG grounded — %d chunks from %s",
                      rag_result.get("retrieved", 0), rag_result.get("source_files", []))
+        else:
+            log.warning("Chat: RAG returned no content — chunks=%s has_content=%s — falling back to LLM",
+                        rag_result.get("retrieved", 0), rag_result.get("has_content"))
 
     if rag_system_prompt:
         # RAG takes full control of the system prompt — ignore web search
