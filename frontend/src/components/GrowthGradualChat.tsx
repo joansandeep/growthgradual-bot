@@ -810,19 +810,41 @@ export default function GrowthGradualChat() {
           file_type: f.type,
         }));
 
-        console.log('[RAG] Indexing', docs.length, 'doc(s) directly to HF Space...');
-        const r = await fetch('/api/rag/index', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ session_id: sessionId, documents: docs }),
-        });
-        const d = await r.json().catch(() => ({}));
+        // ── Index with one automatic retry (handles HF Space cold starts) ──────
+        // HF Spaces sleep after ~15 min idle. Cold start = 60-90s. If the first
+        // attempt returns 0 chunks (timeout or cold start), we wait 8s and retry
+        // once. This covers the most common reason files are silently ignored.
+        const tryIndex = async (): Promise<{ chunks_added?: number; total_chunks?: number; error?: string }> => {
+          const r = await fetch('/api/rag/index', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ session_id: sessionId, documents: docs }),
+          });
+          return r.json().catch(() => ({}));
+        };
 
-        if (d.chunks_added > 0 || d.total_chunks > 0) {
+        console.log('[RAG] Indexing', docs.length, 'doc(s) to HF Space...');
+        let d = await tryIndex();
+
+        if ((d.chunks_added ?? 0) === 0 && (d.total_chunks ?? 0) === 0) {
+          // First attempt got 0 chunks — HF Space may have been cold. Wait and retry.
+          console.warn('[RAG] 0 chunks on first attempt — HF Space cold start? Retrying in 8s...');
+          setStatusMsg('File server waking up, retrying…');
+          await new Promise(res => setTimeout(res, 8_000));
+          d = await tryIndex();
+        }
+
+        if ((d.chunks_added ?? 0) > 0 || (d.total_chunks ?? 0) > 0) {
           setRagIndexed(true);
           console.log('[RAG] Indexed', d.chunks_added, 'chunks ✅');
         } else {
-          console.error('[RAG] HF Space index returned 0 chunks:', d);
+          // Both attempts failed — tell the user clearly instead of silent failure
+          console.error('[RAG] Index failed after retry:', d);
+          setAttachedFiles(prev => prev.map(f => ({
+            ...f,
+            status: 'failed' as const,
+            error: 'File server unavailable — your file was attached but AI may not read it. Try re-uploading.',
+          })));
         }
       } else {
         console.warn('[RAG] No extracted text available to index');
@@ -846,8 +868,14 @@ export default function GrowthGradualChat() {
 
     } catch (e) {
       console.warn('[RAG] Direct index failed:', e);
+      setAttachedFiles(prev => prev.map(f => ({
+        ...f,
+        status: f.status === 'attaching' ? 'failed' as const : f.status,
+        error: f.status === 'attaching' ? 'Upload failed — please try again.' : f.error,
+      })));
     } finally {
       setRagIndexing(false);
+      setStatusMsg('');
     }
   }, [attachedFiles.length]);
 
@@ -1765,9 +1793,9 @@ export default function GrowthGradualChat() {
                 }}
                 onKeyDown={onKey}
                 onPaste={handlePaste}
-                disabled={streaming || attachedFiles.some(f => f.status === 'attaching')}
+                disabled={streaming || attachedFiles.some(f => f.status === 'attaching') || ragIndexing}
               />
-              <button className="send-btn" onClick={() => send(input)} disabled={!input.trim() || streaming || attachedFiles.some(f => f.status === 'attaching')} aria-label="Send">
+              <button className="send-btn" onClick={() => send(input)} disabled={!input.trim() || streaming || attachedFiles.some(f => f.status === 'attaching') || ragIndexing} aria-label="Send">
                 <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
                   <path d="M22 2L11 13M22 2L15 22l-4-9-9-4 20-7z"/>
                 </svg>

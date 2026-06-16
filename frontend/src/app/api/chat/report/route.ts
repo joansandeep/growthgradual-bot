@@ -6,6 +6,7 @@ import { createLogger, logRequest } from '@/lib/logger';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
+export const maxDuration = 180; // 3 min — report generation is slow (LLM + web search)
 
 const log = createLogger('api/chat/report');
 const BACKEND = (process.env.BACKEND_URL ?? 'http://localhost:8000').replace(/\/$/, '');

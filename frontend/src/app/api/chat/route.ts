@@ -7,6 +7,7 @@ import { createLogger, logRequest } from '@/lib/logger';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
+export const maxDuration = 120; // 2 min — covers slow LLM streaming responses
 
 const log = createLogger('api/chat');
 const BACKEND = (process.env.BACKEND_URL ?? 'http://localhost:8000').replace(/\/$/, '');
