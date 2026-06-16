@@ -35,18 +35,43 @@ function fmtDate(ts: number) {
 const STORAGE_KEY = 'growth_gradual_conversations';
 const SESSION_ID_KEY = 'growth_gradual_session_id';
 
-/** Return a stable UUID for this browser — created once, stored in localStorage. */
+/**
+ * Module-level fallback for environments where localStorage is unavailable
+ * (incognito/private mode on Safari/Firefox, SSR, blocked storage).
+ *
+ * CRITICAL: must be module-level so every call within the same page load
+ * returns the SAME UUID even when localStorage is blocked.
+ *
+ * Without this, incognito mode returns a fresh UUID on every call:
+ *   - File upload indexes under UUID "A"
+ *   - Chat message sends sessionId "B" → RAG finds nothing, file ignored
+ */
+let _inMemorySessionId: string | null = null;
+
+/** Return a stable UUID for this browser tab/page-load.
+ *  Priority: localStorage (persists across reloads) → in-memory (stable for
+ *  this page load, works in incognito/private/Safari/Firefox strict mode). */
 function getOrCreateSessionId(): string {
+  // 1. Try localStorage — persists across browser reloads (normal mode)
   try {
     const existing = localStorage.getItem(SESSION_ID_KEY);
-    if (existing) return existing;
+    if (existing) {
+      _inMemorySessionId = existing; // keep in-memory copy in sync
+      return existing;
+    }
     const id = crypto.randomUUID();
     localStorage.setItem(SESSION_ID_KEY, id);
+    _inMemorySessionId = id;
     return id;
   } catch {
-    // SSR / incognito fallback
-    return crypto.randomUUID();
+    // localStorage blocked (incognito, Safari ITP, Firefox strict, SSR)
   }
+
+  // 2. In-memory fallback — stable for this page load even in incognito
+  if (!_inMemorySessionId) {
+    _inMemorySessionId = crypto.randomUUID();
+  }
+  return _inMemorySessionId;
 }
 function loadConversations(): Conversation[] {
   if (typeof window === 'undefined') return [];
