@@ -730,161 +730,128 @@ def build_pdf(report: str, title: str, question: str, summary: str,
             c.drawString(MARGIN + 14, ty_s, ln); ty_s -= 16
         ty = ty_s - 14
 
-    # ── Decorative geometry strip ─────────────────────────────────────────────
-    # A subtle diamond / geometric pattern bar across full width
-    strip_y = ty - 4
-    c.setFillColorRGB(0.94, 0.95, 1.0)
-    c.rect(0, strip_y - 18, PAGE_W, 18, fill=1, stroke=0)
-    c.setStrokeColorRGB(0.82, 0.85, 0.96); c.setLineWidth(0.5)
-    c.line(0, strip_y, PAGE_W, strip_y)
-    c.line(0, strip_y - 18, PAGE_W, strip_y - 18)
-    # Small diamond accents
-    for di in range(12):
-        dx = MARGIN + di * (CW / 11)
-        dy = strip_y - 9
-        c.setFillColorRGB(*GOLD)
-        c.setStrokeColorRGB(*GOLD); c.setLineWidth(0.6)
-        p = c.beginPath()
-        p.moveTo(dx, dy + 4); p.lineTo(dx + 4, dy)
-        p.lineTo(dx, dy - 4); p.lineTo(dx - 4, dy)
-        p.close(); c.drawPath(p, fill=1, stroke=0)
-    ty = strip_y - 30
-
-    # ── About This Report block ───────────────────────────────────────────────
-    # Two-column info panel: left = report meta, right = key stats or placeholder
-    panel_top = ty
-    COL2 = (CW - 12) / 2
-    # Left panel — report metadata
-    c.setFillColorRGB(*NAVY)
-    c.roundRect(MARGIN, panel_top - 90, COL2, 90, 4, fill=1, stroke=0)
-    c.setFillColorRGB(*GOLD); c.setFont("Helvetica-Bold", 8)
-    c.drawString(MARGIN + 10, panel_top - 16, "ABOUT THIS REPORT")
+    # ── Thin gold rule separator ──────────────────────────────────────────────
+    ty -= 16
     c.setStrokeColorRGB(*GOLD); c.setLineWidth(0.8)
-    c.line(MARGIN + 10, panel_top - 20, MARGIN + COL2 - 10, panel_top - 20)
-    meta_items = [
-        ("Domain", domain),
-        ("Generated", date_str),
-        ("Classification", "Research Intelligence"),
-        ("Publisher", "Growth Gradual"),
-    ]
-    my = panel_top - 34
-    for lbl, val in meta_items:
-        c.setFillColorRGB(0.65, 0.70, 0.88); c.setFont("Helvetica", 7)
-        c.drawString(MARGIN + 10, my, lbl.upper())
-        c.setFillColorRGB(*WHITE); c.setFont("Helvetica-Bold", 8)
-        c.drawString(MARGIN + 10 + 70, my, _safe_text(val)[:28])
-        my -= 14
+    c.line(MARGIN, ty, MARGIN + CW * 0.40, ty)
+    ty -= 26
 
-    # Right panel — key stats or decorative placeholder
-    rx = MARGIN + COL2 + 12
-    c.setFillColorRGB(0.96, 0.97, 1.0)
-    c.roundRect(rx, panel_top - 90, COL2, 90, 4, fill=1, stroke=0)
-    c.setStrokeColorRGB(0.82, 0.86, 0.96)
-    c.roundRect(rx, panel_top - 90, COL2, 90, 4, fill=0, stroke=1)
+    # ── Two-column info panel ─────────────────────────────────────────────────
+    PANEL_H = 110
+    COL2    = (CW - 14) / 2
+
+    # Left panel — navy background
+    c.setFillColorRGB(*NAVY)
+    c.roundRect(MARGIN, ty - PANEL_H, COL2, PANEL_H, 5, fill=1, stroke=0)
+    c.setFillColorRGB(*GOLD); c.setFont("Helvetica-Bold", 7.5)
+    c.drawString(MARGIN + 12, ty - 14, "ABOUT THIS REPORT")
+    c.setStrokeColorRGB(*GOLD); c.setLineWidth(0.8)
+    c.line(MARGIN + 12, ty - 18, MARGIN + COL2 - 12, ty - 18)
+    meta_items = [
+        ("DOMAIN",          domain),
+        ("GENERATED",       date_str),
+        ("CLASSIFICATION",  "Research Intelligence"),
+        ("PUBLISHER",       "Growth Gradual"),
+    ]
+    my = ty - 32
+    for lbl, val in meta_items:
+        c.setFillColorRGB(0.55, 0.62, 0.84); c.setFont("Helvetica", 6.5)
+        c.drawString(MARGIN + 12, my, lbl)
+        c.setFillColorRGB(*WHITE); c.setFont("Helvetica-Bold", 7.5)
+        c.drawString(MARGIN + 12 + 76, my, _safe_text(val)[:30])
+        my -= 16
+
+    # Right panel — light background
+    rx = MARGIN + COL2 + 14
+    c.setFillColorRGB(0.97, 0.97, 1.0)
+    c.roundRect(rx, ty - PANEL_H, COL2, PANEL_H, 5, fill=1, stroke=0)
+    c.setStrokeColorRGB(0.84, 0.87, 0.95)
+    c.roundRect(rx, ty - PANEL_H, COL2, PANEL_H, 5, fill=0, stroke=1)
 
     if key_stats:
-        stats_preview = key_stats[:4]
-        c.setFillColorRGB(*NAVY); c.setFont("Helvetica-Bold", 8)
-        c.drawString(rx + 10, panel_top - 16, "KEY METRICS")
+        c.setFillColorRGB(*NAVY); c.setFont("Helvetica-Bold", 7.5)
+        c.drawString(rx + 12, ty - 14, "KEY METRICS")
         c.setStrokeColorRGB(*GOLD); c.setLineWidth(0.8)
-        c.line(rx + 10, panel_top - 20, rx + COL2 - 10, panel_top - 20)
-        ky = panel_top - 34
-        for st in stats_preview:
+        c.line(rx + 12, ty - 18, rx + COL2 - 12, ty - 18)
+        ky = ty - 32
+        for st in key_stats[:4]:
             val = _safe_text(st.get("value", ""))[:12]
-            lbl = _safe_text(st.get("label", ""))[:22]
+            lbl = _safe_text(st.get("label", ""))[:24]
             chg = _safe_text(st.get("change", ""))
             col_c = GREEN if chg.startswith("+") else (RED if chg.startswith("-") else GREY)
-            c.setFillColorRGB(*NAVY); c.setFont("Helvetica-Bold", 9)
-            c.drawString(rx + 10, ky, val)
+            c.setFillColorRGB(*NAVY); c.setFont("Helvetica-Bold", 8.5)
+            c.drawString(rx + 12, ky, val)
             c.setFillColorRGB(*GREY); c.setFont("Helvetica", 7)
-            c.drawString(rx + 10 + c.stringWidth(val, "Helvetica-Bold", 9) + 4, ky, lbl)
+            vw = c.stringWidth(val, "Helvetica-Bold", 8.5)
+            c.drawString(rx + 12 + vw + 5, ky, lbl)
             if chg:
                 c.setFillColorRGB(*col_c); c.setFont("Helvetica-Bold", 7)
-                c.drawRightString(rx + COL2 - 10, ky, chg)
+                c.drawRightString(rx + COL2 - 12, ky, chg)
             ky -= 16
     else:
-        # Decorative tagline if no stats
-        c.setFillColorRGB(*NAVY); c.setFont("Helvetica-Bold", 8)
-        c.drawString(rx + 10, panel_top - 16, "INTELLIGENCE BRIEF")
+        c.setFillColorRGB(*NAVY); c.setFont("Helvetica-Bold", 7.5)
+        c.drawString(rx + 12, ty - 14, "INTELLIGENCE BRIEF")
         c.setStrokeColorRGB(*GOLD); c.setLineWidth(0.8)
-        c.line(rx + 10, panel_top - 20, rx + COL2 - 10, panel_top - 20)
+        c.line(rx + 12, ty - 18, rx + COL2 - 12, ty - 18)
         taglines = [
             "AI-powered financial research",
             "Curated from 60+ trusted sources",
             "Real-time market intelligence",
             "Institutional-grade analysis",
         ]
-        tly = panel_top - 36
+        tly = ty - 34
         for tl in taglines:
-            c.setFillColorRGB(*GOLD); c.circle(rx + 14, tly + 3, 2, fill=1, stroke=0)
+            c.setFillColorRGB(*GOLD); c.rect(rx + 12, tly + 1, 3, 7, fill=1, stroke=0)
             c.setFillColorRGB(*BODY_TXT); c.setFont("Helvetica", 8)
-            c.drawString(rx + 22, tly, tl)
-            tly -= 14
+            c.drawString(rx + 20, tly, tl)
+            tly -= 16
 
-    ty = panel_top - 104
+    ty -= PANEL_H + 20
 
-    # ── Full key-stats row (all stats, wider cards) ───────────────────────────
+    # ── Key stats cards row ───────────────────────────────────────────────────
     if key_stats:
-        stats = key_stats[:8]
-        per_row = min(4, len(stats))
-        gap = 8
-        card_w = (CW - gap * (per_row - 1)) / per_row
-        CARD_H = 56
-        rows_needed = math.ceil(len(stats) / per_row)
-        cards_total_h = rows_needed * (CARD_H + gap)
-        stats_top = ty - 10
+        stats    = key_stats[:4]
+        n_cards  = len(stats)
+        gap      = 8
+        card_w   = (CW - gap * (n_cards - 1)) / n_cards
+        CARD_H   = 62
+        BAR_H    = 4
 
         for i, st in enumerate(stats):
-            row = i // per_row
-            col = i % per_row
-            sx = MARGIN + col * (card_w + gap)
-            sy = stats_top - row * (CARD_H + gap)
+            sx       = MARGIN + i * (card_w + gap)
+            card_bot = ty - CARD_H
+            card_top = ty
 
-            # Geometry: card bottom = card_bot, card top = card_top
-            card_bot = sy - CARD_H + 8
-            card_top = sy + 8            # = card_bot + CARD_H
-            BAR_H    = 5                 # gold accent bar height at top
-            PAD      = 8                 # inner padding below the bar
-
-            # Card background + border
             c.setFillColorRGB(*LIGHT)
             c.roundRect(sx, card_bot, card_w, CARD_H, 4, fill=1, stroke=0)
-            c.setStrokeColorRGB(0.82, 0.85, 0.93)
+            c.setStrokeColorRGB(0.84, 0.87, 0.94)
             c.roundRect(sx, card_bot, card_w, CARD_H, 4, fill=0, stroke=1)
-            # Top accent bar
             c.setFillColorRGB(*GOLD)
             c.rect(sx, card_top - BAR_H, card_w, BAR_H, fill=1, stroke=0)
 
-            # Label — starts PAD pts below the bar bottom edge
-            label_y = card_top - BAR_H - PAD
-            label = _safe_text(st.get("label", "")).upper()
-            label_font_size = 6.5
-            max_label_w = card_w - 12
-            label_lines = _wrap(c, label, "Helvetica", label_font_size, max_label_w)
-            c.setFillColorRGB(*GREY); c.setFont("Helvetica", label_font_size)
-            for li, ll in enumerate(label_lines[:2]):
-                c.drawString(sx + 8, label_y - li * 9, ll)
+            label    = _safe_text(st.get("label", "")).upper()
+            lbl_w    = card_w - 16
+            lbl_lines = _wrap(c, label, "Helvetica", 6.5, lbl_w)
+            c.setFillColorRGB(*GREY); c.setFont("Helvetica", 6.5)
+            lbl_top = card_top - BAR_H - 9
+            for li, ll in enumerate(lbl_lines[:2]):
+                c.drawString(sx + 8, lbl_top - li * 9, ll)
 
-            # Value — 10 pts below last label line
-            val_y = label_y - len(label_lines[:2]) * 9 - 10
-            value = _safe_text(st.get("value", ""))[:14]
+            value    = _safe_text(st.get("value", ""))[:14]
             val_font = 13 if len(value) <= 9 else 10
+            val_y    = lbl_top - len(lbl_lines[:2]) * 9 - 11
             c.setFillColorRGB(*NAVY); c.setFont("Helvetica-Bold", val_font)
             c.drawString(sx + 8, val_y, value)
 
-            # Change indicator — 4 pts below value
             chg = _safe_text(st.get("change", ""))
             if chg:
                 col_c = GREEN if chg.startswith("+") else (RED if chg.startswith("-") else GREY)
                 c.setFillColorRGB(*col_c); c.setFont("Helvetica", 7)
-                chg_lines = _wrap(c, chg, "Helvetica", 7, max_label_w)
-                for li, cl in enumerate(chg_lines[:1]):
-                    c.drawString(sx + 8, val_y - val_font - 4 - li * 9, cl)
+                c.drawString(sx + 8, val_y - val_font - 3, chg[:12])
 
-        ty = stats_top - cards_total_h - 10
+        ty -= CARD_H + 18
 
-    # ── "What's Inside" section outline ──────────────────────────────────────
-    # Parse the report for H2 section headings to build a mini table of contents
+    # ── Table of contents ─────────────────────────────────────────────────────
     section_headings = []
     for _tok in _tokenise(report):
         if _tok["type"] == "h2":
@@ -892,56 +859,59 @@ def build_pdf(report: str, title: str, question: str, summary: str,
         if len(section_headings) >= 6:
             break
 
-    # Only draw if there's room above the bottom strip (need at least 70pt)
-    bottom_strip_top = 60
-    available = ty - bottom_strip_top - 10
-    if available >= 60 and section_headings:
-        toc_top = ty - 10
-        toc_label = "WHAT'S INSIDE"
-        c.setFillColorRGB(*NAVY); c.setFont("Helvetica-Bold", 8)
-        c.drawString(MARGIN, toc_top, toc_label)
+    bottom_strip_top = 68
+    available = ty - bottom_strip_top - 16
+    if available >= 70 and section_headings:
+        c.setFillColorRGB(*NAVY); c.setFont("Helvetica-Bold", 7.5)
+        c.drawString(MARGIN, ty, "CONTENTS")
+        lw = c.stringWidth("CONTENTS", "Helvetica-Bold", 7.5)
         c.setStrokeColorRGB(*GOLD); c.setLineWidth(1)
-        c.line(MARGIN, toc_top - 4, MARGIN + c.stringWidth(toc_label, "Helvetica-Bold", 8) + 6, toc_top - 4)
-        # Two-column layout for the TOC entries
-        col_w2 = (CW - 10) / 2
-        toc_y = toc_top - 16
+        c.line(MARGIN, ty - 4, MARGIN + lw, ty - 4)
+
+        toc_y  = ty - 18
+        col_w2 = (CW - 12) / 2
+        col_idx = 0
         for i, heading in enumerate(section_headings):
-            col_offset = (i % 2) * (col_w2 + 10)
-            if i % 2 == 0 and i > 0:
-                toc_y -= 14
-            tx = MARGIN + col_offset
-            # Number badge
-            c.setFillColorRGB(*GOLD)
-            c.roundRect(tx, toc_y - 3, 14, 12, 2, fill=1, stroke=0)
-            c.setFillColorRGB(*WHITE); c.setFont("Helvetica-Bold", 7)
-            c.drawCentredString(tx + 7, toc_y, str(i + 1))
-            # Section name
+            if toc_y < bottom_strip_top + 16:
+                break
+            tx = MARGIN + col_idx * (col_w2 + 12)
+            c.setFillColorRGB(*NAVY)
+            c.roundRect(tx, toc_y - 2, 14, 12, 2, fill=1, stroke=0)
+            c.setFillColorRGB(*GOLD); c.setFont("Helvetica-Bold", 7)
+            c.drawCentredString(tx + 7, toc_y + 1, str(i + 1))
             c.setFillColorRGB(*BODY_TXT); c.setFont("Helvetica", 8)
-            c.drawString(tx + 18, toc_y, heading[:38])
-        ty = toc_y - 18
+            c.drawString(tx + 18, toc_y, heading[:40])
+            name_w = c.stringWidth(heading[:40], "Helvetica", 8)
+            dot_x  = tx + 18 + name_w + 4
+            dot_end = tx + col_w2 - 4
+            c.setStrokeColorRGB(0.82, 0.85, 0.92); c.setLineWidth(0.4)
+            c.setDash(1, 3)
+            c.line(dot_x, toc_y + 4, dot_end, toc_y + 4)
+            c.setDash()
+            col_idx += 1
+            if col_idx >= 2:
+                col_idx = 0
+                toc_y -= 16
+        ty = toc_y - 10
 
-    # ── Horizontal divider before bottom strip ────────────────────────────────
-    if ty > bottom_strip_top + 8:
-        c.setStrokeColorRGB(*NAVY); c.setLineWidth(0.5)
-        c.line(MARGIN, max(ty, bottom_strip_top + 8), PAGE_W - MARGIN, max(ty, bottom_strip_top + 8))
+    # ── Thin rule above footer ────────────────────────────────────────────────
+    c.setStrokeColorRGB(0.82, 0.86, 0.94); c.setLineWidth(0.5)
+    c.line(MARGIN, bottom_strip_top + 2, PAGE_W - MARGIN, bottom_strip_top + 2)
 
-    # ── Bottom info strip (taller, more formal) ───────────────────────────────
+    # ── Bottom footer strip ───────────────────────────────────────────────────
     c.setFillColorRGB(*NAVY)
     c.rect(0, 0, PAGE_W, bottom_strip_top, fill=1, stroke=0)
-    c.setStrokeColorRGB(*GOLD); c.setLineWidth(1.5)
+    c.setStrokeColorRGB(*GOLD); c.setLineWidth(1.2)
     c.line(0, bottom_strip_top, PAGE_W, bottom_strip_top)
-    # Left: confidentiality + date
     c.setFillColorRGB(*GOLD); c.setFont("Helvetica-Bold", 7)
-    c.drawString(MARGIN, 44, "CONFIDENTIAL — FOR INFORMATIONAL PURPOSES ONLY")
-    c.setFillColorRGB(0.65, 0.70, 0.88); c.setFont("Helvetica", 7)
-    c.drawString(MARGIN, 30, f"Generated: {date_str}  |  Growth Gradual AI Research Platform")
-    c.drawString(MARGIN, 16, "Powered by In The Money")
-    # Right: website
+    c.drawString(MARGIN, 48, "CONFIDENTIAL — FOR INFORMATIONAL PURPOSES ONLY")
+    c.setFillColorRGB(0.60, 0.65, 0.85); c.setFont("Helvetica", 6.5)
+    c.drawString(MARGIN, 34, f"Generated: {date_str}  |  Growth Gradual AI Research Platform")
+    c.drawString(MARGIN, 20, "Powered by In The Money")
     c.setFillColorRGB(*WHITE); c.setFont("Helvetica-Bold", 9)
-    c.drawRightString(PAGE_W - MARGIN, 38, "growth-gradual.com")
+    c.drawRightString(PAGE_W - MARGIN, 44, "growth-gradual.com")
     c.setFillColorRGB(*GOLD); c.setFont("Helvetica", 7)
-    c.drawRightString(PAGE_W - MARGIN, 24, "AI-Powered Financial Intelligence")
-
+    c.drawRightString(PAGE_W - MARGIN, 30, "AI-Powered Financial Intelligence")
     c.showPage()
 
     # ═══════════════════════════════════════════════════════════════════════════

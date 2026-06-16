@@ -246,7 +246,20 @@ def _clean_result_content(r: dict) -> dict:
     return r
 
 
-async def tavily_search(query: str, max_results: int = 25, min_results: int = 18) -> list[dict]:
+async def tavily_search(query: str, max_results: int = 20, min_results: int = 10) -> list[dict]:
+    """
+    Search via the official tavily-python SDK.
+
+    Key params used:
+      search_depth="advanced"     — deeper crawl, more content per source
+      chunks_per_source=3         — up to 3 content chunks per page (SDK feature)
+      include_answer="advanced"   — pre-synthesized answer injected as result[0]
+      include_raw_content=True    — full page text (not just snippet)
+      country="india"             — biases Tavily's ranking toward Indian sources
+      topic="finance"             — activates Tavily's finance-optimised index
+      max_results=20              — Tavily plan cap; playground confirms 20 max_results;
+                                    asking for more wastes quota without extra results (verified in API Playground)
+    """
     keys = get_tavily_keys()
     if not keys:
         log.warning("Tavily search skipped — no keys configured")
@@ -254,9 +267,128 @@ async def tavily_search(query: str, max_results: int = 25, min_results: int = 18
 
     qtype = classify_query(query)
     domains = FINANCE_DOMAINS if qtype == "finance" else GENERAL_DOMAINS
-    log.info("Tavily search: query=%r  type=%s  max_results=%d", query[:60], qtype, max_results)
+    log.info("Tavily search (SDK): query=%r  type=%s  max_results=%d", query[:60], qtype, max_results)
     t0 = time.perf_counter()
 
+    # Import here so the module works even if tavily-python isn't installed yet
+    try:
+        from tavily import AsyncTavilyClient
+    except ImportError:
+        log.warning("tavily-python not installed — falling back to httpx REST call")
+        return await _tavily_search_httpx_fallback(query, max_results, domains, qtype)
+
+    for key in round_robin(keys):
+        if is_rate_limited(key):
+            continue
+        try:
+            client = AsyncTavilyClient(api_key=key)
+
+            search_kwargs: dict = {
+                "query": query,
+                "search_depth": "advanced",
+                "max_results": max_results,          # reliable cap for all plan tiers
+                "chunks_per_source": 3,              # 3 content chunks per page
+                "include_answer": "advanced",        # synthesized answer as bonus context
+                "include_raw_content": True,         # full page text
+                "include_images": False,             # not needed for text chat
+                "include_image_descriptions": False,
+                "include_favicon": False,
+                "country": "india",                  # bias toward Indian sources
+                "include_domains": domains,
+            }
+            if qtype == "finance":
+                search_kwargs["topic"] = "finance"   # Tavily finance index
+
+            data = await client.search(**search_kwargs)
+
+            results: list[dict] = []
+
+            # Tavily SDK returns a dict with "results" list + optional "answer"
+            raw_results = data.get("results") or []
+
+            # Prepend the synthesized answer as a virtual result so the LLM
+            # always sees it — it's the highest-quality pre-digested context
+            answer_text = data.get("answer", "") or ""
+            if answer_text and not _looks_like_ai_overview(answer_text):
+                results.append({
+                    "title": f"Tavily Answer: {query[:60]}",
+                    "url": "https://tavily.com",
+                    "snippet": answer_text[:800],
+                    "fullContent": answer_text[:3000],
+                    "score": 1.0,
+                    "published": None,
+                })
+
+            for r in raw_results:
+                # chunks_per_source gives us r["chunks"] — concatenate them
+                chunks = r.get("chunks") or []
+                chunk_text = "\n\n".join(
+                    c.get("content", "") for c in chunks if c.get("content")
+                )
+                raw_content = (
+                    chunk_text
+                    or r.get("raw_content")
+                    or r.get("content")
+                    or ""
+                )
+                results.append({
+                    "title":       r.get("title", ""),
+                    "url":         r.get("url", ""),
+                    "snippet":     r.get("content", "")[:800],
+                    "fullContent": raw_content[:5000],
+                    "score":       r.get("score"),
+                    "published":   r.get("published_date"),
+                })
+
+            results = [_clean_result_content(r) for r in results]
+
+            if len(results) < min_results:
+                log.info(
+                    "Tavily SDK: %d results (target min=%d) — keeping domain filter",
+                    len(results), min_results,
+                )
+
+            # Enrich results that still have thin content (< 500 chars)
+            async def _passthrough(val: str) -> str:
+                return val
+
+            enrich_tasks = [
+                fetch_page_content(r["url"], 3000)
+                if len(r.get("fullContent", "")) < 500 else _passthrough(r.get("fullContent", ""))
+                for r in results
+            ]
+            extra_contents = await asyncio.gather(*enrich_tasks, return_exceptions=True)
+            for i, r in enumerate(results):
+                extra = extra_contents[i] if not isinstance(extra_contents[i], Exception) else ""
+                if isinstance(extra, str) and len(extra) > len(r.get("fullContent", "")):
+                    r["fullContent"] = extra
+
+            elapsed = (time.perf_counter() - t0) * 1000
+            log.info("Tavily SDK done: %d results in %.0fms", len(results), elapsed)
+            return results
+
+        except Exception as exc:
+            err_str = str(exc).lower()
+            if "429" in err_str or "rate" in err_str:
+                log.warning("Tavily SDK 429/rate-limit on key ...%s — backing off 60s", key[-4:])
+                mark_rate_limited(key, 60_000)
+            elif "401" in err_str or "403" in err_str or "invalid" in err_str:
+                log.warning("Tavily SDK auth error on key ...%s — banning 24h", key[-4:])
+                mark_rate_limited(key, 24 * 60 * 60_000)
+            else:
+                log.warning("Tavily SDK exception key ...%s: %s", key[-4:], exc)
+            continue
+
+    log.error("Tavily: all keys exhausted or failed — trying httpx fallback")
+    return await _tavily_search_httpx_fallback(query, max_results, domains, qtype)
+
+
+async def _tavily_search_httpx_fallback(
+    query: str, max_results: int, domains: list[str], qtype: str
+) -> list[dict]:
+    """Raw httpx fallback if tavily-python SDK is unavailable."""
+    keys = get_tavily_keys()
+    t0 = time.perf_counter()
     async with httpx.AsyncClient(timeout=15) as client:
         for key in round_robin(keys):
             if is_rate_limited(key):
@@ -270,23 +402,19 @@ async def tavily_search(query: str, max_results: int = 25, min_results: int = 18
                     "include_answer": False,
                     "include_raw_content": True,
                     "include_domains": domains,
+                    "country": "india",
                 }
                 if qtype == "finance":
                     body["topic"] = "finance"
-
                 res = await client.post("https://api.tavily.com/search", json=body)
                 if res.status_code == 429:
-                    log.warning("Tavily 429 — marking key rate-limited")
                     mark_rate_limited(key, 60_000)
                     continue
                 if res.status_code in (401, 403):
-                    log.warning("Tavily %d — marking key banned for 24h", res.status_code)
                     mark_rate_limited(key, 24 * 60 * 60_000)
                     continue
                 if not res.is_success:
-                    log.warning("Tavily HTTP %d", res.status_code)
                     continue
-
                 data = res.json()
                 results = [
                     {
@@ -299,38 +427,12 @@ async def tavily_search(query: str, max_results: int = 25, min_results: int = 18
                     }
                     for r in (data.get("results") or [])
                 ]
-                results = [_clean_result_content(r) for r in results]
-
-                # Domain filter is always kept — fewer than min_results is acceptable
-                if len(results) < min_results:
-                    log.info("Tavily: %d results with domain filter (target min=%d) — keeping domain filter", len(results), min_results)
-
-                # Enrich top-10 sparse results
-                enriched = []
-                async def _passthrough(val: str) -> str:
-                    return val
-
-                enrich_tasks = [
-                    fetch_page_content(r["url"], 3000)
-                    if len(r.get("fullContent", "")) < 500 else _passthrough(r.get("fullContent", ""))
-                    for r in results[:18]
-                ]
-                extra_contents = await asyncio.gather(*enrich_tasks, return_exceptions=True)
-                for i, r in enumerate(results[:18]):
-                    extra = extra_contents[i] if not isinstance(extra_contents[i], Exception) else ""
-                    if isinstance(extra, str) and len(extra) > len(r.get("fullContent", "")):
-                        r["fullContent"] = extra
-                    enriched.append(r)
-
                 elapsed = (time.perf_counter() - t0) * 1000
-                log.info("Tavily done: %d results in %.0fms", len(results), elapsed)
-                return enriched + results[18:]
-
+                log.info("Tavily httpx fallback: %d results in %.0fms", len(results), elapsed)
+                return [_clean_result_content(r) for r in results]
             except Exception as exc:
-                log.warning("Tavily exception: %s", exc)
+                log.warning("Tavily httpx fallback exception: %s", exc)
                 continue
-
-    log.error("Tavily: all keys exhausted or failed")
     return []
 
 
@@ -675,7 +777,7 @@ async def chat(request: Request):
         return []
 
     search_results, headlines = await asyncio.gather(
-        tavily_search(last_user_msg, max_results=25, min_results=18) if do_search else _no_search(),
+        tavily_search(last_user_msg, max_results=20, min_results=10) if do_search else _no_search(),
         load_headlines(30),
     )
 

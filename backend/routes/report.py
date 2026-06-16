@@ -604,7 +604,7 @@ async def generate_report(request: Request):
         # File provided — use it as primary source, do a small web search for supplemental data only
         log.info("Report: file-first mode — supplementing with web search")
         from routes.chat import tavily_search as _tavily_search, _looks_like_ai_overview
-        searched = await _tavily_search(question, max_results=25, min_results=18)
+        searched = await _tavily_search(question, max_results=20, min_results=10)
         sources = [
             {"title": r["title"], "url": r["url"],
              "snippet": r["snippet"], "fullContent": r.get("fullContent", "")}
@@ -613,7 +613,7 @@ async def generate_report(request: Request):
     elif not sources:
         log.info("Report: no sources — running own Tavily search for %r", question[:60])
         from routes.chat import tavily_search as _tavily_search, _looks_like_ai_overview
-        searched = await _tavily_search(question, max_results=25)
+        searched = await _tavily_search(question, max_results=20)
         sources = [
             {"title": r["title"], "url": r["url"],
              "snippet": r["snippet"], "fullContent": r.get("fullContent", "")}
@@ -895,7 +895,7 @@ async def generate_report(request: Request):
     if not sources:
         log.info("Report: no sources from client — running own Tavily search for %r", question[:60])
         from routes.chat import tavily_search as _tavily_search, _looks_like_ai_overview
-        searched = await _tavily_search(question, max_results=25)
+        searched = await _tavily_search(question, max_results=20)
         sources = [
             {"title": r["title"], "url": r["url"],
              "snippet": r["snippet"], "fullContent": r.get("fullContent", "")}
