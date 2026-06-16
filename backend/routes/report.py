@@ -279,13 +279,13 @@ def _extract_inline_chart_jsons(report_text: str, existing_charts: list) -> tupl
 
 
 # Groq context limit: ~6K tokens input. Trim prompt to avoid 413.
-GROQ_MAX_PROMPT_CHARS = 7_000   # safe hard cap — 9K+ reliably triggers 413
+GROQ_MAX_PROMPT_CHARS = 40_000  # Groq supports large contexts — only trim if truly enormous
 
 def _trim_for_groq(prompt: str) -> str:
-    """Hard-cap the user prompt so Groq never returns 413 Payload Too Large."""
+    """Only trim if prompt is genuinely huge (>40K chars)."""
     if len(prompt) <= GROQ_MAX_PROMPT_CHARS:
         return prompt
-    # Keep the instruction header (first 400 chars) + trimmed sources
+    # Keep header + as much source content as fits
     header_end = prompt.find("Scraped content")
     if header_end == -1:
         return prompt[:GROQ_MAX_PROMPT_CHARS]
@@ -293,13 +293,12 @@ def _trim_for_groq(prompt: str) -> str:
     body   = prompt[header_end + 100:]
     allowed = GROQ_MAX_PROMPT_CHARS - len(header) - 200
     trimmed_body = body[:allowed]
-    # Trim at last clean source boundary so we don't cut mid-sentence
     last_sep = trimmed_body.rfind("\n---\n")
     if last_sep > allowed * 0.5:
         trimmed_body = trimmed_body[:last_sep]
     footer = "\n\nINSTRUCTIONS:\n1. Extract ALL numbers, tables, percentages verbatim.\n2. Follow CHART RULES exactly.\n3. Respond ONLY with the JSON object."
     result = header + trimmed_body + footer
-    log.info("Groq: trimmed prompt %d→%d chars to avoid 413", len(prompt), len(result))
+    log.info("Groq: trimmed prompt %d→%d chars", len(prompt), len(result))
     return result
 
 
@@ -533,7 +532,7 @@ async def extract_data_from_images(question: str, file_images: list[dict]) -> st
                         f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={key}",
                         json={
                             "contents": [{"role": "user", "parts": parts}],
-                            "generationConfig": {"maxOutputTokens": 8000, "temperature": 0.1},
+                            "generationConfig": {"maxOutputTokens": 65536, "temperature": 0.1},
                         },
                     )
                 if res.status_code == 429:
@@ -686,17 +685,6 @@ async def generate_report(request: Request):
         + ("5. Insert [PAGE_IMG_n] references inline where you reference data visible in that page image.\n" if file_images else "")
         + "6. Respond ONLY with the JSON object — no markdown fences, no text outside JSON."
     )
-
-    # Hard cap
-    MAX_PROMPT = 12_000
-    if len(user_prompt) > MAX_PROMPT:
-        header_end = user_prompt.find("\n\nSupplementary web sources")
-        if header_end == -1:
-            user_prompt = user_prompt[:MAX_PROMPT]
-        else:
-            budget = MAX_PROMPT - (len(user_prompt) - header_end)
-            user_prompt = user_prompt[:max(budget, 2000)] + "\n[sources trimmed]" + user_prompt[header_end:]
-        log.info("Report: prompt hard-capped to %d chars", len(user_prompt))
 
     raw = await call_groq(user_prompt)
     if not raw:
@@ -956,18 +944,6 @@ async def generate_report(request: Request):
         "3. Write the full 6-section report. Insert [CHART_n] placeholders inline only where valid chart data exists.\n"
         "4. Respond ONLY with the JSON object — no markdown fences, no text outside JSON."
     )
-
-    # Hard cap: total prompt must not exceed 12K chars regardless of source count
-    MAX_PROMPT = 12_000
-    if len(user_prompt) > MAX_PROMPT:
-        # Trim src_text portion only, keep header + instructions intact
-        header_end = user_prompt.find("\n\nINSTRUCTIONS")
-        if header_end == -1:
-            user_prompt = user_prompt[:MAX_PROMPT]
-        else:
-            budget = MAX_PROMPT - (len(user_prompt) - header_end)
-            user_prompt = user_prompt[:budget] + "\n[sources trimmed]" + user_prompt[header_end:]
-        log.info("Report: prompt hard-capped to %d chars", len(user_prompt))
 
     raw = await call_groq(user_prompt)
     if not raw:

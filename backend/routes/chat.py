@@ -700,9 +700,12 @@ async def chat(request: Request):
                         rag_result.get("retrieved", 0), rag_result.get("has_content"))
 
     if rag_system_prompt:
-        # RAG takes full control of the system prompt — ignore web search
+        # RAG has content — use it as the system prompt but append web search if available
+        if search_results:
+            rag_system_prompt += f"\n\n## SUPPLEMENTARY WEB SEARCH RESULTS\nThe following live web results may supplement the document content:\n{base_prompt}"
         system_prompt = rag_system_prompt
     else:
+        # No RAG content — use full web search prompt as normal
         system_prompt = base_prompt + file_context if file_context else base_prompt
 
     meta_event = (
