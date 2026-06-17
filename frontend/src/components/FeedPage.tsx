@@ -20,14 +20,15 @@ const RELATED_FALLBACK: Article[] = [
 
 function SkeletonCard({ h = 110 }: { h?: number }) {
   return (
-    <div className="skeleton" style={{
-      background: '#f1f5f9', border: '1px solid #e2e8f0',
-      borderRadius: '8px', height: `${h}px`, overflow: 'hidden', padding: '16px',
+    <div style={{
+      background: '#fff', border: '1px solid #e4e8ef',
+      borderRadius: '10px', height: `${h}px`, overflow: 'hidden', padding: '16px',
+      boxShadow: '0 1px 4px rgba(15,23,42,0.04)',
     }}>
-      <div style={{ width: '56px', height: '11px', background: '#e2e8f0', borderRadius: '3px', marginBottom: '6px' }} />
-      <div style={{ width: '95%', height: '13px', background: '#e2e8f0', borderRadius: '3px', marginBottom: '6px' }} />
-      <div style={{ width: '75%', height: '13px', background: '#e2e8f0', borderRadius: '3px', marginBottom: '6px' }} />
-      <div style={{ width: '45%', height: '10px', background: '#f1f5f9', borderRadius: '3px', marginTop: '8px' }} />
+      <div className="skeleton-shine" style={{ width: '52px', height: '10px', borderRadius: '3px', marginBottom: '8px' }} />
+      <div className="skeleton-shine" style={{ width: '92%', height: '13px', borderRadius: '3px', marginBottom: '6px' }} />
+      <div className="skeleton-shine" style={{ width: '70%', height: '13px', borderRadius: '3px', marginBottom: '6px' }} />
+      <div className="skeleton-shine" style={{ width: '40%', height: '10px', borderRadius: '3px', marginTop: '10px' }} />
     </div>
   );
 }
@@ -189,180 +190,147 @@ export default function FeedPage({ category }: { category: Category }) {
 
       {/* ── CENTER ── */}
       <div>
-
         {/* Section header */}
-        <div className="section-header">
-          <div style={{ display: 'flex', alignItems: 'baseline', gap: '10px' }}>
-            <h2 style={{
-              fontFamily: "'Playfair Display', serif",
-              fontSize: '17px', fontWeight: 700,
-              color: '#0f172a', letterSpacing: '-0.3px',
-            }}>
-              {cat?.label || 'All Markets'}
-            </h2>
-            <span style={{
-              fontSize: '9px', color: '#94a3b8',
-              fontFamily: 'DM Sans, sans-serif',
-              textTransform: 'uppercase', letterSpacing: '1.5px',
-            }}>Latest News</span>
+        <div className="section-header" style={{ marginBottom:'14px' }}>
+          <div style={{ display:'flex', alignItems:'center', gap:'12px' }}>
+            <div style={{ width:'3px', height:'20px', background:'linear-gradient(180deg,#0d5c45,#c8922a)', borderRadius:'2px' }}/>
+            <div>
+              <h2 style={{
+                fontFamily:"'Playfair Display',serif",
+                fontSize:'18px', fontWeight:800, color:'#0f172a', letterSpacing:'-0.4px', lineHeight:1.1,
+              }}>{cat?.label || 'All Markets'}</h2>
+              <span style={{ fontSize:'9px', color:'#94a3b8', fontFamily:"'DM Sans',sans-serif", textTransform:'uppercase', letterSpacing:'1.5px' }}>Latest News</span>
+            </div>
           </div>
 
-          <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+          <div style={{ display:'flex', alignItems:'center', gap:'10px' }}>
             {meta && (
               <div style={{
-                display: 'flex', alignItems: 'center', gap: '6px',
-                background: meta.fromCache ? '#fefce8' : '#f0fdf4',
-                border: `1px solid ${meta.fromCache ? '#fde68a' : '#bbf7d0'}`,
-                borderRadius: '4px', padding: '3px 8px',
+                display:'flex', alignItems:'center', gap:'5px',
+                background: meta.fromCache ? 'rgba(200,146,42,0.08)' : 'rgba(13,92,69,0.07)',
+                border:`1px solid ${meta.fromCache ? 'rgba(200,146,42,0.3)' : 'rgba(13,92,69,0.25)'}`,
+                borderRadius:'20px', padding:'3px 10px',
               }}>
                 <span style={{
-                  width: '5px', height: '5px', borderRadius: '50%',
-                  background: meta.fromCache ? '#d97706' : '#22c55e',
-                  display: 'inline-block',
-                }} />
-                <span style={{
-                  fontSize: '9px', color: meta.fromCache ? '#92400e' : '#15803d',
-                  fontFamily: 'JetBrains Mono, monospace',
-                }}>
-                  {meta.fromCache ? 'CACHED' : 'LIVE'} · {meta.total} articles
+                  width:'5px', height:'5px', borderRadius:'50%',
+                  background: meta.fromCache ? '#c8922a' : '#0d5c45',
+                  display:'inline-block',
+                }}/>
+                <span style={{ fontSize:'9px', color: meta.fromCache ? '#92400e' : '#0d5c45', fontFamily:'JetBrains Mono,monospace', fontWeight:600 }}>
+                  {meta.fromCache ? 'CACHED' : 'LIVE'} · {meta.total}
                 </span>
                 {fetchedLabel && (
-                  <span style={{ fontSize: '9px', color: '#94a3b8', fontFamily: 'JetBrains Mono, monospace' }}>
+                  <span className="fetched-time" style={{ fontSize:'9px', color:'#94a3b8', fontFamily:'JetBrains Mono,monospace' }}>
                     · {fetchedLabel} IST
                   </span>
                 )}
               </div>
             )}
-
             <button
               onClick={() => loadArticles(true)}
               disabled={refreshing}
               style={{
-                background: refreshing ? '#f8fafc' : '#ffffff',
-                border: '1px solid #e2e8f0',
-                borderRadius: '4px',
-                padding: '4px 10px',
-                fontSize: '9px',
-                color: refreshing ? '#94a3b8' : '#64748b',
+                background: refreshing ? 'rgba(13,92,69,0.05)' : '#fff',
+                border:'1px solid #e4e8ef', borderRadius:'20px',
+                padding:'4px 12px', fontSize:'9px',
+                color: refreshing ? '#94a3b8' : '#0d5c45',
                 cursor: refreshing ? 'not-allowed' : 'pointer',
-                fontFamily: 'DM Sans, sans-serif',
-                letterSpacing: '1px', textTransform: 'uppercase',
-                transition: 'all 0.15s',
+                fontFamily:"'DM Sans',sans-serif", letterSpacing:'0.8px', textTransform:'uppercase',
+                fontWeight:600, transition:'all .15s',
               }}
-              onMouseEnter={e => { if (!refreshing) { e.currentTarget.style.borderColor = '#93c5fd'; e.currentTarget.style.color = '#3b82f6'; }}}
-              onMouseLeave={e => { e.currentTarget.style.borderColor = '#e2e8f0'; e.currentTarget.style.color = '#64748b'; }}
+              onMouseEnter={e => { if (!refreshing) { e.currentTarget.style.borderColor='#0d5c45'; e.currentTarget.style.background='rgba(13,92,69,0.05)'; }}}
+              onMouseLeave={e => { e.currentTarget.style.borderColor='#e4e8ef'; e.currentTarget.style.background='#fff'; }}
             >
               {refreshing ? '↻ Fetching…' : '↻ Refresh'}
             </button>
           </div>
         </div>
 
-        {/* Rule */}
-        <div style={{ height: '1px', background: 'linear-gradient(90deg, #3b82f644, #3b82f611, transparent)', marginBottom: '8px' }} />
+        {/* Premium rule */}
+        <div className="premium-rule"/>
 
         {/* Error banner */}
         {error && (
           <div style={{
-            background: '#fef2f2', border: '1px solid #fecaca',
-            borderRadius: '6px', padding: '12px 16px',
-            marginBottom: '8px', fontSize: '12px', color: '#991b1b',
-            fontFamily: 'DM Sans, sans-serif',
+            background:'#fef2f2', border:'1px solid rgba(239,68,68,0.25)',
+            borderRadius:'8px', padding:'12px 16px', marginBottom:'12px',
+            fontSize:'12px', color:'#991b1b', fontFamily:"'DM Sans',sans-serif",
           }}>
             ⚠ {error}
-            <button
-              onClick={() => loadArticles(false)}
-              style={{
-                marginLeft: '12px', background: 'none', border: 'none',
-                color: '#3b82f6', cursor: 'pointer', fontSize: '11px',
-                fontFamily: 'DM Sans, sans-serif', textDecoration: 'underline',
-              }}
-            >Retry</button>
+            <button onClick={() => loadArticles(false)} style={{ marginLeft:'12px', background:'none', border:'none', color:'#0d5c45', cursor:'pointer', fontSize:'11px', fontFamily:"'DM Sans',sans-serif", textDecoration:'underline' }}>Retry</button>
           </div>
         )}
 
-        {/* Loading skeletons */}
+        {/* Loading state */}
         {loading ? (
-          <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
-            {/* Progress banner shown while scraping */}
+          <div style={{ display:'flex', flexDirection:'column', gap:'10px' }}>
             {isScraping && (
               <div style={{
-                background: '#f0f9ff', border: '1px solid #bae6fd',
-                borderRadius: '8px', padding: '14px 16px', marginBottom: '4px',
+                background:'linear-gradient(135deg,rgba(13,92,69,0.06),rgba(26,31,78,0.04))',
+                border:'1px solid rgba(13,92,69,0.2)', borderRadius:'10px', padding:'16px 18px', marginBottom:'4px',
               }}>
-                <div style={{ display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '6px' }}>
-                  <div style={{
-                    width: '8px', height: '8px', borderRadius: '50%',
-                    background: '#3b82f6', animation: 'pulse 1.2s infinite',
-                  }} />
-                  <span style={{ fontSize: '12px', fontFamily: 'DM Sans, sans-serif', color: '#1d4ed8', fontWeight: 600 }}>
-                    Fetching news from 54 sources one by one…
+                <div style={{ display:'flex', alignItems:'center', gap:'10px', marginBottom:'8px' }}>
+                  <div style={{ width:'8px', height:'8px', borderRadius:'50%', background:'#0d5c45', animation:'pulse 1.2s infinite' }}/>
+                  <span style={{ fontSize:'12px', fontFamily:"'DM Sans',sans-serif", color:'#0d5c45', fontWeight:700 }}>
+                    Fetching from 54 sources…
                   </span>
-                  <span style={{ fontSize: '11px', fontFamily: 'JetBrains Mono, monospace', color: '#64748b', marginLeft: 'auto' }}>
-                    {elapsed}s elapsed
+                  <span style={{ fontSize:'11px', fontFamily:'JetBrains Mono,monospace', color:'#94a3b8', marginLeft:'auto' }}>
+                    {elapsed}s
                   </span>
                 </div>
-                {/* Progress bar */}
-                <div style={{ height: '4px', background: '#e0f2fe', borderRadius: '4px', overflow: 'hidden' }}>
+                <div style={{ height:'3px', background:'rgba(13,92,69,0.12)', borderRadius:'3px', overflow:'hidden' }}>
                   <div style={{
-                    height: '100%', borderRadius: '4px', background: '#3b82f6',
-                    width: `${Math.min((elapsed / 90) * 100, 95)}%`,
-                    transition: 'width 1s linear',
-                  }} />
+                    height:'100%', borderRadius:'3px',
+                    background:'linear-gradient(90deg,#0d5c45,#c8922a)',
+                    width:`${Math.min((elapsed/90)*100,95)}%`, transition:'width 1s linear',
+                  }}/>
                 </div>
-                <p style={{ fontSize: '10px', color: '#64748b', fontFamily: 'DM Sans, sans-serif', marginTop: '6px' }}>
-                  Articles will appear as sources finish loading. This takes ~60–90 seconds on first run.
+                <p style={{ fontSize:'10px', color:'#94a3b8', fontFamily:"'DM Sans',sans-serif", marginTop:'6px' }}>
+                  Articles appear as sources load — takes ~60–90s on first run.
                 </p>
               </div>
             )}
-            <SkeletonCard h={130} />
-            <div className="article-grid-2">
-              {[1,2,3,4].map(i => <SkeletonCard key={i} />)}
-            </div>
-            <div style={{ display: 'flex', flexDirection: 'column', gap: '2px' }}>
-              {[1,2,3].map(i => <SkeletonCard key={i} h={62} />)}
-            </div>
+            <SkeletonCard h={140}/>
+            <div className="article-grid-2">{[1,2,3,4].map(i=><SkeletonCard key={i}/>)}</div>
+            <div style={{ display:'flex', flexDirection:'column', gap:'2px' }}>{[1,2,3].map(i=><SkeletonCard key={i} h={64}/>)}</div>
           </div>
         ) : (
           <>
             {featured && (
-              <div style={{ marginBottom: '6px' }} className="fade-up">
-                <ArticleCard article={featured} featured />
+              <div style={{ marginBottom:'10px' }} className="fade-up">
+                <ArticleCard article={featured} featured/>
               </div>
             )}
-
             {grid.length > 0 && (
               <div className="article-grid-2">
-                {grid.map(a => (
+                {grid.map(a=>(
                   <div key={a.id} className="fade-up">
-                    <ArticleCard article={a} />
+                    <ArticleCard article={a}/>
                   </div>
                 ))}
               </div>
             )}
-
             {list.length > 0 && (
-              <div style={{ height: '1px', background: '#f1f5f9', margin: '1px 0 2px' }} />
-            )}
-
-            <div>
-              {list.map(a => (
-                <div key={a.id} className="fade-up">
-                  <ArticleCard article={a} compact />
-                </div>
-              ))}
-            </div>
-
-            {filtered.length === 0 && (
               <div style={{
-                textAlign: 'center', padding: '60px 20px',
-                color: '#94a3b8', fontFamily: "'Playfair Display', serif",
-                fontSize: '15px', fontStyle: 'italic',
+                background:'#fff', borderRadius:'10px', border:'1px solid #e4e8ef',
+                boxShadow:'0 1px 6px rgba(15,23,42,0.04)',
+                padding:'4px 0', marginTop:'4px',
               }}>
+                <div style={{ padding:'10px 14px 6px', borderBottom:'1px solid #f0f2f7' }}>
+                  <span style={{ fontSize:'9px', fontFamily:"'DM Sans',sans-serif", fontWeight:700, color:'#94a3b8', letterSpacing:'1.2px', textTransform:'uppercase' }}>More Stories</span>
+                </div>
+                {list.map(a=>(
+                  <div key={a.id} className="fade-up">
+                    <ArticleCard article={a} compact/>
+                  </div>
+                ))}
+              </div>
+            )}
+            {filtered.length === 0 && (
+              <div style={{ textAlign:'center', padding:'64px 20px', color:'#94a3b8', fontFamily:"'Playfair Display',serif", fontSize:'15px', fontStyle:'italic' }}>
                 No articles in this category yet.
-                <br />
-                <span style={{ fontSize: '11px', fontFamily: 'DM Sans, sans-serif', color: '#cbd5e1' }}>
-                  Feeds update every 5 minutes — try refreshing.
-                </span>
+                <br/>
+                <span style={{ fontSize:'11px', fontFamily:"'DM Sans',sans-serif", color:'#cbd5e1' }}>Feeds refresh every 5 minutes.</span>
               </div>
             )}
           </>
@@ -370,7 +338,7 @@ export default function FeedPage({ category }: { category: Category }) {
       </div>
 
       {/* ── RIGHT ── */}
-      <div className="sidebar-right"><Sidebar related={articles.filter(a => a.url && a.url !== '#').slice(0, 8)} /></div>
+      <div className="sidebar-right"><Sidebar related={articles.filter(a=>a.url&&a.url!=='#').slice(0,8)}/></div>
     </div>
   );
 }

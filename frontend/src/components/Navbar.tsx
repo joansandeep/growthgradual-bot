@@ -33,84 +33,124 @@ export default function Navbar() {
 
   return (
     <>
+      <style>{`
+        @keyframes pulse{0%,100%{opacity:1}50%{opacity:0.35}}
+        @keyframes glow{0%,100%{box-shadow:0 0 6px rgba(34,197,94,0.4)}50%{box-shadow:0 0 14px rgba(34,197,94,0.7)}}
+        .nav-link-item {
+          display:flex;align-items:center;gap:5px;
+          padding:5px 13px;border-radius:3px;
+          font-size:10.5px;font-weight:500;
+          font-family:'DM Sans',sans-serif;letter-spacing:0.7px;
+          text-transform:uppercase;text-decoration:none;
+          color:rgba(255,255,255,0.55);
+          border-bottom:2px solid transparent;
+          transition:color .15s,border-color .15s,background .15s;
+          white-space:nowrap;
+        }
+        .nav-link-item:hover { color:rgba(255,255,255,0.9); }
+        .nav-link-item.active {
+          color:#fff;font-weight:700;
+          border-bottom-color:#c8922a;
+        }
+        .mob-nav-item {
+          display:flex;flex-direction:column;align-items:center;gap:3px;
+          padding:4px 8px;text-decoration:none;flex:1;
+          color:#94a3b8;transition:color .15s;
+        }
+        .mob-nav-item.active { color:#0d5c45; }
+      `}</style>
+
       <nav style={{
-        background: '#ffffff',
-        borderBottom: '1px solid #e2e8f0',
+        background: '#0f172a',
         position: 'sticky',
         top: 0,
         zIndex: 100,
-        boxShadow: '0 1px 4px rgba(0,0,0,0.06)',
+        boxShadow: '0 4px 24px rgba(0,0,0,0.35)',
       }}>
-        {/* Top bar */}
+        {/* Top row */}
         <div className="nav-top">
-          <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+          {/* Logo + tagline */}
+          <div style={{ display:'flex', alignItems:'center', gap:'14px' }}>
             <Image
-              src="/growth-gradual-logo-transparent.jpeg"
+              src="/growth-gradual-logo.png"
               alt="Growth Gradual"
-              width={180}
-              height={52}
-              style={{ objectFit: 'contain', height: '42px', width: 'auto' }}
+              width={200}
+              height={56}
+              style={{ objectFit:'contain', height:'40px', width:'auto', filter:'brightness(1.05)' }}
               priority
             />
-            <div style={{ width:'1px', height:'16px', background:'#e2e8f0' }} />
-            <span className="nav-tagline" style={{ fontSize:'10px', color:'#94a3b8', fontFamily:"'DM Sans',sans-serif" }}>
+            <div style={{ width:'1px', height:'18px', background:'rgba(255,255,255,0.12)' }} />
+            <span className="nav-tagline" style={{
+              fontSize:'9.5px', color:'rgba(255,255,255,0.38)',
+              fontFamily:"'DM Sans',sans-serif", letterSpacing:'1.2px', textTransform:'uppercase',
+            }}>
               Indian Financial Markets · Live Data
             </span>
           </div>
-          <div style={{ display:'flex', alignItems:'center', gap:'10px' }}>
+
+          {/* Right cluster */}
+          <div style={{ display:'flex', alignItems:'center', gap:'12px' }}>
+            {/* Market status pill */}
             {marketOpen !== null && (
-              <div style={{ display:'flex', alignItems:'center', gap:'5px', background: marketOpen ? '#f0fdf4' : '#f8fafc', border: `1px solid ${marketOpen ? '#bbf7d0' : '#e2e8f0'}`, borderRadius:'4px', padding:'3px 8px' }}>
-                <span style={{ width:'6px', height:'6px', borderRadius:'50%', background: marketOpen ? '#22c55e' : '#94a3b8', display:'inline-block', boxShadow: marketOpen ? '0 0 6px #22c55e80' : 'none', animation: marketOpen ? 'pulse 2s ease-in-out infinite' : 'none' }} />
-                <style>{`@keyframes pulse{0%,100%{opacity:1}50%{opacity:0.5}}`}</style>
-                <span style={{ fontSize:'10px', color: marketOpen ? '#15803d' : '#64748b', fontFamily:'JetBrains Mono,monospace', letterSpacing:'0.5px' }}>{marketOpen ? 'MARKET OPEN' : 'MARKET CLOSED'}</span>
+              <div style={{
+                display:'flex', alignItems:'center', gap:'6px',
+                background: marketOpen ? 'rgba(34,197,94,0.1)' : 'rgba(255,255,255,0.06)',
+                border: `1px solid ${marketOpen ? 'rgba(34,197,94,0.3)' : 'rgba(255,255,255,0.1)'}`,
+                borderRadius:'20px', padding:'4px 12px',
+              }}>
+                <span style={{
+                  width:'6px', height:'6px', borderRadius:'50%',
+                  background: marketOpen ? '#22c55e' : '#475569',
+                  display:'inline-block',
+                  animation: marketOpen ? 'glow 2s ease-in-out infinite' : 'none',
+                }} />
+                <span style={{
+                  fontSize:'9px', fontFamily:'JetBrains Mono,monospace',
+                  color: marketOpen ? '#4ade80' : 'rgba(255,255,255,0.35)',
+                  letterSpacing:'0.8px', fontWeight:600,
+                }}>
+                  {marketOpen ? 'MARKET OPEN' : 'MARKET CLOSED'}
+                </span>
               </div>
             )}
-            <span className="nav-tagline" style={{ fontSize:'10px', color:'#cbd5e1', fontFamily:'JetBrains Mono,monospace' }}>NSE · BSE · MCX</span>
+            <span className="nav-tagline" style={{
+              fontSize:'9px', color:'rgba(255,255,255,0.2)',
+              fontFamily:'JetBrains Mono,monospace', letterSpacing:'0.5px',
+            }}>NSE · BSE · MCX</span>
           </div>
         </div>
 
-        {/* Desktop nav links — hidden on home (chat) page */}
+        {/* Nav links row — hidden on chat page */}
         <div className="nav-links" style={{ display: pathname === '/' ? 'none' : 'flex' }}>
           {CATEGORIES.map(cat => {
-            const href = cat.id === 'all' ? '/' : `/${cat.id}`;
-            const active = pathname === href || (cat.id === 'all' && pathname === '/');
+            const href = cat.id === 'all' ? '/feed' : `/${cat.id}`;
+            const active = pathname === href || (cat.id === 'all' && (pathname === '/feed'));
             return (
-              <Link key={cat.id} href={href} style={{
-                display:'flex', alignItems:'center', gap:'5px',
-                padding:'4px 12px', borderRadius:'2px',
-                fontSize:'11px', fontWeight: active ? 600 : 400,
-                fontFamily:"'DM Sans',sans-serif", letterSpacing:'0.8px',
-                textTransform:'uppercase',
-                color: active ? '#1e40af' : '#64748b',
-                background: active ? '#eff6ff' : 'transparent',
-                borderBottom: active ? '2px solid #3b82f6' : '2px solid transparent',
-                textDecoration:'none', transition:'all 0.15s', whiteSpace:'nowrap',
-              }}>
-                <span style={{ fontSize:'9px', opacity:0.7 }}>{cat.icon}</span>
+              <Link key={cat.id} href={href} className={`nav-link-item${active ? ' active' : ''}`}>
+                <span style={{ fontSize:'10px' }}>{cat.icon}</span>
                 {cat.label}
               </Link>
             );
           })}
           <div style={{ flex:1 }} />
-          <span suppressHydrationWarning className="nav-tagline" style={{ fontSize:'10px', color:'#cbd5e1', fontFamily:'JetBrains Mono,monospace' }}>
+          <span suppressHydrationWarning className="nav-tagline" style={{
+            fontSize:'9px', color:'rgba(255,255,255,0.25)',
+            fontFamily:'JetBrains Mono,monospace',
+          }}>
             {time} IST
           </span>
         </div>
       </nav>
 
-      {/* Mobile bottom nav — only visible on small screens */}
+      {/* Mobile bottom nav */}
       <div className="mobile-bottom-nav">
         {CATEGORIES.map(cat => {
-          const href = cat.id === 'all' ? '/' : `/${cat.id}`;
-          const active = pathname === href || (cat.id === 'all' && pathname === '/');
+          const href = cat.id === 'all' ? '/feed' : `/${cat.id}`;
+          const active = pathname === href;
           return (
-            <Link key={cat.id} href={href} style={{
-              display:'flex', flexDirection:'column', alignItems:'center', gap:'2px',
-              padding:'4px 8px', textDecoration:'none', flex:1,
-              color: active ? '#1e40af' : '#94a3b8',
-            }}>
-              <span style={{ fontSize:'16px' }}>{cat.icon}</span>
-              <span style={{ fontSize:'8px', fontFamily:"'DM Sans',sans-serif", fontWeight: active ? 600 : 400, letterSpacing:'0.5px', textTransform:'uppercase' }}>
+            <Link key={cat.id} href={href} className={`mob-nav-item${active ? ' active' : ''}`}>
+              <span style={{ fontSize:'18px' }}>{cat.icon}</span>
+              <span style={{ fontSize:'8px', fontFamily:"'DM Sans',sans-serif", fontWeight: active ? 700 : 400, letterSpacing:'0.5px', textTransform:'uppercase' }}>
                 {cat.label}
               </span>
             </Link>

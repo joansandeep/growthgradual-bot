@@ -3,254 +3,216 @@ import { useRouter } from 'next/navigation';
 import { Article } from '@/types';
 import { TAG_COLORS } from '@/data';
 
-// Strip HTML tags that Google News sometimes puts in titles
 function stripHtml(str: string): string {
   if (!str) return '';
-  // First decode HTML entities
   let s = str
-    .replace(/&amp;/g, '&')
-    .replace(/&lt;/g, '<')
-    .replace(/&gt;/g, '>')
-    .replace(/&quot;/g, '"')
-    .replace(/&#39;/g, "'")
-    .replace(/&#\d+;/g, '')
-    .replace(/&[a-z]+;/g, '');
-  // Remove anchor opening tags first so inner text is preserved
-  s = s.replace(/<a[^>]*>/gi, '');
-  // Strip remaining HTML tags
-  s = s.replace(/<[^>]*>/g, '');
-  // Strip any leftover partial/unclosed tags (e.g. "<a href=..." without closing >)
-  s = s.replace(/<[^>]*$/, '');
-  // If the whole string looks like a raw URL, return empty
+    .replace(/&amp;/g,'&').replace(/&lt;/g,'<').replace(/&gt;/g,'>')
+    .replace(/&quot;/g,'"').replace(/&#39;/g,"'")
+    .replace(/&#\d+;/g,'').replace(/&[a-z]+;/g,'');
+  s = s.replace(/<a[^>]*>/gi,'');
+  s = s.replace(/<[^>]*>/g,'').replace(/<[^>]*$/, '');
   if (/^https?:\/\//.test(s.trim())) return '';
   return s.trim();
 }
 
 function buildArticleHref(article: Article): string {
-  const params = new URLSearchParams({
-    url:    article.url,
-    title:  article.title,
-    source: article.source,
-    time:   article.time,
-    tag:    article.tag,
-  });
+  const params = new URLSearchParams({ url:article.url, title:article.title, source:article.source, time:article.time, tag:article.tag });
   if (article.image) params.set('image', article.image);
   if (article.source_url) params.set('sourceUrl', article.source_url);
   return `/article?${params.toString()}`;
 }
 
-export default function ArticleCard({
-  article,
-  featured = false,
-  compact  = false,
-}: {
-  article:  Article;
-  featured?: boolean;
-  compact?:  boolean;
+const TAG_TEXT: Record<string, string> = {
+  Markets:'#0d5c45', Economy:'#0d5c45', Macro:'#0d5c45',
+  Stocks:'#1a1f4e', Global:'#1a1f4e', Banking:'#1a1f4e',
+  Finance:'#0d5c45', 'Mutual Funds':'#5b21b6', NAV:'#0d5c45',
+  Policy:'#7f1d1d', Regulatory:'#7c2d12', Analysis:'#c8922a',
+  Research:'#7c4a00', Results:'#14532d', Guide:'#1a1f4e',
+  Rating:'#7f1d1d', Data:'#0d5c45', Technical:'#14532d',
+  Picks:'#4c1d95', NFO:'#5b21b6',
+};
+
+const TAG_BG: Record<string, string> = {
+  Markets:'rgba(13,92,69,0.1)', Economy:'rgba(13,92,69,0.1)', Macro:'rgba(13,92,69,0.1)',
+  Stocks:'rgba(26,31,78,0.1)', Global:'rgba(26,31,78,0.1)', Banking:'rgba(26,31,78,0.1)',
+  Finance:'rgba(13,92,69,0.1)', 'Mutual Funds':'rgba(91,33,182,0.1)', NAV:'rgba(13,92,69,0.1)',
+  Policy:'rgba(127,29,29,0.1)', Regulatory:'rgba(124,45,18,0.1)', Analysis:'rgba(200,146,42,0.1)',
+  Research:'rgba(124,74,0,0.1)', Results:'rgba(20,83,45,0.1)', Guide:'rgba(26,31,78,0.1)',
+  Rating:'rgba(127,29,29,0.1)', Data:'rgba(13,92,69,0.1)', Technical:'rgba(20,83,45,0.1)',
+  Picks:'rgba(76,29,149,0.1)', NFO:'rgba(91,33,182,0.1)',
+};
+
+export default function ArticleCard({ article, featured=false, compact=false }: {
+  article: Article; featured?: boolean; compact?: boolean;
 }) {
-  const router   = useRouter();
-  const tagColor = TAG_COLORS[article.tag] || '#dbeafe';
-  const tagText  = TAG_TEXT[article.tag] || '#1e40af';
-  const href     = buildArticleHref(article);
+  const router = useRouter();
+  const tagBg   = TAG_BG[article.tag]   ?? 'rgba(26,31,78,0.08)';
+  const tagText = TAG_TEXT[article.tag] ?? '#1a1f4e';
+  const href    = buildArticleHref(article);
+  void TAG_COLORS; // imported but used via TAG_BG override
 
   const navigate = () => {
-    if (article.url && article.url !== '#') {
-      router.push(href);
-    }
+    if (article.url && article.url !== '#') router.push(href);
   };
 
+  // Shared tag pill
+  const TagPill = () => (
+    <span style={{
+      display:'inline-block', fontSize:'8px', fontWeight:700,
+      color:tagText, background:tagBg,
+      padding:'3px 8px', borderRadius:'3px', marginBottom:'9px',
+      fontFamily:"'DM Sans',sans-serif", letterSpacing:'1px', textTransform:'uppercase',
+      border:`1px solid ${tagText}22`,
+    }}>{article.tag}</span>
+  );
+
   /* ── COMPACT LIST ROW ── */
-  if (compact) {
-    return (
-      <div
-        onClick={navigate}
-        style={{
-          padding: '10px 0',
-          borderBottom: '1px solid #f1f5f9',
-          cursor: 'pointer',
-          transition: 'background 0.15s',
-        }}
-        onMouseEnter={e => (e.currentTarget.style.background = '#f8fafc')}
-        onMouseLeave={e => (e.currentTarget.style.background = 'transparent')}
-      >
-        <span style={{
-          display: 'inline-block', fontSize: '8px', fontWeight: 600,
-          color: tagText, background: tagColor,
-          padding: '2px 6px', borderRadius: '3px', marginBottom: '5px',
-          fontFamily: 'DM Sans, sans-serif', letterSpacing: '0.8px', textTransform: 'uppercase',
-        }}>{article.tag}</span>
-
+  if (compact) return (
+    <div
+      onClick={navigate}
+      style={{
+        padding:'11px 14px',
+        borderBottom:'1px solid #eef0f5',
+        cursor:'pointer',
+        borderRadius:'6px',
+        transition:'background .15s',
+        display:'flex', gap:'12px', alignItems:'flex-start',
+      }}
+      onMouseEnter={e => {
+        e.currentTarget.style.background='#f7f8fa';
+        e.currentTarget.style.borderLeftColor='#0d5c45';
+      }}
+      onMouseLeave={e => {
+        e.currentTarget.style.background='transparent';
+        e.currentTarget.style.borderLeftColor='transparent';
+      }}
+    >
+      <div style={{ flex:1, minWidth:0 }}>
+        <TagPill />
         <p style={{
-          fontSize: '12px', fontFamily: "'Playfair Display', serif",
-          fontWeight: 600, color: '#334155', lineHeight: 1.45, marginBottom: '4px',
+          fontSize:'12.5px', fontFamily:"'Playfair Display',serif",
+          fontWeight:600, color:'#1a2035', lineHeight:1.42, marginBottom:'6px',
         }}>{stripHtml(article.title)}</p>
-
-        <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
-          <span style={{ fontSize: '9px', color: '#64748b', fontFamily: 'DM Sans, sans-serif' }}>{article.source}</span>
-          <span style={{ fontSize: '8px', color: '#cbd5e1' }}>·</span>
-          <span style={{ fontSize: '9px', color: '#94a3b8', fontFamily: 'JetBrains Mono, monospace' }}>{article.time}</span>
-          <span style={{ fontSize: '8px', color: '#cbd5e1' }}>·</span>
-          <span style={{ fontSize: '9px', color: '#3b82f6', fontFamily: 'DM Sans, sans-serif' }}>Read →</span>
+        <div style={{ display:'flex', gap:'6px', alignItems:'center' }}>
+          <span style={{ fontSize:'9px', color:'#64748b', fontFamily:"'DM Sans',sans-serif", fontWeight:500 }}>{article.source}</span>
+          <span style={{ color:'#d1d9e6', fontSize:'8px' }}>·</span>
+          <span style={{ fontSize:'9px', color:'#94a3b8', fontFamily:'JetBrains Mono,monospace' }}>{article.time}</span>
+          <span style={{ marginLeft:'auto', fontSize:'9px', color:'#0d5c45', fontFamily:"'DM Sans',sans-serif", fontWeight:600, letterSpacing:'0.3px' }}>Read →</span>
         </div>
       </div>
-    );
-  }
+    </div>
+  );
 
   /* ── FEATURED HERO ── */
-  if (featured) {
-    return (
-      <div
-        onClick={navigate}
-        style={{
-          background: '#ffffff', border: '1px solid #e2e8f0',
-          borderRadius: '8px', overflow: 'hidden',
-          cursor: 'pointer', transition: 'border-color 0.2s, box-shadow 0.2s',
-          boxShadow: '0 1px 3px rgba(0,0,0,0.05)',
-        }}
-        onMouseEnter={e => {
-          e.currentTarget.style.borderColor = '#93c5fd';
-          e.currentTarget.style.boxShadow = '0 4px 12px rgba(59,130,246,0.1)';
-        }}
-        onMouseLeave={e => {
-          e.currentTarget.style.borderColor = '#e2e8f0';
-          e.currentTarget.style.boxShadow = '0 1px 3px rgba(0,0,0,0.05)';
-        }}
-      >
-        {article.image && (
-          <div style={{ width: '100%', height: '180px', overflow: 'hidden', borderBottom: '1px solid #e2e8f0' }}>
-            <img
-              src={article.image}
-              alt=""
-              onError={e => { (e.currentTarget.parentElement as HTMLElement).style.display = 'none'; }}
-              style={{ width: '100%', height: '180px', objectFit: 'cover', display: 'block' }}
-            />
-          </div>
+  if (featured) return (
+    <div
+      onClick={navigate}
+      style={{
+        background:'#fff', borderRadius:'12px', overflow:'hidden',
+        cursor:'pointer', border:'1px solid #e4e8ef',
+        boxShadow:'0 2px 12px rgba(15,23,42,0.06)',
+        transition:'box-shadow .2s,transform .2s',
+      }}
+      onMouseEnter={e => {
+        e.currentTarget.style.boxShadow='0 8px 32px rgba(13,92,69,0.12)';
+        e.currentTarget.style.transform='translateY(-2px)';
+      }}
+      onMouseLeave={e => {
+        e.currentTarget.style.boxShadow='0 2px 12px rgba(15,23,42,0.06)';
+        e.currentTarget.style.transform='translateY(0)';
+      }}
+    >
+      {article.image && (
+        <div style={{ width:'100%', height:'190px', overflow:'hidden' }}>
+          <img src={article.image} alt="" onError={e => {(e.currentTarget.parentElement as HTMLElement).style.display='none';}}
+            style={{ width:'100%', height:'190px', objectFit:'cover', display:'block' }} />
+        </div>
+      )}
+      <div style={{
+        background:'linear-gradient(135deg,rgba(13,92,69,0.04) 0%,rgba(26,31,78,0.03) 100%)',
+        borderBottom:'1px solid #eef0f5',
+        padding:'22px 22px 16px',
+      }}>
+        {/* Teal accent bar */}
+        <div style={{ width:'32px', height:'3px', background:'linear-gradient(90deg,#0d5c45,#c8922a)', borderRadius:'2px', marginBottom:'14px' }}/>
+        <TagPill />
+        <h2 style={{
+          fontFamily:"'Playfair Display',serif",
+          fontSize:'clamp(16px,2.5vw,20px)', fontWeight:800,
+          color:'#0f172a', lineHeight:1.28, marginBottom: article.summary ? '10px' : 0,
+          letterSpacing:'-0.3px',
+        }}>{stripHtml(article.title)}</h2>
+        {article.summary && stripHtml(article.summary) && (
+          <p style={{
+            fontSize:'12.5px', color:'#64748b', lineHeight:1.65,
+            fontFamily:"'DM Sans',sans-serif",
+            display:'-webkit-box', WebkitLineClamp:2, WebkitBoxOrient:'vertical', overflow:'hidden',
+          } as React.CSSProperties}>{stripHtml(article.summary)}</p>
         )}
-        <div style={{
-          background: 'linear-gradient(135deg, #f0f9ff 0%, #eff6ff 60%, #f8fafc 100%)',
-          borderBottom: '1px solid #e0e7ff',
-          padding: '20px 20px 16px',
-          position: 'relative',
-        }}>
-          <span style={{
-            display: 'inline-block', fontSize: '8px', fontWeight: 700,
-            color: tagText, background: tagColor,
-            padding: '3px 8px', borderRadius: '3px', marginBottom: '10px',
-            fontFamily: 'DM Sans, sans-serif', letterSpacing: '1px', textTransform: 'uppercase',
-          }}>{article.tag}</span>
-
-          <h2 style={{
-            fontFamily: "'Playfair Display', serif",
-            fontSize: 'clamp(15px, 2.5vw, 19px)', fontWeight: 700,
-            color: '#0f172a', lineHeight: 1.3,
-            marginBottom: article.summary ? '10px' : '0',
-            letterSpacing: '-0.2px',
-          }}>{stripHtml(article.title)}</h2>
-
-          {article.summary && stripHtml(article.summary) && (
-            <p style={{
-              fontSize: '12px', color: '#64748b', lineHeight: 1.65,
-              fontFamily: 'DM Sans, sans-serif',
-              display: '-webkit-box',
-              WebkitLineClamp: 2,
-              WebkitBoxOrient: 'vertical',
-              overflow: 'hidden',
-            } as React.CSSProperties}>{stripHtml(article.summary)}</p>
-          )}
-        </div>
-
-        <div style={{
-          padding: '10px 20px',
-          display: 'flex', alignItems: 'center', gap: '10px',
-          background: '#ffffff',
-        }}>
-          <div style={{
-            width: '20px', height: '20px', borderRadius: '4px',
-            background: '#eff6ff',
-            display: 'flex', alignItems: 'center', justifyContent: 'center',
-            fontSize: '8px', color: '#3b82f6', fontWeight: 700,
-            fontFamily: 'JetBrains Mono, monospace',
-          }}>
-            {article.source.slice(0, 2).toUpperCase()}
-          </div>
-          <span style={{ fontSize: '11px', color: '#475569', fontFamily: 'DM Sans, sans-serif', fontWeight: 500 }}>{article.source}</span>
-          <span style={{ fontSize: '9px', color: '#cbd5e1' }}>·</span>
-          <span style={{ fontSize: '10px', color: '#94a3b8', fontFamily: 'JetBrains Mono, monospace' }}>{article.time}</span>
-          <div style={{ flex: 1 }} />
-          <span style={{
-            fontSize: '9px', color: '#3b82f6',
-            fontFamily: 'DM Sans, sans-serif', letterSpacing: '0.5px', textTransform: 'uppercase',
-          }}>Read →</span>
-        </div>
       </div>
-    );
-  }
+      <div style={{ padding:'12px 22px', display:'flex', alignItems:'center', gap:'10px', background:'#fff' }}>
+        <div style={{
+          width:'22px', height:'22px', borderRadius:'5px',
+          background:'linear-gradient(135deg,#0d5c45,#1a1f4e)',
+          display:'flex', alignItems:'center', justifyContent:'center',
+          fontSize:'7px', color:'#fff', fontWeight:800, fontFamily:'JetBrains Mono,monospace',
+        }}>
+          {article.source.slice(0,2).toUpperCase()}
+        </div>
+        <span style={{ fontSize:'11.5px', color:'#334155', fontFamily:"'DM Sans',sans-serif", fontWeight:600 }}>{article.source}</span>
+        <span style={{ color:'#d1d9e6', fontSize:'8px' }}>·</span>
+        <span style={{ fontSize:'9.5px', color:'#94a3b8', fontFamily:'JetBrains Mono,monospace' }}>{article.time}</span>
+        <div style={{ flex:1 }}/>
+        <span style={{ fontSize:'9px', color:'#0d5c45', fontFamily:"'DM Sans',sans-serif", fontWeight:700, letterSpacing:'0.5px', textTransform:'uppercase' }}>Read →</span>
+      </div>
+    </div>
+  );
 
   /* ── GRID CARD ── */
   return (
     <div
       onClick={navigate}
       style={{
-        background: '#ffffff', border: '1px solid #e2e8f0',
-        borderRadius: '8px', overflow: 'hidden',
-        cursor: 'pointer', height: '100%',
-        transition: 'border-color 0.2s, box-shadow 0.2s',
-        boxShadow: '0 1px 3px rgba(0,0,0,0.04)',
-        display: 'flex', flexDirection: 'column',
+        background:'#fff', borderRadius:'10px', overflow:'hidden',
+        cursor:'pointer', height:'100%',
+        border:'1px solid #e4e8ef',
+        boxShadow:'0 1px 6px rgba(15,23,42,0.05)',
+        display:'flex', flexDirection:'column',
+        transition:'box-shadow .18s,transform .18s,border-color .18s',
       }}
       onMouseEnter={e => {
-        e.currentTarget.style.borderColor = '#93c5fd';
-        e.currentTarget.style.boxShadow = '0 4px 12px rgba(59,130,246,0.08)';
+        e.currentTarget.style.boxShadow='0 6px 24px rgba(13,92,69,0.1)';
+        e.currentTarget.style.borderColor='rgba(13,92,69,0.25)';
+        e.currentTarget.style.transform='translateY(-1px)';
       }}
       onMouseLeave={e => {
-        e.currentTarget.style.borderColor = '#e2e8f0';
-        e.currentTarget.style.boxShadow = '0 1px 3px rgba(0,0,0,0.04)';
+        e.currentTarget.style.boxShadow='0 1px 6px rgba(15,23,42,0.05)';
+        e.currentTarget.style.borderColor='#e4e8ef';
+        e.currentTarget.style.transform='translateY(0)';
       }}
     >
       {article.image && (
-        <div style={{ width: '100%', height: '140px', overflow: 'hidden', borderBottom: '1px solid #e2e8f0', flexShrink: 0 }}>
-          <img
-            src={article.image}
-            alt=""
-            onError={e => { (e.currentTarget.parentElement as HTMLElement).style.display = 'none'; }}
-            style={{ width: '100%', height: '140px', objectFit: 'cover', display: 'block' }}
+        <div style={{ width:'100%', height:'145px', overflow:'hidden', flexShrink:0 }}>
+          <img src={article.image} alt="" onError={e => {(e.currentTarget.parentElement as HTMLElement).style.display='none';}}
+            style={{ width:'100%', height:'145px', objectFit:'cover', display:'block', transition:'transform .3s' }}
+            onMouseEnter={e => (e.currentTarget.style.transform='scale(1.03)')}
+            onMouseLeave={e => (e.currentTarget.style.transform='scale(1)')}
           />
         </div>
       )}
-      <div style={{ padding: '14px', flex: 1, display: 'flex', flexDirection: 'column' }}>
-      <span style={{
-        display: 'inline-block', fontSize: '8px', fontWeight: 700,
-        color: tagText, background: tagColor,
-        padding: '2px 6px', borderRadius: '3px', marginBottom: '8px',
-        fontFamily: 'DM Sans, sans-serif', letterSpacing: '0.8px', textTransform: 'uppercase',
-      }}>{article.tag}</span>
-
-      <p style={{
-        fontSize: '12px', fontFamily: "'Playfair Display', serif",
-        fontWeight: 600, color: '#334155', lineHeight: 1.45,
-        marginBottom: '10px',
-        display: '-webkit-box',
-        WebkitLineClamp: 3,
-        WebkitBoxOrient: 'vertical',
-        overflow: 'hidden',
-      } as React.CSSProperties}>{stripHtml(article.title)}</p>
-
-      <div style={{ display: 'flex', alignItems: 'center', gap: '6px', marginTop: 'auto' }}>
-        <span style={{ fontSize: '10px', color: '#64748b', fontFamily: 'DM Sans, sans-serif', fontWeight: 500 }}>{article.source}</span>
-        <span style={{ fontSize: '8px', color: '#e2e8f0' }}>·</span>
-        <span style={{ fontSize: '9px', color: '#94a3b8', fontFamily: 'JetBrains Mono, monospace' }}>{article.time}</span>
-      </div>
+      <div style={{ padding:'14px 15px', flex:1, display:'flex', flexDirection:'column' }}>
+        <TagPill />
+        <p style={{
+          fontSize:'12.5px', fontFamily:"'Playfair Display',serif",
+          fontWeight:700, color:'#1a2035', lineHeight:1.42, marginBottom:'10px',
+          display:'-webkit-box', WebkitLineClamp:3, WebkitBoxOrient:'vertical', overflow:'hidden',
+        } as React.CSSProperties}>{stripHtml(article.title)}</p>
+        <div style={{ display:'flex', alignItems:'center', gap:'6px', marginTop:'auto' }}>
+          <span style={{ fontSize:'10px', color:'#64748b', fontFamily:"'DM Sans',sans-serif", fontWeight:500 }}>{article.source}</span>
+          <span style={{ color:'#d1d9e6', fontSize:'8px' }}>·</span>
+          <span style={{ fontSize:'9px', color:'#94a3b8', fontFamily:'JetBrains Mono,monospace' }}>{article.time}</span>
+        </div>
       </div>
     </div>
   );
 }
-
-const TAG_TEXT: Record<string, string> = {
-  Markets: '#1e40af', Economy: '#166534', Macro: '#166534',
-  Stocks: '#1e40af', Global: '#3730a3', Banking: '#1e3a8a',
-  Finance: '#1e40af', 'Mutual Funds': '#6b21a8', NAV: '#166534',
-  Policy: '#7f1d1d', Regulatory: '#7c2d12', Analysis: '#713f12',
-  Research: '#451a03', Results: '#14532d', Guide: '#1e3a5f',
-  Rating: '#7f1d1d', Data: '#164e63', Technical: '#14532d',
-  Picks: '#4c1d95', NFO: '#5b21b6',
-};

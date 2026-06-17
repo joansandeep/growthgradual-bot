@@ -56,21 +56,23 @@ const FALLBACK: MarketData = {
 const Panel = ({ children, style = {} }: { children: React.ReactNode; style?: React.CSSProperties }) => (
   <div style={{
     background: '#ffffff',
-    border: '1px solid #e2e8f0',
-    borderRadius: '8px',
+    border: '1px solid #e4e8ef',
+    borderRadius: '10px',
     padding: '16px',
-    boxShadow: '0 1px 3px rgba(0,0,0,0.04)',
+    boxShadow: '0 2px 10px rgba(15,23,42,0.06)',
     ...style,
   }}>{children}</div>
 );
 
 const SectionLabel = ({ children }: { children: React.ReactNode }) => (
-  <p style={{
-    fontSize: '9px', fontWeight: 600, color: '#94a3b8',
-    textTransform: 'uppercase', letterSpacing: '2px',
-    marginBottom: '12px', fontFamily: 'DM Sans, sans-serif',
-    borderBottom: '1px solid #f1f5f9', paddingBottom: '6px',
-  }}>{children}</p>
+  <div style={{ display:'flex', alignItems:'center', gap:'6px', marginBottom:'12px', paddingBottom:'8px', borderBottom:'1px solid #f0f2f7' }}>
+    <div style={{ width:'2px', height:'12px', background:'linear-gradient(180deg,#0d5c45,#c8922a)', borderRadius:'2px' }}/>
+    <p style={{
+      fontSize:'9px', fontWeight:700, color:'#8892a4',
+      textTransform:'uppercase', letterSpacing:'2px',
+      fontFamily:"'DM Sans',sans-serif", margin:0,
+    }}>{children}</p>
+  </div>
 );
 
 function Pulse({ color = '#22c55e' }: { color?: string }) {
@@ -260,11 +262,11 @@ export default function StockPanel(_props: { stocks?: Stock[]; stats?: QuickStat
             <p style={{ fontSize: '13px', color: '#15803d', fontFamily: 'JetBrains Mono, monospace', fontWeight: 600 }}>{fiiNet}</p>
           </div>
           <div style={{
-            flex: 1, background: '#eff6ff', border: '1px solid #bfdbfe',
+            flex: 1, background: 'rgba(13,92,69,0.07)', border: '1px solid #bfdbfe',
             borderRadius: '6px', padding: '10px', textAlign: 'center',
           }}>
             <p style={{ fontSize: '9px', color: '#64748b', fontFamily: 'DM Sans, sans-serif', letterSpacing: '1px', textTransform: 'uppercase' }}>DII Net</p>
-            <p style={{ fontSize: '13px', color: '#1d4ed8', fontFamily: 'JetBrains Mono, monospace', fontWeight: 600 }}>{diiNet}</p>
+            <p style={{ fontSize: '13px', color: '#0d5c45', fontFamily: 'JetBrains Mono, monospace', fontWeight: 600 }}>{diiNet}</p>
           </div>
         </div>
       </Panel>
