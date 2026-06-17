@@ -1002,7 +1002,15 @@ export default function GrowthGradualChat() {
       : hasAttachments ? 'Analysing your attachment…'
       : 'Searching the web for latest data…'
     );
-    historyRef.current = [...historyRef.current, { role:'user', content:q }];
+    // When attachments are present, don't carry over prior conversation history.
+    // Sending old turns alongside a new file/image causes the model to answer from
+    // previous topic context instead of the attachment. Reset to just the current message.
+    const previousHistory = [...historyRef.current];
+    if (hasAttachments) {
+      historyRef.current = [{ role: 'user', content: q }];
+    } else {
+      historyRef.current = [...historyRef.current, { role: 'user', content: q }];
+    }
 
     const ctrl = new AbortController();
     abortRef.current = ctrl;
@@ -1042,7 +1050,18 @@ export default function GrowthGradualChat() {
         finalText = acc;
         setMessages(prev => prev.map(m => m.id === botMsg.id ? { ...m, text:acc } : m));
       }
-      historyRef.current = [...historyRef.current, { role:'assistant', content:finalText }];
+      // After reply, always restore the full history including this new exchange
+      // so follow-up messages within the same session continue to work correctly.
+      if (hasAttachments) {
+        // Rebuild: old turns + new user msg + new assistant reply
+        historyRef.current = [
+          ...previousHistory,
+          { role: 'user', content: q },
+          { role: 'assistant', content: finalText },
+        ];
+      } else {
+        historyRef.current = [...historyRef.current, { role: 'assistant', content: finalText }];
+      }
 
       // Auto-generate report in background after stream completes
       // Only for substantive queries (not greetings, very short messages, or chitchat)
@@ -1773,12 +1792,7 @@ export default function GrowthGradualChat() {
                         {!isUser && (msg.reportLoading || msg.reportData) && (
                           <ReportPanel msg={msg} question={msg.text.slice(0,300)}/>
                         )}
-                        {!isUser && msg.searchPerformed && msg.text && (
-                          <div className="web-search-chip">
-                            <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/></svg>
-                            Web search · {msg.sources?.length ?? 0} sources
-                          </div>
-                        )}
+                        {/* Web search chip hidden — sources used internally only */}
                         <span className="msg-ts">{fmtTime(msg.ts)}</span>
                       </div>
                     </div>
