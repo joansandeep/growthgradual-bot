@@ -672,12 +672,7 @@ You specialise in NSE/BSE stocks, IPOs, mutual funds, RBI/SEBI policy, macroecon
 
 # ─── Groq streaming ────────────────────────────────────────────────────────────
 _GROQ_MODELS = [
-    "llama-3.3-70b-versatile",
-    "llama-3.1-70b-versatile",
-    "llama3-70b-8192",
-    "llama3-8b-8192",
-    "gemma2-9b-it",
-    "mixtral-8x7b-32768",
+    "llama-3.3-70b-versatile",   # only currently live model on free tier
 ]
 
 async def stream_groq(system_prompt: str, messages: list[dict]) -> AsyncGenerator[str, None] | None:
@@ -789,11 +784,19 @@ async def stream_groq(system_prompt: str, messages: list[dict]) -> AsyncGenerato
 
 
 _GEMINI_CHAT_MODELS = [
-    "gemini-2.0-flash",
-    "gemini-2.5-flash",
-    "gemini-2.0-flash-lite",
-    "gemini-1.5-flash",
-    "gemini-1.5-flash-8b",
+    # Ordered by free-tier RPD so the highest-quota model is tried first.
+    # gemini-3.1-flash-lite: 15 RPM / 500 RPD  ← workhorse
+    # gemini-2.5-flash-lite: 10 RPM / 20 RPD
+    # gemini-2.5-flash:       5 RPM / 20 RPD
+    # gemini-3-flash-preview: 5 RPM / 20 RPD   (API string for "Gemini 3 Flash" in console)
+    # gemini-3.5-flash:       5 RPM / 20 RPD
+    # Removed: gemini-1.5-flash / gemini-1.5-flash-8b (404, retired)
+    #          gemini-2.0-flash / gemini-2.0-flash-lite (retiring June 2026, 0/0/0 quota)
+    "gemini-3.1-flash-lite",   # 15 RPM / 500 RPD
+    "gemini-2.5-flash-lite",   # 10 RPM / 20 RPD
+    "gemini-2.5-flash",        #  5 RPM / 20 RPD
+    "gemini-3-flash-preview",  #  5 RPM / 20 RPD
+    "gemini-3.5-flash",        #  5 RPM / 20 RPD
 ]
 
 

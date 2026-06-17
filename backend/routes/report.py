@@ -328,7 +328,7 @@ async def call_groq(user_prompt: str) -> str:
                             {"role": "system", "content": SYSTEM_PROMPT},
                             {"role": "user", "content": trimmed_prompt},
                         ],
-                        "max_tokens": 12000,
+                        "max_tokens": 16000,
                         "temperature": 0.2,
                         "response_format": {"type": "json_object"},
                     },
@@ -349,7 +349,7 @@ async def call_groq(user_prompt: str) -> str:
                                     {"role": "system", "content": SYSTEM_PROMPT},
                                     {"role": "user", "content": trimmed_prompt},
                                 ],
-                                "max_tokens": 12000,
+                                "max_tokens": 16000,
                                 "temperature": 0.2,
                                 "response_format": {"type": "json_object"},
                             },
@@ -361,10 +361,12 @@ async def call_groq(user_prompt: str) -> str:
                             return text2
                 except Exception:
                     pass
-                # Still failing — skip Groq entirely
-                for k in keys:
-                    mark_rate_limited(k, 120_000)
-                return ""
+                # 413 means the payload is too large for this key's context window.
+                # It says nothing about other keys, so only mark this one key
+                # as unavailable briefly and let the loop try the next key.
+                # (Blanket-marking every key poisons the shared chat endpoint too.)
+                mark_rate_limited(key, 120_000)
+                continue
             if res.status_code == 429:
                 log.warning("Groq 429 on key ...%s", key[-4:])
                 mark_rate_limited(key, 60_000)
@@ -401,12 +403,18 @@ async def call_groq(user_prompt: str) -> str:
 
 # Gemini model priority: try best model first, fall back on 503/429/404
 GEMINI_MODELS = [
-    "gemini-2.5-flash",        # best quality, 5 RPM free tier
-    "gemini-3.1-flash-lite",   # 15 RPM — highest free quota, great fallback
-    "gemini-3.5-flash",        # 5 RPM
-    "gemini-2.5-flash-lite",   # 10 RPM
-    "gemini-2.0-flash",        # older reliable fallback
-    "gemini-2.0-flash-lite",   # last resort
+    # Ordered by RPD on the free tier so the highest-quota model is tried first.
+    # gemini-3.1-flash-lite: 15 RPM / 500 RPD  ← workhorse; try this first
+    # gemini-2.5-flash-lite: 10 RPM / 20 RPD
+    # gemini-2.5-flash:       5 RPM / 20 RPD
+    # gemini-3-flash-preview: 5 RPM / 20 RPD   (API string; shown as "Gemini 3 Flash" in console)
+    # gemini-3.5-flash:       5 RPM / 20 RPD
+    # Removed: gemini-2.0-flash / gemini-2.0-flash-lite (retiring June 2026, 0/0/0 quota)
+    "gemini-3.1-flash-lite",   # 15 RPM / 500 RPD — highest free quota by far
+    "gemini-2.5-flash-lite",   # 10 RPM / 20 RPD
+    "gemini-2.5-flash",        #  5 RPM / 20 RPD
+    "gemini-3-flash-preview",  #  5 RPM / 20 RPD
+    "gemini-3.5-flash",        #  5 RPM / 20 RPD
 ]
 
 
@@ -443,17 +451,27 @@ async def call_gemini(user_prompt: str) -> str:
         try:
             log.debug("Gemini: trying model=%s key=...%s", model, key[-4:])
             t0 = time.perf_counter()
-            async with httpx.AsyncClient(timeout=90) as client:
+            generation_config = {
+                "maxOutputTokens": 32000,
+                "temperature": 0.1,
+                "responseMimeType": "application/json",  # force JSON — avoids markdown fences
+            }
+            # Suppress thinking tokens for structured-output tasks — we want the
+            # full token budget to go to the actual JSON report, not hidden reasoning.
+            # Gemini 2.5 uses the legacy thinkingBudget:0 param.
+            # Gemini 3 uses thinkingLevel (mixing both in one request → 400).
+            # gemini-3.1-flash-lite defaults to "minimal" so no param needed.
+            if model in ("gemini-2.5-flash", "gemini-2.5-flash-lite"):
+                generation_config["thinkingConfig"] = {"thinkingBudget": 0}
+            elif model in ("gemini-3-flash-preview", "gemini-3.5-flash"):
+                generation_config["thinkingConfig"] = {"thinkingLevel": "minimal"}
+            async with httpx.AsyncClient(timeout=120) as client:
                 res = await client.post(
                     f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={key}",
                     json={
                         "system_instruction": {"parts": [{"text": SYSTEM_PROMPT}]},
                         "contents": [{"role": "user", "parts": [{"text": user_prompt}]}],
-                        "generationConfig": {
-                            "maxOutputTokens": 16000,
-                            "temperature": 0.1,
-                            "responseMimeType": "application/json",  # force JSON — avoids markdown fences
-                        },
+                        "generationConfig": generation_config,
                     },
                 )
             if res.status_code == 503:
@@ -542,7 +560,7 @@ async def extract_data_from_images(question: str, file_images: list[dict]) -> st
         available_keys = vision_keys
 
     for key in available_keys[:3]:  # try up to 3 keys
-        for model in ["gemini-2.5-flash", "gemini-3.1-flash-lite", "gemini-3.5-flash", "gemini-2.5-flash-lite", "gemini-2.0-flash", "gemini-2.0-flash-lite"]:
+        for model in ["gemini-3.1-flash-lite", "gemini-2.5-flash-lite", "gemini-2.5-flash", "gemini-3-flash-preview", "gemini-3.5-flash"]:
             try:
                 async with httpx.AsyncClient(timeout=60) as client:
                     res = await client.post(
@@ -618,15 +636,22 @@ async def generate_report(request: Request):
     has_file_data = bool(file_context.strip()) or bool(extracted_image_context.strip())
 
     if has_file_data and not sources:
-        # File provided — use it as primary source, do a small web search for supplemental data only
-        log.info("Report: file-first mode — supplementing with web search")
-        from routes.chat import tavily_search as _tavily_search, _looks_like_ai_overview
-        searched = await _tavily_search(question, max_results=20, min_results=10)
-        sources = [
-            {"title": r["title"], "url": r["url"],
-             "snippet": r["snippet"], "fullContent": r.get("fullContent", "")}
-            for r in searched
-        ]
+        from routes.chat import tavily_search as _tavily_search, _looks_like_ai_overview, needs_web_search as _needs_web_search
+        if _needs_web_search(question, has_files=True):
+            # Question implies it wants more than just the file (e.g. asks for
+            # market context, comparisons, recent news) — supplement with web data.
+            log.info("Report: file-first mode — supplementing with web search")
+            searched = await _tavily_search(question, max_results=20, min_results=10)
+            sources = [
+                {"title": r["title"], "url": r["url"],
+                 "snippet": r["snippet"], "fullContent": r.get("fullContent", "")}
+                for r in searched
+            ]
+        else:
+            # Generic "what is this / describe / summarise" type question about
+            # an attached file/image — a web search on the literal question text
+            # would just return irrelevant noise, so skip it entirely.
+            log.info("Report: file-first mode — question doesn't need web search, using file data only")
     elif not sources:
         log.info("Report: no sources — running own Tavily search for %r", question[:60])
         from routes.chat import tavily_search as _tavily_search, _looks_like_ai_overview

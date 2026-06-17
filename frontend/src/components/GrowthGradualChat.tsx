@@ -79,7 +79,13 @@ function loadConversations(): Conversation[] {
 }
 function saveConversations(convs: Conversation[]) {
   if (typeof window === 'undefined') return;
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(convs.slice(0, 50)));
+  // Strip reportLoading flag before persisting — a loading state in a saved conversation
+  // would re-trigger the report spinner with no active fetch on reload.
+  const cleaned = convs.slice(0, 50).map(c => ({
+    ...c,
+    messages: c.messages.map(m => m.reportLoading ? { ...m, reportLoading: false } : m),
+  }));
+  localStorage.setItem(STORAGE_KEY, JSON.stringify(cleaned));
 }
 
 // ─── Markdown renderer ────────────────────────────────────────────────────────
@@ -957,7 +963,12 @@ export default function GrowthGradualChat() {
   // Load a conversation
   const loadConversation = useCallback((conv: Conversation) => {
     abortRef.current?.abort();
-    setMessages(conv.messages);
+    // Clear any stale reportLoading flags — a persisted loading state has no active
+    // fetch behind it, so the spinner would show forever if not cleared here.
+    const cleanedMessages = conv.messages.map(m =>
+      m.reportLoading ? { ...m, reportLoading: false } : m
+    );
+    setMessages(cleanedMessages);
     setActiveId(conv.id);
     historyRef.current = conv.messages.map(m => ({ role: m.role, content: m.text }));
     setTimeout(() => bottomRef.current?.scrollIntoView({ behavior:'smooth' }), 50);
@@ -981,10 +992,16 @@ export default function GrowthGradualChat() {
     const botMsg:  Message = { id:uid(), role:'assistant', text:'', ts:Date.now() };
     const newMessages = [...messages, userMsg, botMsg];
 
+    const hasAttachments = attachedFiles.some(f => f.status === 'attached') || pastedTexts.length > 0;
+
     setMessages(newMessages);
     setStreaming(true);
     setSearching(true);
-    setStatusMsg(ragIndexed ? 'Reading your documents…' : 'Searching the web for latest data…');
+    setStatusMsg(
+      ragIndexed ? 'Reading your documents…'
+      : hasAttachments ? 'Analysing your attachment…'
+      : 'Searching the web for latest data…'
+    );
     historyRef.current = [...historyRef.current, { role:'user', content:q }];
 
     const ctrl = new AbortController();
@@ -1028,8 +1045,22 @@ export default function GrowthGradualChat() {
       historyRef.current = [...historyRef.current, { role:'assistant', content:finalText }];
 
       // Auto-generate report in background after stream completes
+      // Only for substantive queries (not greetings, very short messages, or chitchat)
       const botMsgId = botMsg.id;
       const currentFiles = attachedFiles;
+      const isSubstantiveQuery = (() => {
+        const lower = q.toLowerCase().trim();
+        // Skip very short messages (under 15 chars) — greetings, "hi", "hello", "ok", etc.
+        if (q.trim().length < 15) return false;
+        // Skip pure greetings / chitchat
+        const chitchat = /^(hi|hello|hey|thanks|thank you|ok|okay|sure|great|good|yes|no|bye|test|ping|what'?s up|how are you)/i;
+        if (chitchat.test(lower) && q.trim().length < 40) return false;
+        return true;
+      })();
+
+      if (!isSubstantiveQuery) {
+        // No report for short/greeting messages — just save the conversation
+      } else {
       setMessages(prev => prev.map(m => m.id === botMsgId ? { ...m, reportLoading: true } : m));
 
       // Build file images for report (render PDF pages / pass images as base64)
@@ -1109,6 +1140,7 @@ export default function GrowthGradualChat() {
         .catch(() => {
           setMessages(prev => prev.map(m => m.id === botMsgId ? { ...m, reportLoading: false } : m));
         });
+      } // end isSubstantiveQuery
 
       // Persist conversation
       const title = q.length > 46 ? q.slice(0,46)+'…' : q;
