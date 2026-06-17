@@ -1,10 +1,14 @@
 'use client';
 
 import { useState, useEffect } from 'react';
+import { usePathname, useRouter } from 'next/navigation';
 import FeedPage from '@/components/FeedPage';
 
 export default function NewsFAB() {
   const [open, setOpen] = useState(false);
+  const pathname = usePathname();
+  const router = useRouter();
+  const isChatPage = pathname === '/';
 
   // Allow other parts of the app (e.g. the chat "Market News" welcome card)
   // to open this same news panel without duplicating its UI.
@@ -13,6 +17,21 @@ export default function NewsFAB() {
     window.addEventListener('gg:open-news', openHandler);
     return () => window.removeEventListener('gg:open-news', openHandler);
   }, []);
+
+  // The slide-in news panel only makes sense on the chat page. If the user
+  // navigates away (e.g. by tapping an article inside the panel), close it
+  // so the FAB cleanly becomes a "back to chat" button instead.
+  useEffect(() => {
+    if (!isChatPage) setOpen(false);
+  }, [isChatPage]);
+
+  const handleFabClick = () => {
+    if (isChatPage) {
+      setOpen(true);
+    } else {
+      router.push('/');
+    }
+  };
 
   return (
     <>
@@ -155,22 +174,29 @@ export default function NewsFAB() {
       `}</style>
 
       {/* FAB button */}
-      <button className="nfab" onClick={() => setOpen(true)} aria-label="Open latest news">
-        {!open && <span className="nfab__ring" />}
+      <button className="nfab" onClick={handleFabClick} aria-label={isChatPage ? 'Open latest news' : 'Back to chat'}>
+        {!open && isChatPage && <span className="nfab__ring" />}
         <span className="nfab__dot" />
-        {/* Newspaper icon */}
-        <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-          <path d="M4 22h16a2 2 0 0 0 2-2V4a2 2 0 0 0-2-2H8a2 2 0 0 0-2 2v16a2 2 0 0 1-2 2Zm0 0a2 2 0 0 1-2-2v-9c0-1.1.9-2 2-2h2"/>
-          <path d="M18 14h-8M15 18h-5M10 6h8v4h-8V6Z"/>
-        </svg>
-        <span className="nfab__label">News</span>
+        {isChatPage ? (
+          /* Newspaper icon */
+          <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+            <path d="M4 22h16a2 2 0 0 0 2-2V4a2 2 0 0 0-2-2H8a2 2 0 0 0-2 2v16a2 2 0 0 1-2 2Zm0 0a2 2 0 0 1-2-2v-9c0-1.1.9-2 2-2h2"/>
+            <path d="M18 14h-8M15 18h-5M10 6h8v4h-8V6Z"/>
+          </svg>
+        ) : (
+          /* Chat bubble icon */
+          <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+            <path d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8v.5z"/>
+          </svg>
+        )}
+        <span className="nfab__label">{isChatPage ? 'News' : 'Chat'}</span>
       </button>
 
       {/* Backdrop */}
-      {open && <div className="nfab-backdrop" onClick={() => setOpen(false)} />}
+      {open && isChatPage && <div className="nfab-backdrop" onClick={() => setOpen(false)} />}
 
       {/* Slide-in panel */}
-      {open && (
+      {open && isChatPage && (
         <div className="nfab-panel" role="dialog" aria-label="Latest news">
           <div className="nfab-panel__hdr">
             <div className="nfab-panel__title">

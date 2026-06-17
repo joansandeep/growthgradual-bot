@@ -964,13 +964,6 @@ export default function GrowthGradualChat() {
     setTimeout(() => inputRef.current?.focus(), 100);
   }, []);
 
-  // Attach & Ask — always starts a brand-new chat dedicated to the attached
-  // file(s), rather than appending to whatever conversation is currently open.
-  const handleAttachAndAsk = useCallback(() => {
-    startNewChat();
-    fileInputRef.current?.click();
-  }, [startNewChat]);
-
   // Load a conversation
   const loadConversation = useCallback((conv: Conversation) => {
     abortRef.current?.abort();
@@ -1532,52 +1525,6 @@ export default function GrowthGradualChat() {
         }
         .welcome-sub { font-size:12.5px;color:#64748b;line-height:1.6;margin:2px 0 0;max-width:440px; }
 
-        /* ── Three action cards ─────────────────────────────────────────── */
-        .welcome-actions { display:flex;gap:10px;width:100%;max-width:660px;flex-wrap:wrap;justify-content:center; }
-        .waction {
-          flex:1;min-width:170px;max-width:210px;
-          display:flex;flex-direction:column;align-items:flex-start;gap:6px;
-          padding:14px 16px 13px;border-radius:14px;cursor:pointer;
-          border:1.5px solid transparent;text-align:left;
-          transition:transform .18s,box-shadow .18s,border-color .18s;
-          font-family:'DM Sans',sans-serif;
-        }
-        .waction:hover { transform:translateY(-2px); }
-        .waction--chat {
-          background:#fff;
-          border-color:#d4e4dd;
-          box-shadow:0 2px 16px rgba(13,79,60,.07);
-        }
-        .waction--chat:hover { border-color:#0d4f3c;box-shadow:0 8px 28px rgba(13,79,60,.14); }
-        .waction--attach {
-          background:linear-gradient(145deg,#0d4f3c,#0f5c47);
-          border-color:transparent;
-          box-shadow:0 4px 20px rgba(13,79,60,.28);
-        }
-        .waction--attach:hover { box-shadow:0 10px 32px rgba(13,79,60,.38); }
-        .waction--news {
-          background:linear-gradient(145deg,#1a1f4e,#252b68);
-          border-color:transparent;
-          box-shadow:0 4px 20px rgba(26,31,78,.22);
-        }
-        .waction--news:hover { box-shadow:0 10px 32px rgba(26,31,78,.35); }
-        .waction-icon {
-          width:32px;height:32px;border-radius:9px;
-          display:flex;align-items:center;justify-content:center;font-size:16px;
-          line-height:1;font-family:'Apple Color Emoji','Segoe UI Emoji','Noto Color Emoji',sans-serif;
-        }
-        .waction--chat   .waction-icon { background:linear-gradient(135deg,#e8f5f0,#d4e8df); }
-        .waction--attach .waction-icon { background:rgba(255,255,255,.15); }
-        .waction--news   .waction-icon { background:rgba(255,255,255,.12); }
-        .waction-title { font-size:13.5px;font-weight:700;margin:0;line-height:1.3; }
-        .waction--chat   .waction-title { color:#0d4f3c; }
-        .waction--attach .waction-title { color:#fff; }
-        .waction--news   .waction-title { color:#fff; }
-        .waction-desc { font-size:11.5px;line-height:1.5;margin:0; }
-        .waction--chat   .waction-desc { color:#5a8a74; }
-        .waction--attach .waction-desc { color:rgba(255,255,255,.72); }
-        .waction--news   .waction-desc { color:rgba(255,255,255,.65); }
-
         /* ── Suggestion chips ──────────────────────────────────────────── */
         .sugs { display:flex;flex-wrap:wrap;gap:6px;justify-content:center;max-width:660px; }
         .sug {
@@ -1626,23 +1573,6 @@ export default function GrowthGradualChat() {
         .send-btn:not(:disabled):hover{transform:scale(1.08);box-shadow:0 5px 16px rgba(13,79,60,.45);}
         .send-btn:not(:disabled):active{transform:scale(.93);}
         .input-hint { font-size:10px;color:#b0b8d4;text-align:center;font-family:'DM Sans',sans-serif; }
-
-        /* ── Persistent quick actions under input bar ───────────────────── */
-        .quick-actions-row {
-          display:flex;justify-content:center;gap:8px;
-          max-width:780px;margin:0 auto;width:100%;
-        }
-        .qa-btn {
-          height:30px;padding:0 13px;border-radius:9px;border:1.5px solid #c7ccdc;
-          background:#f4f5f9;color:#1a1f4e;cursor:pointer;flex-shrink:0;
-          display:flex;align-items:center;gap:6px;font-size:11.5px;font-weight:600;
-          font-family:'DM Sans',sans-serif;
-          transition:background .15s,color .15s,border-color .15s,box-shadow .15s;
-        }
-        .qa-btn-icon { font-size:12px;line-height:1; }
-        .qa-btn--attach { border-color:#ccddd6;background:#f0f8f4;color:#0d4f3c; }
-        .qa-btn--attach:hover { background:#0d4f3c;color:#fff;border-color:#0d4f3c;box-shadow:0 2px 8px rgba(13,79,60,.25); }
-        .qa-btn--news:hover { background:#1a1f4e;color:#fff;border-color:#1a1f4e;box-shadow:0 2px 8px rgba(26,31,78,.2); }
 
         /* ── File chips ──────────────────────────────────────────────────── */
         .chips-row {
@@ -1828,30 +1758,6 @@ export default function GrowthGradualChat() {
                   <p className="welcome-sub">Your AI analyst for Indian markets — powered by live web search & document analysis.</p>
                 </div>
 
-                {/* Three action cards */}
-                <div className="welcome-actions">
-                  {/* Chat */}
-                  <button className="waction waction--chat" onClick={() => inputRef.current?.focus()}>
-                    <div className="waction-icon">💬</div>
-                    <p className="waction-title">Ask anything</p>
-                    <p className="waction-desc">Nifty, stocks, MFs, RBI, IPOs — live web answers</p>
-                  </button>
-
-                  {/* Attach & Ask */}
-                  <button className="waction waction--attach" onClick={handleAttachAndAsk}>
-                    <div className="waction-icon">📎</div>
-                    <p className="waction-title">Attach & Ask</p>
-                    <p className="waction-desc">Upload PDF, image or doc — analyse your files</p>
-                  </button>
-
-                  {/* Market News */}
-                  <button className="waction waction--news" onClick={() => window.dispatchEvent(new Event('gg:open-news'))}>
-                    <div className="waction-icon">📰</div>
-                    <p className="waction-title">Market News</p>
-                    <p className="waction-desc">Today's top stories, results & macro events</p>
-                  </button>
-                </div>
-
                 {/* Quick suggestion chips */}
                 <div className="sugs">
                   {SUGGESTIONS.map(s => (
@@ -2024,24 +1930,6 @@ export default function GrowthGradualChat() {
                 <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
                   <path d="M22 2L11 13M22 2L15 22l-4-9-9-4 20-7z"/>
                 </svg>
-              </button>
-            </div>
-
-            {/* Persistent quick actions — always available under the input bar */}
-            <div className="quick-actions-row">
-              <button
-                className="qa-btn qa-btn--attach"
-                onClick={handleAttachAndAsk}
-                title="Start a new chat and attach a file to analyse"
-              >
-                <span className="qa-btn-icon">📎</span> Attach & Ask
-              </button>
-              <button
-                className="qa-btn qa-btn--news"
-                onClick={() => window.dispatchEvent(new Event('gg:open-news'))}
-                title="Open today's latest market news"
-              >
-                <span className="qa-btn-icon">📰</span> Market News
               </button>
             </div>
             <p className="input-hint">

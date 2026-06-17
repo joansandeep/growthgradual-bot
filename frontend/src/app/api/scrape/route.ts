@@ -381,6 +381,26 @@ async function fetchWithRetry(url: string, maxAttempts = 2, extraHeaders?: Recor
   throw lastErr;
 }
 
+// A specific article page almost always has a long numeric ID and/or a
+// hyphenated headline slug in its path. Generic homepage/section/topic pages
+// (e.g. the URL Google News's <source> attribution tag points to) have
+// neither — they're short, plain category paths. This gate keeps those out
+// of the "real article URL" candidates extracted from Google News RSS items.
+function looksLikeArticleUrl(candidate: string): boolean {
+  try {
+    const u = new URL(candidate);
+    if (!['http:', 'https:'].includes(u.protocol)) return false;
+    if (/\.(jpe?g|png|gif|webp|svg|css|js|ico)(\?|$)/i.test(u.pathname)) return false;
+    const path = u.pathname;
+    const hasLongNumericId = /\d{5,}/.test(path);
+    const hasSlugifiedHeadline = (path.match(/-/g) || []).length >= 3;
+    const isLongPath = path.length >= 40;
+    return hasLongNumericId || hasSlugifiedHeadline || isLongPath;
+  } catch {
+    return false;
+  }
+}
+
 // ── RSS parsing ───────────────────────────────────────────────────────────────
 function xt(xml: string, tag: string): string {
   const c = xml.match(new RegExp(`<${tag}[^>]*><!\\[CDATA\\[([\\s\\S]*?)\\]\\]>`, 'i'));
@@ -486,11 +506,18 @@ function parseFeed(xml: string, f: typeof FEEDS[number]): ScrapedArticle[] {
 
     // For Google News items, extract the real publisher article URL and store as source_url fallback.
     // Google News RSS descriptions contain HTML-encoded hrefs — we must decode before matching.
+    //
+    // IMPORTANT: Google News's <source url="..."> attribute is publisher *attribution*
+    // (almost always just the homepage, e.g. "https://timesofindia.indiatimes.com") —
+    // it is NEVER the specific article link. Blindly trusting it sends users to a
+    // generic section/topic page instead of the article they clicked. A real article
+    // URL almost always has a long numeric ID and/or a hyphenated headline slug, so we
+    // gate every candidate behind that check before accepting it.
     let source_url = '';
     if (isGoogleNews) {
       // Strategy 1: <source url="..."> tag Google News embeds directly in the item
       const sourceTagMatch = block.match(/<source\s[^>]*url=["']([^"']+)["'][^>]*>/i);
-      if (sourceTagMatch?.[1] && !sourceTagMatch[1].includes('google.com')) {
+      if (sourceTagMatch?.[1] && !sourceTagMatch[1].includes('google.com') && looksLikeArticleUrl(sourceTagMatch[1])) {
         source_url = sourceTagMatch[1];
       }
       // Strategy 2: href in description — decode HTML entities first
@@ -500,7 +527,7 @@ function parseFeed(xml: string, f: typeof FEEDS[number]): ScrapedArticle[] {
           .replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"').replace(/&#34;/g, '"');
         const hrefMatches = [...descDecoded.matchAll(/href=["']?(https?:\/\/[^\s"'<>&]+)/gi)];
         for (const m of hrefMatches) {
-          if (!m[1].includes('google.com') && !m[1].includes('yahoo.com')) { source_url = m[1]; break; }
+          if (!m[1].includes('google.com') && !m[1].includes('yahoo.com') && looksLikeArticleUrl(m[1])) { source_url = m[1]; break; }
         }
       }
       // Strategy 3: scan raw block XML for any non-Google https URL (last resort)
@@ -508,7 +535,7 @@ function parseFeed(xml: string, f: typeof FEEDS[number]): ScrapedArticle[] {
         const rawUrls = [...block.matchAll(/["'](https?:\/\/(?!(?:[^/"']*\.)?google\.com)[^"'<>\s]{20,})["']/g)];
         for (const m of rawUrls) {
           const cand = m[1];
-          if (!/\.(jpe?g|png|gif|webp|svg|css|js)(\?|$)/i.test(cand)) {
+          if (!/\.(jpe?g|png|gif|webp|svg|css|js)(\?|$)/i.test(cand) && looksLikeArticleUrl(cand)) {
             source_url = cand; break;
           }
         }
@@ -517,6 +544,10 @@ function parseFeed(xml: string, f: typeof FEEDS[number]): ScrapedArticle[] {
 
     // Google News: use the real publisher URL as the primary link so users
     // don't land on the "Open on CNBC TV18" Google News reader wall.
+    // If no candidate passed the looksLikeArticleUrl gate above, `url` simply
+    // stays as the original Google News redirect link — the in-app article
+    // reader (/api/article) has its own, more thorough resolveGoogleNewsUrl
+    // pipeline to chase that down to the real article at view time.
     if (isGoogleNews && source_url) {
       url = source_url;
       source_url = ''; // no need to keep it separately now
