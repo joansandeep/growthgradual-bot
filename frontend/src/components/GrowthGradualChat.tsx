@@ -1506,29 +1506,93 @@ export default function GrowthGradualChat() {
         .chart-leg { display:flex;align-items:center;gap:4px;font-size:10px;color:#4b5680;font-family:'DM Sans',sans-serif; }
         .chart-leg i { width:8px;height:8px;border-radius:2px;display:block; }
 
-        /* Empty / welcome */
+
+
+        /* ── Welcome / empty state ─────────────────────────────────────── */
         .chat-welcome {
           flex:1; display:flex; flex-direction:column;
           align-items:center; justify-content:center;
-          gap:24px; padding:32px 24px; text-align:center;
+          gap:28px; padding:32px 24px; text-align:center;
+          background: linear-gradient(160deg,#f4f8f6 0%,#eef2f8 100%);
         }
-        .welcome-logo {
-          width:80px;height:80px;border-radius:22px;background:#1a1f4e;
+        .welcome-glow {
+          position:relative;
+          width:96px;height:96px;border-radius:26px;
+          background:linear-gradient(145deg,#0d4f3c,#1a1f4e);
           display:flex;align-items:center;justify-content:center;
-          box-shadow:0 8px 28px rgba(26,31,78,.22);overflow:hidden;
+          box-shadow:0 0 0 8px rgba(13,79,60,.08), 0 12px 36px rgba(13,79,60,.28);
+          overflow:hidden;
         }
-        .welcome-title { font-size:22px;font-weight:700;color:#1a1f4e;font-family:'Playfair Display',serif;margin:0; }
-        .welcome-sub { font-size:13px;color:#4b5680;line-height:1.6;margin:6px 0 0;max-width:400px; }
-        .sugs { display:grid;grid-template-columns:repeat(4,1fr);gap:8px;width:100%;max-width:700px; }
-        @media(max-width:640px){.sugs{grid-template-columns:repeat(2,1fr);}}
+        .welcome-glow::before {
+          content:''; position:absolute; inset:0;
+          background:linear-gradient(135deg,rgba(255,255,255,.12) 0%,transparent 60%);
+          border-radius:26px;
+        }
+        .welcome-title {
+          font-size:26px;font-weight:800;
+          background:linear-gradient(135deg,#0d4f3c 20%,#1a1f4e 80%);
+          -webkit-background-clip:text;-webkit-text-fill-color:transparent;
+          font-family:'Playfair Display',serif;margin:0;letter-spacing:-.3px;
+        }
+        .welcome-sub { font-size:13px;color:#5a6580;line-height:1.65;margin:5px 0 0;max-width:420px; }
+
+        /* ── Three action cards ─────────────────────────────────────────── */
+        .welcome-actions { display:flex;gap:12px;width:100%;max-width:680px;flex-wrap:wrap;justify-content:center; }
+        .waction {
+          flex:1;min-width:180px;max-width:220px;
+          display:flex;flex-direction:column;align-items:flex-start;gap:8px;
+          padding:18px 18px 16px;border-radius:16px;cursor:pointer;
+          border:1.5px solid transparent;text-align:left;
+          transition:transform .18s,box-shadow .18s,border-color .18s;
+          font-family:'DM Sans',sans-serif;
+        }
+        .waction:hover { transform:translateY(-3px); }
+        .waction--chat {
+          background:#fff;
+          border-color:#d4e4dd;
+          box-shadow:0 2px 16px rgba(13,79,60,.07);
+        }
+        .waction--chat:hover { border-color:#0d4f3c;box-shadow:0 8px 28px rgba(13,79,60,.14); }
+        .waction--attach {
+          background:linear-gradient(145deg,#0d4f3c,#0f5c47);
+          border-color:transparent;
+          box-shadow:0 4px 20px rgba(13,79,60,.28);
+        }
+        .waction--attach:hover { box-shadow:0 10px 32px rgba(13,79,60,.38); }
+        .waction--news {
+          background:linear-gradient(145deg,#1a1f4e,#252b68);
+          border-color:transparent;
+          box-shadow:0 4px 20px rgba(26,31,78,.22);
+        }
+        .waction--news:hover { box-shadow:0 10px 32px rgba(26,31,78,.35); }
+        .waction-icon {
+          width:36px;height:36px;border-radius:10px;
+          display:flex;align-items:center;justify-content:center;font-size:18px;
+          line-height:1;
+        }
+        .waction--chat   .waction-icon { background:linear-gradient(135deg,#e8f5f0,#d4e8df); }
+        .waction--attach .waction-icon { background:rgba(255,255,255,.15); }
+        .waction--news   .waction-icon { background:rgba(255,255,255,.12); }
+        .waction-title { font-size:13.5px;font-weight:700;margin:0;line-height:1.3; }
+        .waction--chat   .waction-title { color:#0d4f3c; }
+        .waction--attach .waction-title { color:#fff; }
+        .waction--news   .waction-title { color:#fff; }
+        .waction-desc { font-size:11.5px;line-height:1.5;margin:0; }
+        .waction--chat   .waction-desc { color:#5a8a74; }
+        .waction--attach .waction-desc { color:rgba(255,255,255,.72); }
+        .waction--news   .waction-desc { color:rgba(255,255,255,.65); }
+
+        /* ── Suggestion chips ──────────────────────────────────────────── */
+        .sugs { display:flex;flex-wrap:wrap;gap:7px;justify-content:center;max-width:680px; }
         .sug {
-          display:flex;flex-direction:column;align-items:flex-start;gap:5px;
-          padding:12px 13px;border-radius:12px;border:1px solid #e2e6f0;
+          display:flex;align-items:center;gap:6px;
+          padding:7px 13px;border-radius:20px;border:1.5px solid #d4e0d9;
           background:#fff;cursor:pointer;font-size:12px;color:#1a1f4e;
-          text-align:left;transition:all .15s;font-family:'DM Sans',sans-serif;line-height:1.4;
+          transition:all .15s;font-family:'DM Sans',sans-serif;
+          box-shadow:0 1px 4px rgba(13,79,60,.05);white-space:nowrap;
         }
-        .sug:hover { border-color:rgba(26,31,78,.3);background:#f0f2f7;transform:translateY(-2px);box-shadow:0 4px 12px rgba(26,31,78,.08); }
-        .sug-icon { font-size:18px; }
+        .sug:hover { border-color:#0d4f3c;background:#f0f8f4;transform:translateY(-1px);box-shadow:0 3px 10px rgba(13,79,60,.1); }
+        .sug-icon { font-size:14px;line-height:1; }
 
         /* Input area */
         .chat-input-area {
