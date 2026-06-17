@@ -438,6 +438,13 @@ function ReportPanel({ msg, question }: { msg: Message; question: string }) {
     finally { setPdfLoading(false); }
   };
 
+  /** Strip markdown symbols + collapse all whitespace/newlines into single spaces */
+  const sanitizeText = (raw: string) =>
+    raw
+      .replace(/[*_#`>~[\]]/g, '')   // remove markdown punctuation
+      .replace(/\s+/g, ' ')           // newlines → space, collapse runs
+      .trim();
+
   const sendEmail = async (subject: string, recipients: string, file: File | null) => {
     if (!rd) return;
     setEmailSending(true);
@@ -447,7 +454,7 @@ function ReportPanel({ msg, question }: { msg: Message; question: string }) {
       fd.append('subject',    subject || 'Growth Gradual Research Report');
       fd.append('recipients', recipients);
       fd.append('report',     rd.report   ?? '');
-      fd.append('title',      question.slice(0, 120));
+      fd.append('title',      sanitizeText(question).slice(0, 120));
       fd.append('summary',    rd.summary  ?? '');
       fd.append('keyStats',   JSON.stringify(rd.keyStats ?? []));
       if (file) fd.append('file', file);
@@ -467,7 +474,8 @@ function ReportPanel({ msg, question }: { msg: Message; question: string }) {
     }
   };
 
-  const defaultSubject = `Growth Gradual Research Report — ${question.slice(0, 60)}${question.length > 60 ? '…' : ''}`;
+  const cleanQuestion  = sanitizeText(question);
+  const defaultSubject = `Growth Gradual Research Report — ${cleanQuestion.slice(0, 60)}${cleanQuestion.length > 60 ? '…' : ''}`;
 
   return (
     <>

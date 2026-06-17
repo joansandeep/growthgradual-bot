@@ -258,6 +258,15 @@ async def send_report_email(
     except Exception:
         key_stats = []
 
+    # ── Sanitize subject & title: strip markdown symbols, collapse whitespace ──
+    def _sanitize_header(text: str) -> str:
+        text = re.sub(r"[*_#`>~\[\]]", "", text)   # strip markdown punctuation
+        text = re.sub(r"\s+", " ", text)             # newlines/tabs → single space
+        return text.strip()
+
+    subject = _sanitize_header(subject) or "Growth Gradual Research Report"
+    title   = _sanitize_header(title)
+
     ts        = datetime.now(timezone.utc).strftime("%d %b %Y, %I:%M %p UTC")
     html_body = _build_html(title, summary, key_stats, report, ts)
 
