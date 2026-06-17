@@ -1,10 +1,18 @@
 'use client';
 
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import FeedPage from '@/components/FeedPage';
 
 export default function NewsFAB() {
   const [open, setOpen] = useState(false);
+
+  // Allow other parts of the app (e.g. the chat "Market News" welcome card)
+  // to open this same news panel without duplicating its UI.
+  useEffect(() => {
+    const openHandler = () => setOpen(true);
+    window.addEventListener('gg:open-news', openHandler);
+    return () => window.removeEventListener('gg:open-news', openHandler);
+  }, []);
 
   return (
     <>

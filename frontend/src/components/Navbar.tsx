@@ -76,7 +76,7 @@ export default function Navbar() {
               alt="Growth Gradual"
               width={200}
               height={56}
-              style={{ objectFit:'contain', height:'40px', width:'auto', filter:'brightness(1.05)' }}
+              style={{ objectFit:'contain', height:'40px', width:'auto', mixBlendMode:'screen' }}
               priority
             />
             <div style={{ width:'1px', height:'18px', background:'rgba(255,255,255,0.12)' }} />
