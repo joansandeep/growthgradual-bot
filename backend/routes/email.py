@@ -1,12 +1,11 @@
 """
 POST /api/chat/report/email
-Sends the HTML report via Resend API (HTTP — works on Render free tier).
+Sends the HTML report via Brevo (formerly Sendinblue) API (HTTP — works on Render free tier).
 Render blocks all outbound SMTP (ports 465/587), so smtplib cannot be used.
 
 Env vars required:
-  RESEND_API_KEY   — from resend.com (free: 3000 emails/month)
-  SMTP_SENDER      — the FROM address (must be verified in Resend dashboard)
-                     OR use onboarding@resend.dev for testing
+  BREVO_API_KEY    — from brevo.com (free: 300 emails/day)
+  SMTP_SENDER      — the FROM address (must be verified in Brevo dashboard)
 
 Body (multipart/form-data):
   subject      str            — email subject
@@ -235,12 +234,17 @@ async def send_report_email(
     keyStats:   str = Form("[]"),
     file: Optional[UploadFile] = File(None),
 ):
-    resend_key   = os.environ.get("RESEND_API_KEY", "").strip()
-    sender_email = os.environ.get("SMTP_SENDER", "onboarding@resend.dev").strip()
+    brevo_key    = os.environ.get("BREVO_API_KEY", "").strip()
+    sender_email = os.environ.get("SMTP_SENDER", "").strip()
 
-    if not resend_key:
+    if not brevo_key:
         return JSONResponse(
-            {"success": False, "error": "RESEND_API_KEY not set. Add it in Render environment variables (get a free key at resend.com)."},
+            {"success": False, "error": "BREVO_API_KEY not set. Add it in Render environment variables (get a free key at brevo.com)."},
+            status_code=500,
+        )
+    if not sender_email:
+        return JSONResponse(
+            {"success": False, "error": "SMTP_SENDER not set. Add a verified sender email in Render environment variables."},
             status_code=500,
         )
 
@@ -275,40 +279,41 @@ async def send_report_email(
     plain = re.sub(r"\[(?:CHART|PAGE_IMG)_\d+\]", "", plain).strip()
     plain_body = f"{title}\n{'='*len(title)}\n\n{summary}\n\n{plain}" if title else plain
 
-    log.info("Email report → %d recipients via Resend | title=%r", len(to_list), (title or "")[:60])
+    log.info("Email report → %d recipients via Brevo | title=%r", len(to_list), (title or "")[:60])
 
     sent, failed = [], []
     async with httpx.AsyncClient(timeout=30) as client:
         for addr in to_list:
             try:
                 res = await client.post(
-                    "https://api.resend.com/emails",
+                    "https://api.brevo.com/v3/smtp/email",
                     headers={
-                        "Authorization": f"Bearer {resend_key}",
+                        "api-key": brevo_key,
                         "Content-Type": "application/json",
+                        "Accept": "application/json",
                     },
                     json={
-                        "from": f"Growth Gradual <{sender_email}>",
-                        "to":   [addr],
+                        "sender": {"name": "Growth Gradual", "email": sender_email},
+                        "to": [{"email": addr}],
                         "subject": subject or "Growth Gradual Research Report",
-                        "html": html_body,
-                        "text": plain_body,
+                        "htmlContent": html_body,
+                        "textContent": plain_body,
                     },
                 )
                 if res.status_code in (200, 201):
                     sent.append(addr)
-                    log.info("Resend: sent to %s", addr)
+                    log.info("Brevo: sent to %s", addr)
                 else:
                     err = res.json().get("message", res.text[:120])
-                    log.warning("Resend error %d for %s: %s", res.status_code, addr, err)
+                    log.warning("Brevo error %d for %s: %s", res.status_code, addr, err)
                     failed.append(addr)
             except Exception as exc:
-                log.warning("Resend exception for %s: %s", addr, exc)
+                log.warning("Brevo exception for %s: %s", addr, exc)
                 failed.append(addr)
 
     if not sent:
         return JSONResponse(
-            {"success": False, "error": f"Failed to send to all recipients. Error: check RESEND_API_KEY and sender domain."},
+            {"success": False, "error": "Failed to send to all recipients. Check BREVO_API_KEY and sender domain verification."},
             status_code=500,
         )
 
