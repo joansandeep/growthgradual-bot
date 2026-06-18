@@ -904,14 +904,10 @@ def build_pdf(report: str, title: str, question: str, summary: str,
     c.setStrokeColorRGB(*GOLD); c.setLineWidth(1.2)
     c.line(0, bottom_strip_top, PAGE_W, bottom_strip_top)
     c.setFillColorRGB(*GOLD); c.setFont("Helvetica-Bold", 7)
-    c.drawString(MARGIN, 48, "CONFIDENTIAL — FOR INFORMATIONAL PURPOSES ONLY")
     c.setFillColorRGB(0.60, 0.65, 0.85); c.setFont("Helvetica", 6.5)
-    c.drawString(MARGIN, 34, f"Generated: {date_str}  |  Growth Gradual AI Research Platform")
-    c.drawString(MARGIN, 20, "Powered by In The Money")
     c.setFillColorRGB(*WHITE); c.setFont("Helvetica-Bold", 9)
     c.drawRightString(PAGE_W - MARGIN, 44, "growth-gradual.com")
     c.setFillColorRGB(*GOLD); c.setFont("Helvetica", 7)
-    c.drawRightString(PAGE_W - MARGIN, 30, "AI-Powered Financial Intelligence")
     c.showPage()
 
     # ═══════════════════════════════════════════════════════════════════════════

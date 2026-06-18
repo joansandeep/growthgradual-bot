@@ -91,9 +91,6 @@ export default function Sidebar({ related }: { related: Article[] }) {
         border:'none', borderRadius:'10px', padding:'16px',
         boxShadow:'0 4px 18px rgba(13,92,69,0.22)',
       }}>
-        <p style={{ fontSize:'12px', fontFamily:"'Playfair Display',serif", fontWeight:700, color:'#fff', lineHeight:1.4, marginBottom:'8px' }}>
-          Powered by AI research across 54+ Indian financial sources
-        </p>
         <p style={{ fontSize:'10px', color:'rgba(255,255,255,0.55)', fontFamily:"'DM Sans',sans-serif", lineHeight:1.5 }}>
           Live prices · Web search · Document analysis
         </p>

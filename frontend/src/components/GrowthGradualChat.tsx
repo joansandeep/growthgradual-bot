@@ -454,7 +454,12 @@ function ReportPanel({ msg, question }: { msg: Message; question: string }) {
       fd.append('subject',    subject || 'Growth Gradual Research Report');
       fd.append('recipients', recipients);
       fd.append('report',     rd.report   ?? '');
-      fd.append('title',      sanitizeText(question).slice(0, 120));
+      // Extract the first H1/H2 heading from the report markdown as the title
+      const reportTitle = (() => {
+        const match = (rd.report ?? '').match(/^#{1,2}\s+(.+)$/m);
+        return match ? sanitizeText(match[1]).slice(0, 120) : sanitizeText(question).slice(0, 120);
+      })();
+      fd.append('title',      reportTitle);
       fd.append('summary',    rd.summary  ?? '');
       fd.append('keyStats',   JSON.stringify(rd.keyStats ?? []));
       if (file) fd.append('file', file);
@@ -474,8 +479,12 @@ function ReportPanel({ msg, question }: { msg: Message; question: string }) {
     }
   };
 
-  const cleanQuestion  = sanitizeText(question);
-  const defaultSubject = `Growth Gradual Research Report — ${cleanQuestion.slice(0, 60)}${cleanQuestion.length > 60 ? '…' : ''}`;
+  // Use the first H1/H2 from the report as the subject, fall back to user question
+  const reportHeading = (() => {
+    const match = (rd?.report ?? '').match(/^#{1,2}\s+(.+)$/m);
+    return match ? sanitizeText(match[1]) : sanitizeText(question);
+  })();
+  const defaultSubject = `Growth Gradual Research Report — ${reportHeading.slice(0, 60)}${reportHeading.length > 60 ? '…' : ''}`;
 
   return (
     <>

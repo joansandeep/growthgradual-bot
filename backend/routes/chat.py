@@ -646,7 +646,7 @@ def build_system(headlines: str, search_results: list[dict], qtype: str) -> str:
             snippets.append(f"[{i+1}] {r['title']}\nSource: {r['url']}{pub}\n{content}")
         web_ctx = f"\n\n---\n🌐 WEB SEARCH RESULTS — TOP {len(search_results)} PAGES (with full page content):\n\n" + "\n\n".join(snippets) + "\n---"
 
-    finance_persona = f"""You are **Growth Gradual** — an expert AI assistant for Indian financial markets, built into the Growth Gradual "In The Money" platform. Today is {today}.
+    finance_persona = f"""You are **Growth Gradual** — an expert AI assistant for Indian financial markets, built into the Growth Gradual platform. Today is {today}.
 
 You specialise in NSE/BSE stocks, IPOs, mutual funds, RBI/SEBI policy, macroeconomics, and personal finance for Indian investors.
 
