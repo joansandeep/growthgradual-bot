@@ -175,6 +175,99 @@ body {
   .mobile-bottom-nav { display: flex; justify-content: space-around; align-items: center; }
 }
 
+/* ── Mobile market bar (collapsible live-data strip, replaces the desktop
+   sidebar on screens ≤680px where .stock-panel-left/.sidebar-right hide) ── */
+.mobile-market-bar {
+  display: none;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  overflow: hidden;
+  box-shadow: 0 2px 10px rgba(15,23,42,0.05);
+  margin-bottom: 12px;
+}
+@media (max-width: 680px) {
+  .mobile-market-bar { display: block; }
+}
+
+.mobile-market-strip {
+  background: var(--navy);
+  cursor: pointer;
+  user-select: none;
+}
+.mobile-market-strip-inner {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 9px 12px;
+}
+.mmb-status-dot { width: 6px; height: 6px; border-radius: 50%; flex-shrink: 0; }
+.mmb-status-label {
+  font-size: 9px; font-weight: 700; letter-spacing: 0.5px;
+  font-family: 'JetBrains Mono', monospace; flex-shrink: 0;
+}
+.mmb-divider { color: rgba(255,255,255,0.15); font-size: 10px; flex-shrink: 0; }
+.mmb-quotes-scroll {
+  display: flex; align-items: center; gap: 14px; flex: 1;
+  overflow-x: auto; scrollbar-width: none;
+}
+.mmb-quotes-scroll::-webkit-scrollbar { display: none; }
+.mmb-quote { display: flex; align-items: center; gap: 5px; flex-shrink: 0; white-space: nowrap; }
+.mmb-sym { font-size: 9px; font-weight: 600; color: rgba(255,255,255,0.55); font-family: 'DM Sans', sans-serif; }
+.mmb-price { font-size: 10px; font-weight: 600; color: #fff; font-family: 'JetBrains Mono', monospace; }
+.mmb-chg { font-size: 9px; font-weight: 600; font-family: 'JetBrains Mono', monospace; }
+.mmb-loading { font-size: 9px; color: rgba(255,255,255,0.4); font-family: 'DM Sans', sans-serif; }
+.mmb-chevron { font-size: 10px; color: rgba(255,255,255,0.5); flex-shrink: 0; transition: transform 0.2s; }
+
+.mmb-expanded {
+  background: var(--surface);
+  border-top: 1px solid var(--border);
+  padding: 14px 12px 10px;
+}
+.mmb-section { margin-bottom: 14px; }
+.mmb-section:last-of-type { margin-bottom: 8px; }
+.mmb-section-title {
+  display: flex; align-items: center; justify-content: space-between;
+  font-size: 9px; font-weight: 700; color: var(--muted);
+  text-transform: uppercase; letter-spacing: 1.5px;
+  font-family: 'DM Sans', sans-serif; margin-bottom: 8px;
+}
+.mmb-live-badge {
+  font-size: 8px; font-weight: 500; color: #cbd5e1;
+  text-transform: none; letter-spacing: 0.3px;
+  font-family: 'JetBrains Mono', monospace;
+}
+.mmb-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; }
+.mmb-card {
+  display: flex; flex-direction: column; gap: 3px; align-items: flex-start;
+  background: var(--surface2); border: 1px solid var(--border2);
+  border-radius: 6px; padding: 8px 6px;
+}
+.mmb-card-sym { font-size: 8px; font-weight: 600; color: #64748b; font-family: 'DM Sans', sans-serif; }
+.mmb-card-price { font-size: 11px; font-weight: 700; color: var(--navy); font-family: 'JetBrains Mono', monospace; }
+.mmb-card-chg { font-size: 8px; font-weight: 600; padding: 1px 4px; border-radius: 3px; font-family: 'JetBrains Mono', monospace; }
+
+.mmb-gl-row { display: flex; gap: 10px; }
+.mmb-section-half { flex: 1; }
+.mmb-gl-item {
+  display: flex; justify-content: space-between; align-items: center;
+  padding: 5px 0; border-bottom: 1px solid #f8fafc;
+}
+.mmb-gl-sym { font-size: 10px; color: #64748b; font-family: 'DM Sans', sans-serif; }
+.mmb-gl-chg { font-size: 10px; font-weight: 600; font-family: 'JetBrains Mono', monospace; }
+
+.mmb-stats-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
+.mmb-stat-card { background: var(--surface2); border: 1px solid var(--border2); border-radius: 6px; padding: 8px; }
+.mmb-stat-label { display: block; font-size: 8px; color: #94a3b8; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 3px; font-family: 'DM Sans', sans-serif; }
+.mmb-stat-value { display: block; font-size: 11px; font-weight: 700; color: var(--navy); font-family: 'JetBrains Mono', monospace; }
+.mmb-stat-sub { display: block; font-size: 8px; color: #94a3b8; margin-top: 2px; font-family: 'JetBrains Mono', monospace; }
+
+.mmb-close {
+  width: 100%; margin-top: 4px; padding: 8px;
+  background: var(--surface2); border: 1px solid var(--border);
+  border-radius: 6px; font-size: 10px; font-weight: 600; letter-spacing: 0.5px;
+  color: #64748b; font-family: 'DM Sans', sans-serif; cursor: pointer;
+}
+
 /* ── Scrollbar ───────────────────────────────────────────────────────────── */
 ::-webkit-scrollbar { width: 4px; height: 4px; }
 ::-webkit-scrollbar-track { background: transparent; }

@@ -25,6 +25,19 @@ export default function NewsFAB() {
     if (!isChatPage) setOpen(false);
   }, [isChatPage]);
 
+  // If we're landing back on the chat page after "Back to Feed" was tapped
+  // from an article that was opened out of this panel, reopen it instead of
+  // leaving the user looking at the bare chatbot.
+  useEffect(() => {
+    if (!isChatPage) return;
+    try {
+      if (sessionStorage.getItem('gg:reopen-news')) {
+        sessionStorage.removeItem('gg:reopen-news');
+        setOpen(true);
+      }
+    } catch { /* ignore */ }
+  }, [isChatPage]);
+
   const handleFabClick = () => {
     if (isChatPage) {
       setOpen(true);

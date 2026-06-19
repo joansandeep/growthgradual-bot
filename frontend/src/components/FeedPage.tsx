@@ -3,6 +3,7 @@ import { useState, useEffect, useCallback } from 'react';
 import { Category, Article } from '@/types';
 import { STOCKS, QUICK_STATS, CATEGORIES } from '@/data';
 import StockPanel from '@/components/StockPanel';
+import MobileMarketBar from '@/components/MobileMarketBar';
 import ArticleCard from '@/components/ArticleCard';
 import Sidebar from '@/components/Sidebar';
 
@@ -183,7 +184,9 @@ export default function FeedPage({ category }: { category: Category }) {
     : '';
 
   return (
-    <div className="page-grid">
+    <>
+      <MobileMarketBar />
+      <div className="page-grid">
 
       {/* ── LEFT ── */}
       <div className="stock-panel-left"><StockPanel stocks={STOCKS} stats={QUICK_STATS} /></div>
@@ -340,5 +343,6 @@ export default function FeedPage({ category }: { category: Category }) {
       {/* ── RIGHT ── */}
       <div className="sidebar-right"><Sidebar related={articles.filter(a=>a.url&&a.url!=='#').slice(0,8)}/></div>
     </div>
+    </>
   );
 }

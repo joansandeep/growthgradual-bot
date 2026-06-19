@@ -1,5 +1,5 @@
 'use client';
-import { useRouter } from 'next/navigation';
+import { useRouter, usePathname } from 'next/navigation';
 import { Article } from '@/types';
 import { TAG_COLORS } from '@/data';
 
@@ -15,10 +15,11 @@ function stripHtml(str: string): string {
   return s.trim();
 }
 
-function buildArticleHref(article: Article): string {
+function buildArticleHref(article: Article, from: string): string {
   const params = new URLSearchParams({ url:article.url, title:article.title, source:article.source, time:article.time, tag:article.tag });
   if (article.image) params.set('image', article.image);
   if (article.source_url) params.set('sourceUrl', article.source_url);
+  if (from) params.set('from', from);
   return `/article?${params.toString()}`;
 }
 
@@ -46,9 +47,10 @@ export default function ArticleCard({ article, featured=false, compact=false }: 
   article: Article; featured?: boolean; compact?: boolean;
 }) {
   const router = useRouter();
+  const pathname = usePathname();
   const tagBg   = TAG_BG[article.tag]   ?? 'rgba(26,31,78,0.08)';
   const tagText = TAG_TEXT[article.tag] ?? '#1a1f4e';
-  const href    = buildArticleHref(article);
+  const href    = buildArticleHref(article, pathname || '');
   void TAG_COLORS; // imported but used via TAG_BG override
 
   const navigate = () => {

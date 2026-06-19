@@ -4,6 +4,7 @@ import { useSearchParams, useRouter } from 'next/navigation';
 import { ArticleContent } from '@/app/api/article/route';
 import { STOCKS } from '@/data';
 import StockPanel from '@/components/StockPanel';
+import MobileMarketBar from '@/components/MobileMarketBar';
 import { QUICK_STATS } from '@/data';
 
 function SkeletonLine({ w = '100%', h = 14 }: { w?: string; h?: number }) {
@@ -25,6 +26,7 @@ function ArticleReader() {
   const tag       = params.get('tag') || '';
   const cardImage = params.get('image') || '';
   const sourceUrl = params.get('sourceUrl') || '';  // real publisher URL fallback
+  const from      = params.get('from') || '';       // page the article was opened from
 
   const [content, setContent] = useState<ArticleContent | null>(null);
   const [loading, setLoading] = useState(true);
@@ -63,8 +65,24 @@ function ArticleReader() {
   const displayDate    = content?.publishedAt;
   const readingTime    = content?.readingTime;
 
+  const handleBackToFeed = () => {
+    if (from === '/') {
+      // Article was opened from the slide-in news panel on the chat page —
+      // tell NewsFAB to reopen that panel once we land back on '/' instead
+      // of leaving the user staring at the bare chatbot.
+      try { sessionStorage.setItem('gg:reopen-news', '1'); } catch { /* ignore */ }
+      router.push('/');
+    } else if (from) {
+      router.push(from);
+    } else {
+      router.back();
+    }
+  };
+
   return (
-    <div className="page-grid">
+    <>
+      <MobileMarketBar />
+      <div className="page-grid">
 
       {/* LEFT: Stock Panel */}
       <div className="stock-panel-left">
@@ -75,7 +93,7 @@ function ArticleReader() {
       <div>
         {/* Back button */}
         <button
-          onClick={() => router.back()}
+          onClick={handleBackToFeed}
           style={{
             display: 'flex', alignItems: 'center', gap: '6px',
             background: 'none', border: 'none',
@@ -490,6 +508,7 @@ function ArticleReader() {
         </div>
       </div>
     </div>
+    </>
   );
 }
 
