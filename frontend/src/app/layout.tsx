@@ -20,7 +20,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
   return (
     <html lang="en">
       <head />
-      <body style={{ background: '#f5f3ee', minHeight: '100vh' }}>
+      <body style={{ background: '#f5f3ee', minHeight: '100dvh' }}>
         <Navbar />
         <TickerTape stocks={STOCKS} />
         <main className="main-container">
