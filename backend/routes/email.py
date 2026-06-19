@@ -215,7 +215,7 @@ def _build_html(title: str, summary: str, key_stats: list[dict], report_md: str,
   <tr><td style="padding:28px 36px;">{summary_block}{stat_cards}<div style="margin-top:20px;font-size:14px;line-height:1.7;color:#2d3561;">{_md_to_html(report_md)}</div></td></tr>
   <tr><td style="background:{LIGHT};padding:18px 36px;border-top:1px solid #dde3f5;">
     <table width="100%" cellpadding="0" cellspacing="0"><tr>
-      <td style="font-size:10px;color:{GREY};"><strong style="color:{NAVY};">Growth Gradual</strong> — In The Money<br>AI-generated report for informational purposes only. Not financial advice.</td>
+      <td style="font-size:10px;color:{GREY};"><strong style="color:{NAVY};">Growth Gradual</strong> — In The Money</td>
       <td align="right" style="font-size:10px;color:{GREY};">{ts}</td>
     </tr></table>
   </td></tr>
