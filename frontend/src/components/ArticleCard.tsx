@@ -187,7 +187,7 @@ export default function ArticleCard({ article, featured=false, compact=false }: 
       }}
       onMouseLeave={e => {
         e.currentTarget.style.boxShadow='0 1px 6px rgba(15,23,42,0.05)';
-        e.currentTarget.style.borderColor='#e4e8ef';
+        e.currentTarget.style.borderColor='#e6e2d8';
         e.currentTarget.style.transform='translateY(0)';
       }}
     >

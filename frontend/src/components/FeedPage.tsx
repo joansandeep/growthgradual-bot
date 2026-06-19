@@ -21,7 +21,7 @@ const RELATED_FALLBACK: Article[] = [
 function SkeletonCard({ h = 110 }: { h?: number }) {
   return (
     <div style={{
-      background: '#fff', border: '1px solid #e4e8ef',
+      background: '#ffffff', border: '1px solid #e6e2d8',
       borderRadius: '10px', height: `${h}px`, overflow: 'hidden', padding: '16px',
       boxShadow: '0 1px 4px rgba(15,23,42,0.04)',
     }}>
@@ -231,7 +231,7 @@ export default function FeedPage({ category }: { category: Category }) {
               disabled={refreshing}
               style={{
                 background: refreshing ? 'rgba(13,92,69,0.05)' : '#fff',
-                border:'1px solid #e4e8ef', borderRadius:'20px',
+                border:'1px solid #e6e2d8', borderRadius:'20px',
                 padding:'4px 12px', fontSize:'9px',
                 color: refreshing ? '#94a3b8' : '#0d5c45',
                 cursor: refreshing ? 'not-allowed' : 'pointer',
@@ -312,7 +312,7 @@ export default function FeedPage({ category }: { category: Category }) {
             )}
             {list.length > 0 && (
               <div style={{
-                background:'#fff', borderRadius:'10px', border:'1px solid #e4e8ef',
+                background:'#fff', borderRadius:'10px', border:'1px solid #e6e2d8',
                 boxShadow:'0 1px 6px rgba(15,23,42,0.04)',
                 padding:'4px 0', marginTop:'4px',
               }}>

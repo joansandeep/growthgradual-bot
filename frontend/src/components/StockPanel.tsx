@@ -56,7 +56,7 @@ const FALLBACK: MarketData = {
 const Panel = ({ children, style = {} }: { children: React.ReactNode; style?: React.CSSProperties }) => (
   <div style={{
     background: '#ffffff',
-    border: '1px solid #e4e8ef',
+    border: '1px solid #e6e2d8',
     borderRadius: '10px',
     padding: '16px',
     boxShadow: '0 2px 10px rgba(15,23,42,0.06)',

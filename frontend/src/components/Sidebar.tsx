@@ -19,7 +19,7 @@ function buildHref(a: Article): string {
 
 const SidePanel = ({ children, title }: { children: React.ReactNode; title: string }) => (
   <div style={{
-    background:'#fff', border:'1px solid #e4e8ef', borderRadius:'10px',
+    background:'#fff', border:'1px solid #e6e2d8', borderRadius:'10px',
     padding:'12px 14px', boxShadow:'0 2px 10px rgba(15,23,42,0.06)',
   }}>
     <div style={{ display:'flex', alignItems:'center', gap:'6px', marginBottom:'10px', paddingBottom:'8px', borderBottom:'1px solid #f0f2f7' }}>
