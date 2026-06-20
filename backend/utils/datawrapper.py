@@ -195,13 +195,26 @@ async def publish_chart(client: httpx.AsyncClient, spec: dict) -> dict | None:
                 "source-name": "Growth Gradual",
                 "intro": "",
             },
+            "annotate": {
+                "notes": "",
+            },
+            "visualize": {
+                "custom-colors": {
+                    "0": "#1a1f4e",
+                    "1": "#3b82f6",
+                    "2": "#22c55e",
+                    "3": "#f59e0b",
+                    "4": "#ef4444",
+                    "5": "#8b5cf6",
+                },
+            },
         }
         if dw_type in ("d3-bars", "d3-bars-stacked", "column-chart", "grouped-column-chart",
                        "stacked-column-chart", "d3-lines", "d3-area"):
-            metadata["visualize"] = {
+            metadata["visualize"].update({
                 "y-grid": "on",
                 "tooltip-number-format": f"0,0.0{('a ' + unit) if unit else ''}".strip(),
-            }
+            })
         await client.patch(
             f"{API_BASE}/charts/{chart_id}",
             headers=_headers({"Content-Type": "application/json"}),
@@ -276,7 +289,7 @@ async def attach_datawrapper_charts(charts: list[dict], fetch_png_bytes: bool = 
                     info["pngBytes"] = png
             ch["datawrapper"] = info
 
-    async with httpx.AsyncClient(timeout=30.0) as client:
+    async with httpx.AsyncClient(timeout=60.0) as client:
         await asyncio.gather(*[_do_one(ch, client) for ch in charts])
 
     n_ok = sum(1 for ch in charts if ch.get("datawrapper"))

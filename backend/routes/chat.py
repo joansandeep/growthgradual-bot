@@ -1099,6 +1099,154 @@ async def _sanitize_and_forward(raw_gen, assistant_chunks: list[str]) -> AsyncGe
         yield f"data: {json.dumps({'choices': [{'delta': {'content': tail}}]})}\n\n".encode()
 
 
+
+# ─── Inline chart generation ──────────────────────────────────────────────────
+_CHART_SYSTEM_PROMPT = """You are a data extraction specialist for a financial analytics platform.
+Given a user question and the assistant's text reply, extract ALL numeric data that can be visualised
+as a chart. Return ONLY valid JSON in this exact shape — no markdown fences, no explanation:
+
+{
+  "charts": [
+    {
+      "type": "bar" | "line" | "pie",
+      "title": "<specific descriptive title e.g. 'HDFC Bank Net Profit 2020–2024'>",
+      "unit": "%" | "₹" | "Cr" | "x" | "",
+      "series": [{ "name": "<series name>", "data": [{ "label": "<label>", "value": <number> }] }]
+    }
+  ]
+}
+
+RULES — read carefully:
+- Extract ONLY numbers that ACTUALLY APPEAR in the reply text. NEVER invent or estimate values.
+- "bar": 3+ named items compared on one metric (e.g. ROE across 5 banks)
+- "line": 3+ chronological time points showing a trend (years, quarters, months)
+- "pie": 3+ parts that together form a whole (portfolio allocation, segment share)
+- Every label within a chart MUST be unique. Every value MUST be a real number (not a string).
+- Max 4 charts total. Return {"charts": []} if nothing chartable found.
+- For year-on-year data (Net Profit 2020, 2021, 2022, 2023, 2024) → "line" chart
+- For cross-sectional comparisons (NPA % of HDFC vs ICICI vs SBI) → "bar" chart
+- Minimum data points: line ≥ 3, bar ≥ 3, pie ≥ 3. Never output fewer.
+- NEVER duplicate a label within the same series.
+"""
+
+@router.post("/charts")
+async def generate_inline_charts(request: Request):
+    """
+    POST /api/chat/charts
+    Body: { question: str, reply: str, queryType?: str }
+    Returns: { charts: ChartSpec[] }
+
+    Called by the frontend after each finance bot reply to extract
+    and publish charts to Datawrapper (with SVG fallback if token absent).
+    """
+    try:
+        body = await request.json()
+    except Exception:
+        return JSONResponse({"charts": []})
+
+    question: str = (body.get("question") or "").strip()
+    reply:    str = (body.get("reply")    or "").strip()
+
+    if not reply or len(reply) < 100:
+        return JSONResponse({"charts": []})
+
+    # Only generate charts for finance/data-heavy replies
+    q_lower = question.lower() + " " + reply.lower()
+    data_keywords = [
+        "net profit", "revenue", "roe", "npa", "nim", "market cap", "pe", "eps",
+        "return", "growth", "crore", "billion", "%", "percent", "quarter",
+        "fy2", "q1", "q2", "q3", "q4", "2020", "2021", "2022", "2023", "2024", "2025",
+        "₹", "inr", "basis point", "ratio", "margin", "yield", "nav", "cagr",
+    ]
+    if not any(k in q_lower for k in data_keywords):
+        return JSONResponse({"charts": []})
+
+    user_prompt = (
+        f"USER QUESTION: {question[:500]}\n\n"
+        f"ASSISTANT REPLY (extract charts from this):\n{reply[:4000]}\n\n"
+        "Return ONLY a JSON array of chart specs. Return [] if nothing chartable."
+    )
+
+    keys = get_groq_keys()
+    raw_json = ""
+    for key in round_robin(keys):
+        if is_rate_limited(key):
+            continue
+        try:
+            async with httpx.AsyncClient(timeout=35) as client:
+                res = await client.post(
+                    "https://api.groq.com/openai/v1/chat/completions",
+                    headers={"Content-Type": "application/json", "Authorization": f"Bearer {key}"},
+                    json={
+                        "model": "llama-3.3-70b-versatile",
+                        "messages": [
+                            {"role": "system", "content": _CHART_SYSTEM_PROMPT},
+                            {"role": "user", "content": user_prompt},
+                        ],
+                        "max_tokens": 2500,
+                        "temperature": 0.1,
+                        # json_object mode: works with our object-shaped prompt {"charts":[...]}
+                        "response_format": {"type": "json_object"},
+                    },
+                )
+            if res.is_success:
+                raw_json = res.json()["choices"][0]["message"]["content"]
+                break
+            elif res.status_code == 429:
+                mark_rate_limited(key, 60_000)
+        except Exception as exc:
+            log.debug("Chart gen Groq error: %s", exc)
+
+    if not raw_json:
+        return JSONResponse({"charts": []})
+
+    # Parse — LLM returns {"charts": [...]} due to json_object + our prompt shape
+    try:
+        parsed = json.loads(raw_json)
+        if isinstance(parsed, dict):
+            # Primary: {"charts": [...]}
+            charts = parsed.get("charts") or parsed.get("data") or []
+            # Fallback: dict is itself a single chart spec
+            if not charts and parsed.get("series"):
+                charts = [parsed]
+        elif isinstance(parsed, list):
+            # Shouldn't happen with json_object mode, but handle it safely
+            charts = parsed
+        else:
+            charts = []
+    except Exception as exc:
+        log.debug("Chart JSON parse failed: %s — raw: %s", exc, raw_json[:200])
+        return JSONResponse({"charts": []})
+
+    # Validate each chart — drop obviously bad ones
+    valid = []
+    for c in charts:
+        if not isinstance(c, dict):
+            continue
+        series = c.get("series") or []
+        all_pts = [pt for s in series for pt in (s.get("data") or [])]
+        if len(all_pts) < 2:
+            continue
+        vals = [pt.get("value") for pt in all_pts if pt.get("value") is not None]
+        labels = [pt.get("label", "") for pt in all_pts]
+        if len(set(vals)) < 2 or len(set(labels)) < 2:
+            continue
+        valid.append(c)
+
+    if not valid:
+        return JSONResponse({"charts": []})
+
+    # Publish to Datawrapper (no-op if token absent — returns unchanged)
+    try:
+        from utils.datawrapper import attach_datawrapper_charts
+        valid = await attach_datawrapper_charts(valid, fetch_png_bytes=False)
+    except Exception as exc:
+        log.debug("Datawrapper attach failed (non-critical): %s", exc)
+
+    log.info("Inline charts: generated %d chart(s) for question=%r", len(valid), question[:60])
+    return JSONResponse({"charts": valid})
+
+
 # ─── Main handler ──────────────────────────────────────────────────────────────
 @router.post("")
 async def chat(request: Request):

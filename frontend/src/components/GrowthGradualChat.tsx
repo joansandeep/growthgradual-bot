@@ -14,6 +14,7 @@ interface Message {
   id: string; role: 'user' | 'assistant'; text: string; ts: number;
   sources?: Source[]; searchPerformed?: boolean; queryType?: string;
   reportData?: ReportData; reportLoading?: boolean;
+  inlineCharts?: ChartSpec[];
   // Report is no longer auto-generated — these carry what's needed so the
   // "Generate Report" button can build the request whenever the user taps it.
   reportEligible?: boolean; reportQuestion?: string; reportFiles?: AttachedFile[];
@@ -131,6 +132,116 @@ function renderMd(text: string): string {
     .replace(/\n/g, '<br/>')
     .replace(/^(?!<)/, '<p class="md-p">')
     .replace(/(?<!>)$/, '</p>');
+}
+
+// ─── Inline chart extraction from markdown tables ─────────────────────────────
+/**
+ * Parses markdown tables embedded in LLM text into ChartSpec objects for inline rendering.
+ * Returns an array of { spec, startIndex, endIndex } so the caller can split the text
+ * around them and render text + charts interleaved.
+ */
+function extractInlineCharts(text: string): { spec: ChartSpec; raw: string }[] {
+  const results: { spec: ChartSpec; raw: string }[] = [];
+
+  // Match markdown tables: header row | sep row | data rows
+  const tableRe = /(\|.+\|\n\|[-| :]+\|\n(?:\|.+\|\n?)+)/g;
+  let m: RegExpExecArray | null;
+  while ((m = tableRe.exec(text)) !== null) {
+    const raw = m[1].trim();
+    const lines = raw.split('\n').filter(l => l.trim());
+    if (lines.length < 3) continue;
+
+    // Parse header
+    const headerCells = lines[0].split('|').map(c => c.trim()).filter(Boolean);
+    // Skip separator line (lines[1])
+    const dataLines = lines.slice(2);
+
+    if (headerCells.length < 2) continue;
+
+    // Check if 2nd+ columns are numeric
+    const dataRows = dataLines.map(l =>
+      l.split('|').map(c => c.trim()).filter(Boolean)
+    ).filter(r => r.length >= 2);
+
+    if (dataRows.length < 2) continue;
+
+    const isNumeric = (s: string) => !isNaN(parseFloat(s.replace(/[₹,%\s]/g, '').replace(/,/g, '')));
+    const parseNum  = (s: string) => parseFloat(s.replace(/[₹,%\s]/g, '').replace(/,/g, '')) || 0;
+
+    // Check that at least one data column is numeric
+    const hasNumericCol = dataRows.some(r => r.slice(1).some(isNumeric));
+    if (!hasNumericCol) continue;
+
+    // Determine chart type: if first col looks like years/dates → line, else bar
+    const firstColVals = dataRows.map(r => r[0]);
+    const looksLikeTimeSeries = firstColVals.every(v =>
+      /^\d{4}$/.test(v) ||           // Year: 2020
+      /^(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)/i.test(v) || // Month
+      /^q[1-4]/i.test(v) ||          // Quarter
+      /^\d{1,2}[\/\-]\d{2,4}/.test(v) // Date
+    );
+
+    // Build series for each numeric column beyond the first
+    const numericColIndexes = headerCells
+      .slice(1)
+      .map((_, i) => i + 1)
+      .filter(i => dataRows.some(r => r[i] && isNumeric(r[i])));
+
+    if (numericColIndexes.length === 0) continue;
+
+    const series: ChartSeries[] = numericColIndexes.map(colIdx => ({
+      name: headerCells[colIdx] ?? `Series ${colIdx}`,
+      data: dataRows
+        .filter(r => r[colIdx] && isNumeric(r[colIdx]))
+        .map(r => ({ label: r[0], value: parseNum(r[colIdx]) })),
+    }));
+
+    // Derive a title from surrounding context (look for text before the table)
+    const beforeTable = text.slice(0, m.index);
+    const titleMatch = beforeTable.match(/(?:^|\n)(?:#{1,3}\s+|[*_]{0,2})([^\n]{5,80})(?:[*_]{0,2})\s*\n?$/);
+    const title = titleMatch
+      ? titleMatch[1].replace(/[*_#]/g, '').trim()
+      : `${headerCells[0]} vs ${headerCells.slice(1).join(', ')}`;
+
+    // Detect % unit
+    const unit = headerCells.slice(1).some(h => h.includes('%')) ||
+      dataRows.some(r => r.slice(1).some(v => v.includes('%'))) ? '%' : undefined;
+
+    const spec: ChartSpec = {
+      type: looksLikeTimeSeries ? 'line' : 'bar',
+      title,
+      series,
+      ...(unit ? { unit } : {}),
+    };
+
+    if (isValidChart(spec)) {
+      results.push({ spec, raw });
+    }
+  }
+  return results;
+}
+
+/**
+ * Splits markdown text around embedded tables that were converted to charts,
+ * returning an array of { type: 'text' | 'chart', content }.
+ */
+function splitTextAndCharts(text: string): Array<{ type: 'text'; content: string } | { type: 'chart'; spec: ChartSpec }> {
+  const charts = extractInlineCharts(text);
+  if (charts.length === 0) return [{ type: 'text', content: text }];
+
+  const parts: Array<{ type: 'text'; content: string } | { type: 'chart'; spec: ChartSpec }> = [];
+  let remaining = text;
+
+  for (const { spec, raw } of charts) {
+    const idx = remaining.indexOf(raw);
+    if (idx === -1) continue;
+    const before = remaining.slice(0, idx);
+    if (before.trim()) parts.push({ type: 'text', content: before });
+    parts.push({ type: 'chart', spec });
+    remaining = remaining.slice(idx + raw.length);
+  }
+  if (remaining.trim()) parts.push({ type: 'text', content: remaining });
+  return parts;
 }
 
 // ─── Chart validation ────────────────────────────────────────────────────────
@@ -289,35 +400,39 @@ function PieChart({ spec }: { spec: ChartSpec }) {
 function DatawrapperChart({ spec }: { spec: ChartSpec }) {
   const dw = spec.datawrapper!;
   const [loaded, setLoaded] = useState(false);
+  // Taller for multi-series / more data points
+  const nPts = (spec.series ?? []).flatMap(s => s.data ?? []).length;
+  const iframeH = spec.type === 'pie' ? 320 : nPts > 8 ? 380 : 300;
   return (
-    <div className="chart-wrap">
-      <div className="chart-title">{spec.title}</div>
-      <div style={{ position: 'relative', minHeight: loaded ? undefined : 220 }}>
+    <div className="chart-wrap dw-chart-wrap">
+      <div style={{ position: 'relative', minHeight: iframeH }}>
         {!loaded && (
           <div style={{
-            position: 'absolute', inset: 0, display: 'flex', alignItems: 'center',
-            justifyContent: 'center', fontSize: 12, color: '#8b93b5', fontFamily: 'DM Sans,sans-serif',
+            position: 'absolute', inset: 0, display: 'flex', flexDirection: 'column',
+            alignItems: 'center', justifyContent: 'center', gap: 8,
+            background: 'linear-gradient(135deg,#f8f9fc,#f0f2f8)',
+            borderRadius: 10,
           }}>
-            Loading chart…
+            <div className="chip-spinner" style={{ width: 18, height: 18, borderWidth: 2.5, borderColor: '#1a1f4e33', borderTopColor: '#1a1f4e' }}/>
+            <span style={{ fontSize: 11, color: '#8b93b5', fontFamily: 'DM Sans,sans-serif' }}>Loading chart…</span>
           </div>
         )}
         <iframe
           title={spec.title}
           src={dw.embedUrl}
-          style={{ width: '100%', border: 0, minHeight: 280, display: 'block' }}
-          height="280"
+          style={{ width: '100%', border: 0, height: iframeH, display: 'block', borderRadius: 10, opacity: loaded ? 1 : 0, transition: 'opacity .3s' }}
           scrolling="no"
+          allowFullScreen
           onLoad={() => setLoaded(true)}
         />
       </div>
-      <a
-        href={dw.publicUrl}
-        target="_blank"
-        rel="noopener noreferrer"
-        style={{ fontSize: 10, color: '#8b93b5', fontFamily: 'DM Sans,sans-serif', display: 'inline-block', marginTop: 4 }}
-      >
-        View on Datawrapper ↗
-      </a>
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginTop: 4 }}>
+        <span style={{ fontSize: 10, color: '#8b93b5', fontFamily: 'DM Sans,sans-serif' }}>{spec.title}</span>
+        <a href={dw.publicUrl} target="_blank" rel="noopener noreferrer"
+          style={{ fontSize: 10, color: '#3b82f6', fontFamily: 'DM Sans,sans-serif', textDecoration: 'none' }}>
+          Open ↗
+        </a>
+      </div>
     </div>
   );
 }
@@ -1208,6 +1323,32 @@ export default function GrowthGradualChat() {
         ? { ...m, reportEligible: isSubstantiveQuery, reportQuestion: q, reportFiles: currentFiles }
         : m));
 
+      // ── Inline chart generation ────────────────────────────────────────────
+      // After any data-heavy finance reply, silently call /api/chat/charts to
+      // extract + publish charts from the reply text. Charts are attached to
+      // the message and rendered inline above the text.
+      if (isSubstantiveQuery && finalText.length > 200) {
+        (async () => {
+          try {
+            const chartRes = await fetch('/api/chat/charts', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ question: q, reply: finalText }),
+            });
+            if (!chartRes.ok) return;
+            const chartData = await chartRes.json();
+            const charts: ChartSpec[] = (chartData.charts ?? []).filter((c: ChartSpec) => {
+              const pts = (c.series ?? []).flatMap(s => s.data ?? []);
+              return pts.length >= 2 && new Set(pts.map(p => p.value)).size >= 2 && new Set(pts.map(p => p.label)).size >= 2;
+            });
+            if (charts.length > 0) {
+              setMessages(prev => prev.map(m => m.id === botMsgId ? { ...m, inlineCharts: charts } : m));
+            }
+          } catch { /* silent — charts are non-critical */ }
+        })();
+      }
+      // ── End inline chart generation ────────────────────────────────────────
+
       // ── Follow-up question generation ──────────────────────────────────────
       // Always show follow-up chips after every bot reply.
       // For greetings/chitchat: show hardcoded starter suggestions instantly.
@@ -1322,8 +1463,9 @@ export default function GrowthGradualChat() {
 
   /** Builds the report request for one message's attachments and fires it.
    *  Triggered on demand by the "Generate Report" button — reports are no
-   *  longer generated automatically after every reply. */
-  const generateReport = useCallback((botMsgId: string, question: string, files: AttachedFile[]) => {
+   *  longer generated automatically after every reply.
+   *  `conversationContext` is a summary of all prior Q&A in the thread. */
+  const generateReport = useCallback((botMsgId: string, question: string, files: AttachedFile[], conversationContext?: string) => {
     setMessages(prev => prev.map(m => m.id === botMsgId ? { ...m, reportLoading: true } : m));
 
     const buildFilePayload = async () => {
@@ -1378,7 +1520,7 @@ export default function GrowthGradualChat() {
         body: JSON.stringify({
           question,
           sources:     [],
-          fileContext: fileTextContext,
+          fileContext: [fileTextContext, conversationContext].filter(Boolean).join('\n\n---\n'),
           fileImages,
           sessionId:   getOrCreateSessionId(),
           hasRag:      ragIndexed,
@@ -1687,6 +1829,13 @@ export default function GrowthGradualChat() {
 
         /* Report */
         .report-wrap { margin-top: 7px; }
+        .inline-chart-wrap { margin: 10px 0; background: #f8f9fc; border-radius: 10px; border: 1px solid #e2e6f0; padding: 4px 6px 6px; overflow: hidden; }
+        .inline-chart-wrap .chart-wrap { margin: 0; background: transparent; border: none; box-shadow: none; padding: 4px 0 0; }
+        .inline-charts-section { margin-bottom: 10px; border: 1px solid #e2e6f0; border-radius: 12px; overflow: hidden; background: #f8f9fc; }
+        .inline-charts-label { padding: 7px 12px 4px; font-size: 10px; font-weight: 700; color: #8b93b5; text-transform: uppercase; letter-spacing: .06em; font-family: 'DM Sans',sans-serif; }
+        .inline-charts-section .charts-grid { padding: 0 6px 8px; gap: 8px; }
+        .inline-charts-section .chart-wrap { background: #fff; box-shadow: 0 1px 4px rgba(26,31,78,.06); }
+        .dw-chart-wrap { padding: 6px 6px 4px !important; }
         .report-btn { display:flex;align-items:center;gap:5px;background:linear-gradient(135deg,#0d4f3c,#1a1f4e);border:none;border-radius:7px;padding:6px 12px;font-size:clamp(10px,.9vw,11.5px);color:#fff;cursor:pointer;font-family:'DM Sans',sans-serif;transition:opacity .15s,box-shadow .15s;box-shadow:0 2px 8px rgba(13,79,60,.25); }
         .report-btn:hover { opacity: .85; }
         .report-body { margin-top:8px;background:#f8f9fc;border:1px solid #e2e6f0;border-radius:12px;padding:clamp(10px,2vw,18px);max-height:clamp(280px,40vh,560px);overflow-y:auto; }
@@ -2149,16 +2298,64 @@ export default function GrowthGradualChat() {
                       {/* Bubble */}
                       <div className="msg-bubble">
 
-                        <div
-                          className="msg-text"
-                          dangerouslySetInnerHTML={{ __html: isUser ? msg.text.replace(/\n/g,'<br/>') : renderMd(msg.text) }}
-                        />
+                        {isUser ? (
+                          <div
+                            className="msg-text"
+                            dangerouslySetInnerHTML={{ __html: msg.text.replace(/\n/g,'<br/>') }}
+                          />
+                        ) : (() => {
+                          const parts = splitTextAndCharts(msg.text);
+                          // Only bother splitting if there are actual charts
+                          const hasCharts = parts.some(p => p.type === 'chart');
+                          const hasInlineCharts = (msg.inlineCharts ?? []).length > 0;
+                          return (
+                            <>
+                              {/* Datawrapper/SVG charts from /api/chat/charts */}
+                              {hasInlineCharts && (
+                                <div className="inline-charts-section">
+                                  <div className="inline-charts-label">📊 Charts</div>
+                                  <div className="charts-grid">
+                                    {(msg.inlineCharts ?? []).map((c, ci) => <ChartBlock key={ci} spec={c}/>)}
+                                  </div>
+                                </div>
+                              )}
+                              {/* Text with embedded table-extracted charts */}
+                              {!hasCharts ? (
+                                <div
+                                  className="msg-text"
+                                  dangerouslySetInnerHTML={{ __html: renderMd(msg.text) }}
+                                />
+                              ) : (
+                                <div className="msg-text">
+                                  {parts.map((p, pi) =>
+                                    p.type === 'text'
+                                      ? <div key={pi} dangerouslySetInnerHTML={{ __html: renderMd(p.content) }}/>
+                                      : <div key={pi} className="inline-chart-wrap"><ChartBlock spec={p.spec}/></div>
+                                  )}
+                                </div>
+                              )}
+                            </>
+                          );
+                        })()}
 
                         {!isUser && (msg.reportEligible || msg.reportLoading || msg.reportData) && (
                           <ReportPanel
                             msg={msg}
                             question={msg.text.slice(0,300)}
-                            onGenerate={() => generateReport(msg.id, msg.reportQuestion ?? msg.text, msg.reportFiles ?? [])}
+                            onGenerate={() => {
+                              // Build conversation context from all prior messages in this thread
+                              const conversationContext = messages
+                                .slice(0, i) // all messages before this one
+                                .filter(m => m.text && m.text.trim())
+                                .map(m => `${m.role === 'user' ? 'User' : 'Assistant'}: ${m.text.slice(0, 800)}`)
+                                .join('\n\n');
+                              generateReport(
+                                msg.id,
+                                msg.reportQuestion ?? msg.text,
+                                msg.reportFiles ?? [],
+                                conversationContext || undefined,
+                              );
+                            }}
                           />
                         )}
                         {/* Follow-up question chips */}
