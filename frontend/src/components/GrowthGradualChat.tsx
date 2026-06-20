@@ -203,9 +203,11 @@ function extractInlineCharts(text: string): { spec: ChartSpec; raw: string }[] {
       ? titleMatch[1].replace(/[*_#]/g, '').trim()
       : `${headerCells[0]} vs ${headerCells.slice(1).join(', ')}`;
 
-    // Detect % unit
-    const unit = headerCells.slice(1).some(h => h.includes('%')) ||
-      dataRows.some(r => r.slice(1).some(v => v.includes('%'))) ? '%' : undefined;
+    // Detect % unit — only when the *data values* themselves carry a % sign.
+    // A header like "Return (%)" is NOT enough: the actual cell values must look
+    // like "12.5%" or "-3.4%". This prevents raw prices (e.g. "₹6,031") that
+    // live inside a "%" column from being rendered as "+603100.00%".
+    const unit = dataRows.some(r => r.slice(1).some(v => /[\d]%/.test(v))) ? '%' : undefined;
 
     const spec: ChartSpec = {
       type: looksLikeTimeSeries ? 'line' : 'bar',
@@ -302,7 +304,9 @@ function BarChart({ spec }: { spec: ChartSpec }) {
               )}
               {showValueLabel && (
                 <text x={x+barW/2} y={isNeg ? H-22+bH+10 : H-22-bH-4} textAnchor="middle" fontSize="8" fill={color} fontFamily="DM Mono,monospace" fontWeight="700">
-                  {spec.unit==='%' ? `${d.value>0?'+':''}${d.value.toFixed(2)}%` : d.value.toLocaleString('en-IN')}
+                  {spec.unit==='%' && data.every(d => Math.abs(d.value) <= 10000)
+                    ? `${d.value>0?'+':''}${d.value.toFixed(2)}%`
+                    : d.value.toLocaleString('en-IN')}
                 </text>
               )}
             </g>
@@ -1539,7 +1543,13 @@ export default function GrowthGradualChat() {
         body: JSON.stringify({
           question,
           sources:     [],
-          fileContext: [fileTextContext, conversationContext].filter(Boolean).join('\n\n---\n'),
+          // Actual uploaded file text ONLY — conversationContext used to be
+          // merged in here too, but the backend treats fileContext as
+          // "PRIMARY SOURCE, highest priority" for data extraction, which
+          // caused prior conversation topics to leak into the new report's
+          // title/content. It's sent as its own field below instead.
+          fileContext: fileTextContext,
+          conversationContext: conversationContext || '',
           fileImages,
           sessionId:   getOrCreateSessionId(),
           hasRag:      ragIndexed,
