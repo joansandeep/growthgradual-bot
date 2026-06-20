@@ -531,6 +531,15 @@ async def tavily_search(query: str, max_results: int = 20, min_results: int = 10
         log.warning("Tavily search skipped — no keys configured")
         return []
 
+    # Tavily hard-caps query length at 400 chars — truncate on a word boundary
+    # so long user messages (which skip the LLM rewrite above 180 chars) don't
+    # get rejected outright and burn through every key before falling back.
+    TAVILY_MAX_QUERY_LEN = 400
+    if len(query) > TAVILY_MAX_QUERY_LEN:
+        truncated = query[:TAVILY_MAX_QUERY_LEN].rsplit(" ", 1)[0]
+        log.info("Tavily query truncated: %d → %d chars", len(query), len(truncated))
+        query = truncated
+
     qtype = classify_query(query)
     domains = FINANCE_DOMAINS if qtype == "finance" else GENERAL_DOMAINS
     log.info("Tavily search (SDK): query=%r  type=%s  max_results=%d", query[:60], qtype, max_results)
@@ -1136,6 +1145,18 @@ RULES — read carefully:
 - For cross-sectional comparisons (NPA % of HDFC vs ICICI vs SBI) → "bar" chart
 - Minimum data points: line ≥ 3, bar ≥ 3, pie ≥ 3. Never output fewer.
 - NEVER duplicate a label within the same series.
+- UNIT MUST MATCH THE ACTUAL VALUES BEING CHARTED — this is a hard rule:
+  • "unit": "%" is ONLY for values that are themselves percentages (e.g. "6.6% growth", "20% upside") — never apply
+    "%" to a rupee figure, a price, a target price, or any other absolute quantity.
+  • "unit": "₹" is for rupee amounts (stock prices, target prices, revenue in Rs). NEVER chart a target price
+    (e.g. "target price of ₹1,800") with unit "%" just because a percentage also appears nearby in the text.
+  • If the reply mentions BOTH a price/target-price AND a percentage for the same items (e.g. "target price ₹1,800,
+    20% upside" per stock), pick ONE metric for the chart — prefer the percentage (upside/return/change), since
+    that's what's actually comparable across items of different price scales — and set unit="%" accordingly.
+    Do not chart the absolute target prices unless the percentage is unavailable; if you do chart prices, unit
+    must be "₹", never "%".
+  • Before finalizing, re-check every value against its label in the source text: if a number was written as
+    "₹1,800" or "Rs. 1,800" in the reply, it is NOT a percentage — it must not end up in a unit="%" chart.
 """
 
 @router.post("/charts")
@@ -1251,6 +1272,18 @@ async def generate_inline_charts(request: Request):
         vals = [pt.get("value") for pt in all_pts if pt.get("value") is not None]
         labels = [pt.get("label", "") for pt in all_pts]
         if len(set(vals)) < 2 or len(set(labels)) < 2:
+            continue
+        # Sanity check: unit="%" with values far outside any plausible
+        # percentage range (e.g. a ₹1,800 target price mislabeled as "%")
+        # means the LLM almost certainly mismatched a price column with the
+        # percentage unit. A single-day/period % move or upside figure is
+        # essentially never above ~200% — bail on the chart rather than ship
+        # a misleading "+1800.00%" bar.
+        if c.get("unit") == "%" and any(abs(v) > 300 for v in vals if isinstance(v, (int, float))):
+            log.warning(
+                "Inline chart dropped — unit='%%' but values look like prices, not percentages: %r",
+                vals,
+            )
             continue
         valid.append(c)
 

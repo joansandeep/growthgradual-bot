@@ -171,7 +171,7 @@ REPORT STRUCTURE (each section MUST be substantive — minimum 150 words per sec
 ## 2. Data Sources & Methodology
 One markdown table of sources (Publication | URL | Data type). 2 short paragraphs: describe what sources were used, what metrics were collected, how comparisons were made, and any caveats in the data.
 SOURCE BREADTH: list EVERY distinct publication below that contributed any real fact, figure, or context — not only whichever source happened to have the most granular numbers. If five sources were provided and three had usable content (numbers, context, definitions, market commentary), the table and the Sources section should show three rows, not one. Only cite a single source if every other source genuinely had nothing usable (e.g. paywalled, off-topic, or duplicate of another result) — and if so, do not claim more sources were used than actually were. Never list a publication that contributed nothing to the report.
-URL COLUMN: the URL column must contain the EXACT "Source: <url>" value given for that publication in the supplementary sources below — never a paraphrase or placeholder like "Data provided via primary source." If a publication's URL truly is not in the source list, omit that row from the table rather than inventing or vaguely describing a URL.
+URL COLUMN: the URL column must contain the EXACT "Source: <url>" value given for that publication in the supplementary sources below — never a description, a paraphrase, or any placeholder text standing in for a missing link. If a publication's URL truly is not in the source list, omit that row entirely from the table rather than writing anything else in its place.
 
 ## 3. Data Analysis
 
@@ -195,6 +195,7 @@ A plain bulleted list of the publications actually used, one per line: "- Public
 
 GLOBAL RULES:
 - NEVER invent any number, date, name, or statistic
+- NUMERIC CONSISTENCY: when the same metric appears in more than one place (a chart, a table, keyStats, and/or the prose), it MUST use the exact same figure and precision everywhere — e.g. if a source gives 6.6%, write "6.6" in the chart, the table, and the text; never round it to "7" in one spot and "6.6" in another. Copy the figure once from the source, then reuse that exact string everywhere it recurs.
 - TABLE HYGIENE: every column must have real values for EVERY row. If a column would
   be "-" or empty for some rows (e.g. indices like NIFTY 50/NIFTY BANK have no market cap),
   do NOT include that column for those rows — instead, put indices and individual stocks in
@@ -276,6 +277,7 @@ def _strip_citation_markers(text: str) -> str:
 _TITLE_PREAMBLE_RE = re.compile(
     r"^(?:so,?\s+(?:you'?re?|we'?re?|let'?s?)|you'?re?\s+looking|i'?ve?\s+(?:prepared|compiled|created)|"
     r"let'?s\s+(?:look|explore|dive|examine)|here'?s?\s+(?:a|an|the|your)|based\s+on|"
+    r"according\s+to|as\s+per|in\s+light\s+of|"
     r"looking\s+at|looking\s+for|exploring|understanding|a\s+look\s+at|an?\s+(?:analysis|overview|in-depth|deep|guide)\s+of|"
     r"the\s+following|below\s+(?:is|are))",
     re.IGNORECASE,
@@ -306,7 +308,9 @@ def _sanitize_title(title: str, question: str) -> str:
     # Title-case if all lowercase
     if title == title.lower():
         title = title.title()
-    return title[:120]
+    if len(title) > 120:
+        title = title[:120].rsplit(" ", 1)[0].rstrip(",;:-—") + "…"
+    return title
 
 
 
@@ -461,6 +465,20 @@ def _extract_markdown_tables(report_text: str, existing_charts: list) -> tuple[s
                 j += 1
 
             if len(header_cells) >= 2 and len(rows) >= 2:
+                # Defensive scrub: if a column is literally a URL/Link column,
+                # blank any cell that isn't an actual http(s) link rather than
+                # let placeholder/descriptive text (e.g. an LLM echoing a
+                # "missing data" caveat) through to the rendered table.
+                url_col_idxs = [
+                    idx for idx, h in enumerate(header_cells)
+                    if h.strip().lower() in ("url", "link", "source url")
+                ]
+                if url_col_idxs:
+                    for row in rows:
+                        for idx in url_col_idxs:
+                            if idx < len(row) and not re.match(r"^https?://", row[idx].strip()):
+                                row[idx] = "—"
+
                 charts.append({
                     "type":    "table",
                     "title":   last_heading or "Data Table",
@@ -789,6 +807,35 @@ async def extract_data_from_images(question: str, file_images: list[dict]) -> st
     return ""
 
 
+def _build_followup_search_query(question: str, conversation_context: str) -> str:
+    """
+    Follow-up report questions (e.g. "what about its peers", "and the risks")
+    are often meaningless to a search engine on their own — they only make
+    sense alongside the prior turn. Fold in the most recent assistant
+    response (and the user question that produced it) so the search engine
+    gets real grounding instead of a bare pronoun-heavy fragment.
+
+    This deliberately makes the query longer than `question` alone — that's
+    fine, tavily_search() truncates to Tavily's 400-char API limit on a word
+    boundary before it ever hits the wire.
+    """
+    if not conversation_context.strip():
+        return question
+
+    # conversation_context is "User: ...\n\nAssistant: ...\n\nUser: ...\n\nAssistant: ..."
+    # Grab the last Assistant block — that's the response this follow-up is
+    # actually building on.
+    turns = [t.strip() for t in conversation_context.split("\n\n") if t.strip()]
+    last_assistant = next(
+        (t[len("Assistant:"):].strip() for t in reversed(turns) if t.startswith("Assistant:")),
+        "",
+    )
+    if not last_assistant:
+        return question
+
+    return f"{question} — context: {last_assistant[:300]}"
+
+
 @router.post("")
 async def generate_report(request: Request):
     t0 = time.perf_counter()
@@ -803,6 +850,10 @@ async def generate_report(request: Request):
     file_images: list[dict] = body.get("fileImages", [])
     session_id: str     = body.get("sessionId", "").strip()
     has_rag: bool       = bool(body.get("hasRag", False))
+    # Separate from fileContext (which mixes in file text too) so the search
+    # query builder below can target prior Q&A specifically — see
+    # _build_followup_search_query.
+    conversation_context: str = body.get("conversationContext", "")
 
     # Defensive filter: Tavily (and any other internal search/aggregator domains)
     # must never be cited as if they were a publisher. Strip them here so they
@@ -851,7 +902,8 @@ async def generate_report(request: Request):
             # Question implies it wants more than just the file (e.g. asks for
             # market context, comparisons, recent news) — supplement with web data.
             log.info("Report: file-first mode — supplementing with web search")
-            searched = await _tavily_search(question, max_results=20, min_results=10)
+            search_query = _build_followup_search_query(question, conversation_context)
+            searched = await _tavily_search(search_query, max_results=20, min_results=10)
             sources = [
                 {"title": r["title"], "url": r["url"],
                  "snippet": r["snippet"], "fullContent": r.get("fullContent", "")}
@@ -865,7 +917,11 @@ async def generate_report(request: Request):
     elif not sources:
         log.info("Report: no sources — running own Tavily search for %r", question[:60])
         from routes.chat import tavily_search as _tavily_search, _looks_like_ai_overview
-        searched = await _tavily_search(question, max_results=20)
+        search_query = _build_followup_search_query(question, conversation_context)
+        if search_query != question:
+            log.info("Report: search query enriched with prior context (%d → %d chars)",
+                      len(question), len(search_query))
+        searched = await _tavily_search(search_query, max_results=20)
         sources = [
             {"title": r["title"], "url": r["url"],
              "snippet": r["snippet"], "fullContent": r.get("fullContent", "")}
@@ -924,9 +980,23 @@ async def generate_report(request: Request):
             f"Only place [PAGE_IMG_n] where it genuinely adds context — do NOT place all images, only the most relevant ones (max 4)."
         )
 
+    # Prior conversation turns, if this report follows on from a chat thread.
+    # Kept deliberately separate from file_section above (which is framed as
+    # PRIMARY SOURCE data) — this is background only, for continuity, and
+    # must never become the report's subject or override the question below.
+    conversation_section = ""
+    if conversation_context.strip():
+        conversation_section = (
+            f"\n\nPRIOR CONVERSATION (background only — NOT a data source, "
+            f"do NOT extract numbers from this or base the title/topic on it; "
+            f"it exists only so a pronoun-heavy follow-up question makes sense):\n"
+            f"{conversation_context[:2000]}\n"
+        )
+
     user_prompt = (
-        f"Research Question / Topic: {question}\n"
+        f"Research Question / Topic (this — and ONLY this — defines the report's title and subject): {question}\n"
         + (f"\nPRIMARY SOURCE — ANALYSE THIS FIRST (uploaded file data takes highest priority):{file_section}" if file_section else "")
+        + conversation_section
         + (img_placement_instruction if img_placement_instruction else "")
         + f"\n\nSupplementary web sources ({len(enriched)} results):\n\n{src_text}\n\n"
         "INSTRUCTIONS:\n"
