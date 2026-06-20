@@ -14,10 +14,10 @@ const app  = express();
 const PORT = process.env.PORT || 4000;
 
 const SERVICES = {
-  session:    process.env.SESSION_SERVICE_URL    || 'https://paperly-session-service-0vv2.onrender.com',
-  file:       process.env.FILE_SERVICE_URL       || 'https://paperly-file-service-jkyd.onrender.com',
-  extraction: process.env.EXTRACTION_SERVICE_URL || 'https://paperly-extraction-service-l9nr.onrender.com',
-  llm:        process.env.LLM_SERVICE_URL        || 'https://paperly-llm-service-xqi1.onrender.com',
+  session:    process.env.SESSION_SERVICE_URL    || 'https://paperly-session-service.onrender.com',
+  file:       process.env.FILE_SERVICE_URL       || 'https://paperly-file-service.onrender.com',
+  extraction: process.env.EXTRACTION_SERVICE_URL || 'https://paperly-extraction-service.onrender.com',
+  llm:        process.env.LLM_SERVICE_URL        || 'https://paperly-llm-service.onrender.com',
   rag:        process.env.RAG_SERVICE_URL        || 'https://sandy31-paperly-rag-service.hf.space',
 };
 

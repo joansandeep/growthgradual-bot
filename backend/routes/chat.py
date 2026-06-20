@@ -330,6 +330,73 @@ SKIP_PAGE_FETCH = [".pdf", "bloomberg.com", "wsj.com", "ft.com", "economist.com"
 
 
 # ─── Helpers ───────────────────────────────────────────────────────────────────
+
+# Pronouns / references that signal a follow-up needing rewrite
+_FOLLOWUP_RE = re.compile(
+    r"\b(it|its|their|they|them|that|this|those|these|he|she|him|her|the company|"
+    r"the stock|the fund|the bank|the same|above|mentioned|previous)\b",
+    re.IGNORECASE,
+)
+
+async def rewrite_query_for_search(last_msg: str, history: list[dict]) -> str:
+    """
+    If `last_msg` looks like a pronoun-heavy follow-up, use the last 4 turns
+    of conversation history to rewrite it into a self-contained search query.
+    Falls back to the original message on any error.
+    """
+    # Only rewrite if it's short AND contains ambiguous references
+    if len(last_msg) > 180 or not _FOLLOWUP_RE.search(last_msg):
+        return last_msg
+
+    # Build a compact context from the last 4 turns (2 user + 2 assistant)
+    recent = [m for m in history if m.get("role") in ("user", "assistant")][-4:]
+    if not recent:
+        return last_msg
+
+    context_lines = "\n".join(
+        f"{m['role'].upper()}: {str(m['content'])[:300]}" for m in recent
+    )
+
+    prompt = (
+        "You are a search query rewriter for a financial assistant. "
+        "Given the recent conversation and a follow-up message, rewrite the follow-up "
+        "into a concise, self-contained web search query (max 10 words). "
+        "Output ONLY the rewritten query — no explanation, no quotes, no punctuation at the end.\n\n"
+        f"CONVERSATION:\n{context_lines}\n\n"
+        f"FOLLOW-UP: {last_msg}\n\n"
+        "REWRITTEN QUERY:"
+    )
+
+    # Use Groq (fast, cheap) for this lightweight rewrite task
+    keys = get_groq_keys()
+    if not keys:
+        return last_msg
+
+    key = keys[0]
+    try:
+        async with httpx.AsyncClient(timeout=httpx.Timeout(connect=5, read=15, write=5, pool=5)) as client:
+            res = await client.post(
+                "https://api.groq.com/openai/v1/chat/completions",
+                headers={"Content-Type": "application/json", "Authorization": f"Bearer {key}"},
+                json={
+                    "model": "llama-3.3-70b-versatile",
+                    "messages": [{"role": "user", "content": prompt}],
+                    "max_tokens": 30,
+                    "temperature": 0.1,
+                    "stream": False,
+                },
+            )
+        if res.is_success:
+            rewritten = res.json()["choices"][0]["message"]["content"].strip().strip('"').strip("'")
+            if rewritten and len(rewritten) > 3:
+                log.info("Query rewrite: %r → %r", last_msg[:60], rewritten[:80])
+                return rewritten
+    except Exception as exc:
+        log.debug("Query rewrite failed (non-critical): %s", exc)
+
+    return last_msg
+
+
 def classify_query(msg: str) -> str:
     m = msg.lower()
     return "finance" if any(t in m for t in FINANCE_TERMS) else "general"
@@ -703,20 +770,31 @@ The user just sent a greeting or introduced themselves — nothing else.
 
 You specialise in NSE/BSE stocks, IPOs, mutual funds, RBI/SEBI policy, macroeconomics, and personal finance for Indian investors.
 
-**Behaviour:**
-- Give sharp, specific, data-driven answers. When using web results, name the publication inline (e.g. "according to Moneycontrol...") instead of bracket citation numbers like [1].
-- When web results are provided, extract and use ALL numbers, percentages, dates, and figures from them.
-- Use markdown: **bold** key terms, bullet lists, tables where helpful.
-- Always end market-specific answers with "Verify live prices before trading."
-- Be conversational but precise — like a top sell-side analyst."""
+**Voice — sound like a sharp, friendly analyst talking to a client, not a report generator:**
+- Write the way a knowledgeable person actually talks — natural sentence rhythm, varied lengths, the occasional "but," "so," or "honestly" where it fits. Avoid stiff openers like "Based on the search results" or "According to the data provided" — just say the thing.
+- Lead with the answer, then back it up. Don't pad with throat-clearing before getting to the point.
+- Bullets and tables are tools for genuinely list-like or numeric content, not the default shape of every answer — a couple of well-written paragraphs often reads better than a wall of bullet points.
+- Have a point of view where the data supports one. Flag genuine uncertainty plainly instead of hedging everything.
+
+**Substance:**
+- Give sharp, specific, data-driven answers. When using web results, name the publication inline (e.g. "Moneycontrol reports...", "per the latest RBI bulletin...").
+- NEVER use bracket-style citation markers such as [1], [2], or [1, 2] anywhere in your reply — that's a hard rule. Name the source in the sentence itself instead.
+- When web results are provided, pull in the real numbers, percentages, dates, and figures from them rather than speaking in generalities.
+- Use **bold** for key terms and figures so they're easy to scan.
+- Close out market-specific answers with a quick, natural reminder to verify live prices before trading — phrase it like a person would, not a fixed disclaimer line repeated verbatim every time."""
 
     general_persona = f"""You are **Growth Gradual Assistant** — a knowledgeable AI assistant built into the Growth Gradual platform. Today is {today}.
 
-**Behaviour:**
+**Voice — sound like a smart, helpful person, not a search-results summarizer:**
+- Write in natural, conversational prose. Skip robotic openers like "Based on the search results" — just answer.
+- Use bullets or tables only where the content is genuinely list-like or numeric; otherwise prefer well-organized paragraphs.
+- Get to the point quickly, then add the supporting detail and nuance.
+
+**Substance:**
 - Answer comprehensively using the provided web search results from the top 18 pages.
-- Extract and present ALL specific numbers, statistics, data points, dates, and figures found in the sources.
-- When referencing web content, name the publication inline instead of bracket citation numbers like [1].
-- Use markdown for clarity: **bold** key terms, bullet lists, tables where helpful.
+- Pull in the real numbers, statistics, dates, and figures found in the sources rather than vague generalities.
+- When referencing web content, name the publication inline (e.g. "Reuters notes...") — never use bracket-style citation markers like [1] or [1, 2]. That's a hard rule.
+- Use **bold** for key terms where it aids scanning.
 - Be thorough, accurate, and helpful. Where relevant, connect the topic back to financial or economic context."""
 
     base = finance_persona if qtype == "finance" else general_persona
@@ -935,26 +1013,90 @@ async def gemini_sse(system_prompt: str, messages: list[dict]) -> AsyncGenerator
     raise RuntimeError("All Gemini key×model combinations failed or rate-limited")
 
 
-# ─── SSE chunk → text extraction ──────────────────────────────────────────────
-def _extract_text_from_chunk(raw: str) -> str:
-    """Pull assistant text out of an OpenAI-style SSE chunk string."""
-    text_parts = []
-    for line in raw.splitlines():
-        if not line.startswith("data:"):
-            continue
-        payload = line[5:].strip()
-        if payload in ("[DONE]", ""):
-            continue
-        try:
-            obj = json.loads(payload)
-            # Skip meta events
+
+
+# ─── Citation-marker stripping (streaming-safe) ────────────────────────────────
+# The system prompts tell the model never to use bracket citation numbers like
+# [1] or [1, 2] — but models occasionally slip one in anyway. This filter is a
+# belt-and-suspenders backstop that removes them from the live token stream,
+# the same way report.py strips them from generated reports. It buffers a
+# small tail of text so a marker split across two network chunks (e.g. one
+# chunk ending in "[" and the next starting with "1]") still gets caught.
+_CITATION_RE = re.compile(r"\[\s*\d+(?:\s*,\s*\d+)*\s*\]")
+
+
+class _CitationStripper:
+    _MAX_HOLD = 24  # generous upper bound for something like "[12, 34, 56]"
+
+    def __init__(self) -> None:
+        self._buf = ""
+
+    def feed(self, text: str) -> str:
+        self._buf += text
+        out = []
+        i, n = 0, len(self._buf)
+        while i < n:
+            if self._buf[i] == "[":
+                m = _CITATION_RE.match(self._buf, i)
+                if m:
+                    i = m.end()
+                    continue
+                rest = self._buf[i:]
+                if len(rest) <= self._MAX_HOLD and re.match(r"^\[[\d,\s]*$", rest):
+                    # Could still become a citation marker once more text
+                    # arrives — hold this tail back and wait for the next chunk.
+                    break
+            out.append(self._buf[i])
+            i += 1
+        self._buf = self._buf[i:]
+        return "".join(out)
+
+    def flush(self) -> str:
+        rest, self._buf = self._buf, ""
+        return rest
+
+
+async def _sanitize_and_forward(raw_gen, assistant_chunks: list[str]) -> AsyncGenerator[bytes, None]:
+    """
+    Wrap an upstream OpenAI-style SSE generator (Groq's raw passthrough or
+    Gemini's word-by-word stream), strip bracket-citation markers out of the
+    text as it streams, and yield clean `data: {...}\\n\\n` bytes shaped the
+    way the frontend expects. Also appends the cleaned text to
+    `assistant_chunks` so the saved transcript matches exactly what the user saw.
+    """
+    stripper = _CitationStripper()
+    leftover = ""
+    async for chunk in raw_gen:
+        raw = chunk if isinstance(chunk, str) else chunk.decode(errors="replace")
+        leftover += raw
+        lines = leftover.split("\n")
+        leftover = lines.pop()  # keep a possibly-incomplete trailing line for next round
+        for line in lines:
+            line = line.rstrip("\r")
+            if not line.startswith("data:"):
+                continue
+            payload = line[5:].strip()
+            if payload in ("[DONE]", ""):
+                continue
+            try:
+                obj = json.loads(payload)
+            except Exception:
+                continue
             if obj.get("type") == "meta":
+                yield f"data: {payload}\n\n".encode()
                 continue
             delta = (obj.get("choices") or [{}])[0].get("delta", {})
-            text_parts.append(delta.get("content", ""))
-        except Exception:
-            pass
-    return "".join(text_parts)
+            content = delta.get("content", "")
+            if not content:
+                continue
+            cleaned = stripper.feed(content)
+            if cleaned:
+                assistant_chunks.append(cleaned)
+                yield f"data: {json.dumps({'choices': [{'delta': {'content': cleaned}}]})}\n\n".encode()
+    tail = stripper.flush()
+    if tail:
+        assistant_chunks.append(tail)
+        yield f"data: {json.dumps({'choices': [{'delta': {'content': tail}}]})}\n\n".encode()
 
 
 # ─── Main handler ──────────────────────────────────────────────────────────────
@@ -986,9 +1128,18 @@ async def chat(request: Request):
         and not file_context and not file_images and not has_rag
     )
 
+    # ── Query rewrite: expand pronoun-heavy follow-ups into self-contained queries ──
+    # Run only when search or RAG will actually use the query (saves a Groq call otherwise)
+    search_query = last_user_msg
+    if do_search or has_rag:
+        # Pass history excluding the current (last) user message so context is prior turns
+        prior_history = messages[:-1] if messages and messages[-1].get("role") == "user" else messages
+        search_query = await rewrite_query_for_search(last_user_msg, prior_history)
+
     log.info(
-        "Chat request: msg=%r  search=%s  type=%s  file_ctx=%s  rag=%s  smalltalk=%s  session=%s",
-        last_user_msg[:80], do_search, qtype, bool(file_context), has_rag, is_smalltalk_msg, session_id or "none",
+        "Chat request: msg=%r  search_query=%r  search=%s  type=%s  file_ctx=%s  rag=%s  smalltalk=%s  session=%s",
+        last_user_msg[:80], search_query[:80] if search_query != last_user_msg else "(unchanged)",
+        do_search, qtype, bool(file_context), has_rag, is_smalltalk_msg, session_id or "none",
     )
 
     # Upsert the session row upfront (fire-and-forget — don't block the stream)
@@ -1002,7 +1153,7 @@ async def chat(request: Request):
         return ""
 
     search_results, headlines = await asyncio.gather(
-        tavily_search(last_user_msg, max_results=20, min_results=10) if do_search else _no_search(),
+        tavily_search(search_query, max_results=20, min_results=10) if do_search else _no_search(),
         load_headlines(30) if not is_smalltalk_msg else _no_headlines(),
     )
 
@@ -1047,10 +1198,11 @@ async def chat(request: Request):
     # ── RAG grounding: use RAG service system prompt when files are indexed ───
     rag_system_prompt = ""
     if has_rag and session_id:
-        log.info("Chat: RAG mode — querying for session %s question=%r", session_id[:8], last_user_msg[:60])
+        log.info("Chat: RAG mode — querying for session %s question=%r  search_query=%r",
+                 session_id[:8], last_user_msg[:60], search_query[:60])
         rag_result = await _rag_query(
             session_id=session_id,
-            question=last_user_msg,
+            question=search_query,
             top_k=8,
             min_score=0.15,
         )
@@ -1097,10 +1249,9 @@ async def chat(request: Request):
         if groq_gen is not None:
             provider_used = "groq"
             try:
-                async for chunk in groq_gen:
-                    raw = chunk if isinstance(chunk, str) else chunk.decode(errors="replace")
-                    assistant_chunks.append(_extract_text_from_chunk(raw))
-                    yield raw.encode() if isinstance(chunk, str) else chunk
+                async for out_bytes in _sanitize_and_forward(groq_gen, assistant_chunks):
+                    yield out_bytes
+                yield b"data: [DONE]\n\n"
                 elapsed = int((time.perf_counter() - t0) * 1000)
                 log.info("Chat complete via Groq in %dms", elapsed)
                 if session_id:
@@ -1117,10 +1268,9 @@ async def chat(request: Request):
         if gemini_keys:
             provider_used = "gemini"
             try:
-                async for chunk in gemini_sse(system_prompt, messages):
-                    raw = chunk if isinstance(chunk, str) else chunk.decode(errors="replace")
-                    assistant_chunks.append(_extract_text_from_chunk(raw))
-                    yield chunk.encode() if isinstance(chunk, str) else chunk
+                async for out_bytes in _sanitize_and_forward(gemini_sse(system_prompt, messages), assistant_chunks):
+                    yield out_bytes
+                yield b"data: [DONE]\n\n"
                 elapsed = int((time.perf_counter() - t0) * 1000)
                 log.info("Chat complete via Gemini in %dms", elapsed)
                 if session_id:

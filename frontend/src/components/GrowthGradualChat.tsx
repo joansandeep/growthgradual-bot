@@ -14,6 +14,10 @@ interface Message {
   id: string; role: 'user' | 'assistant'; text: string; ts: number;
   sources?: Source[]; searchPerformed?: boolean; queryType?: string;
   reportData?: ReportData; reportLoading?: boolean;
+  // Report is no longer auto-generated — these carry what's needed so the
+  // "Generate Report" button can build the request whenever the user taps it.
+  reportEligible?: boolean; reportQuestion?: string; reportFiles?: AttachedFile[];
+  followUpQuestions?: string[];
 }
 interface Conversation {
   id: string; title: string; messages: Message[]; ts: number;
@@ -82,9 +86,15 @@ function saveConversations(convs: Conversation[]) {
   if (typeof window === 'undefined') return;
   // Strip reportLoading flag before persisting — a loading state in a saved conversation
   // would re-trigger the report spinner with no active fetch on reload.
+  // Also drop reportFiles (raw base64 attachments) — keeping these out of
+  // localStorage avoids bloating it; reportEligible/reportQuestion are kept
+  // so the "Generate Report" button still works after a reload (just
+  // without the original attachments).
   const cleaned = convs.slice(0, 50).map(c => ({
     ...c,
-    messages: c.messages.map(m => m.reportLoading ? { ...m, reportLoading: false } : m),
+    messages: c.messages.map(m => (m.reportLoading || m.reportFiles)
+      ? { ...m, reportLoading: false, reportFiles: undefined }
+      : m),
   }));
   localStorage.setItem(STORAGE_KEY, JSON.stringify(cleaned));
 }
@@ -471,7 +481,7 @@ function EmailModal({ onClose, onSend, sending, result, defaultSubject }: {
 }
 
 // ─── Report Panel ─────────────────────────────────────────────────────────────
-function ReportPanel({ msg, question }: { msg: Message; question: string }) {
+function ReportPanel({ msg, question, onGenerate }: { msg: Message; question: string; onGenerate: () => void }) {
   const [open, setOpen]               = useState(false);
   const [pdfLoading, setPdfLoading]   = useState(false);
   const [emailOpen, setEmailOpen]     = useState(false);
@@ -481,8 +491,9 @@ function ReportPanel({ msg, question }: { msg: Message; question: string }) {
   const rd = msg.reportData;
   const loading = msg.reportLoading ?? false;
   const done = !!rd;
+  const eligible = msg.reportEligible ?? false;
 
-  if (!loading && !done) return null;
+  if (!loading && !done && !eligible) return null;
 
   const downloadPdf = async () => {
     if (!rd || pdfLoading) return;
@@ -576,6 +587,12 @@ function ReportPanel({ msg, question }: { msg: Message; question: string }) {
               <span className="dots"><i/><i/><i/></span>
               Generating report…
             </div>
+          )}
+          {!loading && !done && eligible && (
+            <button className="report-btn" onClick={onGenerate}>
+              <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="12" y1="11" x2="12" y2="17"/><line x1="9" y1="14" x2="15" y2="14"/></svg>
+              Generate Report
+            </button>
           )}
           {done && (
             <>
@@ -1171,8 +1188,10 @@ export default function GrowthGradualChat() {
         historyRef.current = [...historyRef.current, { role: 'assistant', content: finalText }];
       }
 
-      // Auto-generate report in background after stream completes
-      // Only for substantive queries (not greetings, very short messages, or chitchat)
+      // Report generation is now manual — the user taps "Generate Report" when
+      // they want one. Here we just tag the message as eligible (skipping
+      // greetings/chitchat) and stash the question + attachments so the
+      // button can build the request later without re-deriving state.
       const botMsgId = botMsg.id;
       const currentFiles = attachedFiles;
       const isSubstantiveQuery = (() => {
@@ -1185,89 +1204,70 @@ export default function GrowthGradualChat() {
         return true;
       })();
 
-      if (!isSubstantiveQuery) {
-        // No report for short/greeting messages — just save the conversation
-      } else {
-      setMessages(prev => prev.map(m => m.id === botMsgId ? { ...m, reportLoading: true } : m));
+      setMessages(prev => prev.map(m => m.id === botMsgId
+        ? { ...m, reportEligible: isSubstantiveQuery, reportQuestion: q, reportFiles: currentFiles }
+        : m));
 
-      // Build file images for report (render PDF pages / pass images as base64)
-      const buildFilePayload = async () => {
-        const fileImages: { name: string; mimeType: string; data: string }[] = [];
-        const fileTextParts: string[] = [];
-
-        for (const f of currentFiles) {
-          if (f.extractedText) {
-            fileTextParts.push(`[File: ${f.name}]\n${f.extractedText.slice(0, 12000)}`);
-          }
-
-          if (f.type === 'application/pdf') {
-            // Render PDF pages to images using pdf.js
-            try {
-              const pdfjsLib = await import('pdfjs-dist');
-              pdfjsLib.GlobalWorkerOptions.workerSrc = `https://cdnjs.cloudflare.com/ajax/libs/pdf.js/${pdfjsLib.version}/pdf.worker.min.mjs`;
-              const dataUrl = f.content; // base64 data URL
-              const base64 = dataUrl.split(',')[1];
-              const binary = atob(base64);
-              const bytes = new Uint8Array(binary.length);
-              for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
-              const pdf = await pdfjsLib.getDocument({ data: bytes }).promise;
-              const numPages = Math.min(pdf.numPages, 8); // max 8 pages
-              for (let pageNum = 1; pageNum <= numPages; pageNum++) {
-                const page = await pdf.getPage(pageNum);
-                const viewport = page.getViewport({ scale: 1.5 });
-                const canvas = document.createElement('canvas');
-                canvas.width = viewport.width;
-                canvas.height = viewport.height;
-                const ctx = canvas.getContext('2d')!;
-                await page.render({ canvasContext: ctx, viewport }).promise;
-                const imgData = canvas.toDataURL('image/jpeg', 0.85).split(',')[1];
-                fileImages.push({ name: `${f.name} page ${pageNum}`, mimeType: 'image/jpeg', data: imgData });
+      // ── Follow-up question generation ──────────────────────────────────────
+      // Fire-and-forget: generate 3 contextual follow-up questions and attach
+      // them to the bot message so the user can tap to continue the conversation.
+      if (isSubstantiveQuery && finalText.length > 80) {
+        (async () => {
+          try {
+            const fuRes = await fetch('/api/chat', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                messages: [
+                  {
+                    role: 'user',
+                    content:
+                      `Based on this Q&A, suggest exactly 3 short follow-up questions a user might ask next. ` +
+                      `Return ONLY a JSON array of 3 strings, no explanation, no markdown.\n\n` +
+                      `Q: ${q.slice(0, 200)}\nA: ${finalText.slice(0, 600)}`,
+                  },
+                ],
+                fileContext: '',
+                sessionId: '',
+                hasRag: false,
+                fileImages: [],
+                _followUpMode: true,
+              }),
+            });
+            if (!fuRes.ok) return;
+            // Consume the SSE stream and collect full text
+            const reader = fuRes.body!.getReader();
+            const dec = new TextDecoder();
+            let buf = '', acc = '';
+            while (true) {
+              const { value, done } = await reader.read();
+              if (done) break;
+              buf += dec.decode(value, { stream: true });
+              const lines = buf.split('\n');
+              buf = lines.pop() ?? '';
+              for (const line of lines) {
+                if (!line.startsWith('data: ')) continue;
+                const raw = line.slice(6).trim();
+                if (raw === '[DONE]') break;
+                try {
+                  const j = JSON.parse(raw);
+                  const t = j.choices?.[0]?.delta?.content;
+                  if (t) acc += t;
+                } catch { /* ignore */ }
               }
-            } catch (e) {
-              console.warn('[report] pdf.js render failed:', e);
             }
-          } else if (f.type.startsWith('image/')) {
-            // Direct image attachment
-            const base64 = f.content.split(',')[1];
-            if (base64) fileImages.push({ name: f.name, mimeType: f.type, data: base64 });
-          }
-        }
-
-        return { fileImages, fileTextContext: fileTextParts.join('\n\n') };
-      };
-
-      buildFilePayload().then(({ fileImages, fileTextContext }) => {
-        return fetch('/api/chat/report', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            question:    q,
-            sources:     [],
-            fileContext: fileTextContext,
-            fileImages,
-            sessionId:   getOrCreateSessionId(),
-            hasRag:      ragIndexed,
-          }),
-        });
-      })
-        .then(r => r.json())
-        .then(data => {
-          setMessages(prev => prev.map(m => m.id === botMsgId ? {
-            ...m,
-            reportLoading: false,
-            reportData: {
-              report:     data.report     ?? '',
-              charts:     data.charts     ?? [],
-              keyStats:   data.keyStats   ?? [],
-              summary:    data.summary    ?? '',
-              fileImages: data.fileImages ?? [],
-            },
-          } : m));
-        })
-        .catch(() => {
-          setMessages(prev => prev.map(m => m.id === botMsgId ? { ...m, reportLoading: false } : m));
-        });
-      } // end isSubstantiveQuery
+            // Parse the JSON array from the response
+            const match = acc.match(/\[[\s\S]*\]/);
+            if (!match) return;
+            const questions: string[] = JSON.parse(match[0]);
+            if (!Array.isArray(questions) || questions.length === 0) return;
+            setMessages(prev => prev.map(m => m.id === botMsgId
+              ? { ...m, followUpQuestions: questions.slice(0, 3).map(s => String(s).trim()).filter(Boolean) }
+              : m));
+          } catch { /* silent fail — follow-ups are non-critical */ }
+        })();
+      }
+      // ── End follow-up generation ───────────────────────────────────────────
 
       // Persist conversation
       const title = q.length > 46 ? q.slice(0,46)+'…' : q;
@@ -1305,6 +1305,90 @@ export default function GrowthGradualChat() {
       setStatusMsg('');
     }
   }, [streaming, messages, activeId, attachedFiles, pastedTexts]);
+
+  /** Builds the report request for one message's attachments and fires it.
+   *  Triggered on demand by the "Generate Report" button — reports are no
+   *  longer generated automatically after every reply. */
+  const generateReport = useCallback((botMsgId: string, question: string, files: AttachedFile[]) => {
+    setMessages(prev => prev.map(m => m.id === botMsgId ? { ...m, reportLoading: true } : m));
+
+    const buildFilePayload = async () => {
+      const fileImages: { name: string; mimeType: string; data: string }[] = [];
+      const fileTextParts: string[] = [];
+
+      for (const f of files) {
+        if (f.extractedText) {
+          fileTextParts.push(`[File: ${f.name}]\n${f.extractedText.slice(0, 12000)}`);
+        }
+
+        if (f.type === 'application/pdf') {
+          // Render PDF pages to images using pdf.js
+          try {
+            const pdfjsLib = await import('pdfjs-dist');
+            pdfjsLib.GlobalWorkerOptions.workerSrc = `https://cdnjs.cloudflare.com/ajax/libs/pdf.js/${pdfjsLib.version}/pdf.worker.min.mjs`;
+            const dataUrl = f.content; // base64 data URL
+            const base64 = dataUrl.split(',')[1];
+            const binary = atob(base64);
+            const bytes = new Uint8Array(binary.length);
+            for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+            const pdf = await pdfjsLib.getDocument({ data: bytes }).promise;
+            const numPages = Math.min(pdf.numPages, 8); // max 8 pages
+            for (let pageNum = 1; pageNum <= numPages; pageNum++) {
+              const page = await pdf.getPage(pageNum);
+              const viewport = page.getViewport({ scale: 1.5 });
+              const canvas = document.createElement('canvas');
+              canvas.width = viewport.width;
+              canvas.height = viewport.height;
+              const ctx = canvas.getContext('2d')!;
+              await page.render({ canvasContext: ctx, viewport }).promise;
+              const imgData = canvas.toDataURL('image/jpeg', 0.85).split(',')[1];
+              fileImages.push({ name: `${f.name} page ${pageNum}`, mimeType: 'image/jpeg', data: imgData });
+            }
+          } catch (e) {
+            console.warn('[report] pdf.js render failed:', e);
+          }
+        } else if (f.type.startsWith('image/')) {
+          // Direct image attachment
+          const base64 = f.content.split(',')[1];
+          if (base64) fileImages.push({ name: f.name, mimeType: f.type, data: base64 });
+        }
+      }
+
+      return { fileImages, fileTextContext: fileTextParts.join('\n\n') };
+    };
+
+    buildFilePayload().then(({ fileImages, fileTextContext }) => {
+      return fetch('/api/chat/report', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          question,
+          sources:     [],
+          fileContext: fileTextContext,
+          fileImages,
+          sessionId:   getOrCreateSessionId(),
+          hasRag:      ragIndexed,
+        }),
+      });
+    })
+      .then(r => r.json())
+      .then(data => {
+        setMessages(prev => prev.map(m => m.id === botMsgId ? {
+          ...m,
+          reportLoading: false,
+          reportData: {
+            report:     data.report     ?? '',
+            charts:     data.charts     ?? [],
+            keyStats:   data.keyStats   ?? [],
+            summary:    data.summary    ?? '',
+            fileImages: data.fileImages ?? [],
+          },
+        } : m));
+      })
+      .catch(() => {
+        setMessages(prev => prev.map(m => m.id === botMsgId ? { ...m, reportLoading: false } : m));
+      });
+  }, [ragIndexed]);
 
   const onKey = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
     if (e.key==='Enter' && !e.shiftKey) { e.preventDefault(); send(input); }
@@ -1532,6 +1616,17 @@ export default function GrowthGradualChat() {
         }
         .msg-ts { font-size: clamp(9px,.85vw,11px); color: #b0b8d4; padding: 0 4px; }
         .msg-row--user .msg-ts { text-align: right; }
+        .followup-chips { display:flex; flex-wrap:wrap; gap:6px; margin-top:8px; align-items:center; }
+        .followup-label { font-size:10px; font-weight:600; color:#8892b0; text-transform:uppercase; letter-spacing:.06em; flex-basis:100%; margin-bottom:1px; }
+        .followup-chip {
+          display:inline-flex; align-items:center; gap:4px;
+          background:rgba(26,31,78,.04); border:1px solid rgba(26,31,78,.14);
+          border-radius:20px; padding:5px 11px; font-size:clamp(11px,1vw,12.5px);
+          color:#1a1f4e; cursor:pointer; transition:background .15s,border-color .15s,transform .1s;
+          font-family:inherit; text-align:left; line-height:1.3;
+        }
+        .followup-chip:hover { background:rgba(26,31,78,.09); border-color:rgba(26,31,78,.28); transform:translateY(-1px); }
+        .followup-chip:active { transform:translateY(0); }
 
         /* Markdown */
         .msg-text .md-p { margin: 0 0 8px; }
@@ -2042,8 +2137,23 @@ export default function GrowthGradualChat() {
                           dangerouslySetInnerHTML={{ __html: isUser ? msg.text.replace(/\n/g,'<br/>') : renderMd(msg.text) }}
                         />
 
-                        {!isUser && (msg.reportLoading || msg.reportData) && (
-                          <ReportPanel msg={msg} question={msg.text.slice(0,300)}/>
+                        {!isUser && (msg.reportEligible || msg.reportLoading || msg.reportData) && (
+                          <ReportPanel
+                            msg={msg}
+                            question={msg.text.slice(0,300)}
+                            onGenerate={() => generateReport(msg.id, msg.reportQuestion ?? msg.text, msg.reportFiles ?? [])}
+                          />
+                        )}
+                        {/* Follow-up question chips */}
+                        {!isUser && isLast && !streaming && msg.followUpQuestions && msg.followUpQuestions.length > 0 && (
+                          <div className="followup-chips">
+                            <span className="followup-label">Follow-up</span>
+                            {msg.followUpQuestions.map((q, qi) => (
+                              <button key={qi} className="followup-chip" onClick={() => send(q)}>
+                                {q}
+                              </button>
+                            ))}
+                          </div>
                         )}
                         {/* Web search chip hidden — sources used internally only */}
                         <span className="msg-ts">{fmtTime(msg.ts)}</span>

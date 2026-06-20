@@ -8,7 +8,7 @@ app_port: 7860
 pinned: false
 ---
 
-# Paperly RAG Service
+# Paperly RAG Service-backend
 
 FastAPI-based RAG (Retrieval-Augmented Generation) service for Paperly.
 
