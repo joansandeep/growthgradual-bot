@@ -92,7 +92,14 @@ STEP 2 — ONLY create a chart if ALL conditions are met:
   ✗ NEVER create a chart from a single number
   ✗ NEVER duplicate labels
   ✗ NEVER use future/projected values you invented
-  ✗ A bar/pie needs ≥3 named distinct items
+  ✗ A bar/pie needs ≥3 named distinct items — this is enforced server-side and
+    a 2-item bar/pie chart WILL be silently dropped, wasting the slot.
+  → If the topic naturally centers on 2 entities (e.g. "HDFC vs ICICI"), actively
+    scan the rest of the sources for OTHER comparable entities mentioned anywhere
+    (peer banks, sector averages, other funds in the same category, etc.) and add
+    them as additional bars/slices so the chart clears the ≥3-item bar. If no
+    third comparable entity exists anywhere in the sources, skip the chart
+    entirely rather than rendering a thin 2-item one.
 
 STEP 3 — Place [CHART_n] inline in the report markdown right after the paragraph whose data it shows.
   charts[0] = [CHART_1], charts[1] = [CHART_2], etc.
@@ -129,7 +136,7 @@ REPORT STRUCTURE (each section MUST be substantive — minimum 150 words per sec
 # [Report Title]
 
 ## 1. Introduction
-3-4 paragraphs (minimum 150 words): Provide rich context — explain the sector/topic, why it matters now, who the key stakeholders are, what macro or market forces are driving interest, and what this report covers. Cite [n]. No filler, every sentence must add context or data.
+3-4 paragraphs (minimum 150 words): Provide rich context — explain the sector/topic, why it matters now, who the key stakeholders are, what macro or market forces are driving interest, and what this report covers. Write in plain prose — do NOT insert bracket citation markers like [1] or [n] anywhere; name the publication inline instead if attribution is needed (e.g. "according to Screener.in data..."). No filler, every sentence must add context or data.
 
 ## 2. Data Sources & Methodology
 One markdown table of sources (Publication | URL | Data type). 2 short paragraphs: describe what sources were used, what metrics were collected, how comparisons were made, and any caveats in the data.
@@ -137,7 +144,7 @@ One markdown table of sources (Publication | URL | Data type). 2 short paragraph
 ## 3. Data Analysis
 
 ### 3.1 [Heading matching actual topic and data]
-Deep-dive quantitative findings (minimum 120 words). ALL numbers in markdown tables. Explain what the data shows, why the leaders are ahead, what the numbers mean in context. Insert [CHART_n] immediately after the paragraph whose data it visualises.
+Deep-dive quantitative findings (minimum 120 words). ALL numbers in markdown tables. Explain what the data shows, why the leaders are ahead, what the numbers mean in context. Insert [CHART_n] immediately after the paragraph whose data it visualises. No bracket citation markers.
 
 ### 3.2 [Second dimension of analysis]
 Comparisons, breakdowns, benchmarks (minimum 120 words). Tables + [CHART_n] where valid distinct data exists. Explain trends and what differentiates top performers.
@@ -146,13 +153,13 @@ Comparisons, breakdowns, benchmarks (minimum 120 words). Tables + [CHART_n] wher
 Only include if sources have trend/time-series data with ≥4 distinct time points. Minimum 100 words if included.
 
 ## 4. Key Findings
-8-10 numbered findings, each with a specific number/stat from sources AND a 1-2 sentence explanation of what it means. Cite [n] on every finding.
+8-10 numbered findings, each with a specific number/stat from sources AND a 1-2 sentence explanation of what it means. No bracket citation markers — if attribution matters, name the publication in the sentence itself.
 
 ## 5. Conclusion
 2-3 paragraphs (minimum 120 words): synthesise findings, explain implications for different types of investors/stakeholders, and give forward outlook from sources only.
 
-## 6. References
-[n] Publication. Title. URL (date if known)
+## 6. Sources
+A plain bulleted list of the publications actually used, one per line: "- Publication Name — URL". Do NOT number this list and do NOT reference these numbers anywhere else in the report — it exists purely as a reading list, not a citation index.
 
 GLOBAL RULES:
 - NEVER invent any number, date, name, or statistic
@@ -161,13 +168,28 @@ GLOBAL RULES:
   do NOT include that column for those rows — instead, put indices and individual stocks in
   SEPARATE tables (one for index levels, one for stock market caps), or drop the column entirely
   if it doesn't apply to the row type being shown.
-- Cite [n] throughout every section
+- NEVER use bracket citation markers such as [1], [2], [1, 2], [n] anywhere in the report body. This is a hard rule — the report reads as polished analyst prose, not an academic paper with footnote numbers. If a claim needs attribution, name the source in the sentence (e.g. "Screener.in data shows...").
+- NEVER cite "Tavily" as a publication or source — Tavily is an internal search tool, not a publisher. If a fact's only origin is an internal search summary rather than a named publication, state the fact without attribution rather than inventing a citation.
 - At least 3 markdown data tables
 - keyStats: 6-8 real metrics with values and change indicators
 - Target 1000-1400 words total — every section must be substantive; never stub a section with a single sentence
 - CRITICAL: NEVER write raw JSON inside the "report" string. Charts go ONLY in the "charts" array.
   Use [CHART_1], [CHART_2] placeholders in the report text — never paste the chart JSON object itself.
 """
+
+# Matches stray bracket-number citation markers like "[1]", "[1, 2]", "[8]" that
+# the LLM might still slip in despite the prompt rules above. Applied as a
+# belt-and-suspenders cleanup pass on every return path so they can never reach
+# the PDF, even on an off-policy generation.
+_CITATION_MARKER_RE = re.compile(r"\s?\[\s*\d+(?:\s*,\s*\d+)*\s*\]")
+
+
+def _strip_citation_markers(text: str) -> str:
+    if not text:
+        return text
+    return _CITATION_MARKER_RE.sub("", text)
+
+
 
 
 async def fetch_page_content(url: str, max_chars: int = 6000) -> str:
@@ -663,6 +685,16 @@ async def generate_report(request: Request):
     session_id: str     = body.get("sessionId", "").strip()
     has_rag: bool       = bool(body.get("hasRag", False))
 
+    # Defensive filter: Tavily (and any other internal search/aggregator domains)
+    # must never be cited as if they were a publisher. Strip them here so they
+    # can't end up numbered in the report body or the References section,
+    # regardless of whether sources came from the client or our own search.
+    _NON_CITABLE_DOMAINS = ("tavily.com",)
+    sources = [
+        s for s in sources
+        if not any(d in (s.get("url") or "").lower() for d in _NON_CITABLE_DOMAINS)
+    ]
+
     log.info("Report request: question=%r  sources=%d  fileImages=%d  fileContext=%d chars  rag=%s",
              question[:80], len(sources), len(file_images), len(file_context), has_rag)
 
@@ -749,9 +781,9 @@ async def generate_report(request: Request):
     log.info("Report: enrichment done (%d sources ready)", len(enriched))
 
     src_text = "\n\n---\n\n".join(
-        f"[{i+1}] **{s['title']}**\nSource: {s['url']}\n"
+        f"- **{s['title']}**\nSource: {s['url']}\n"
         + (s["fullContent"][:1500] if len(s.get("fullContent", "")) > len(s.get("snippet", "")) else s.get("snippet", "")[:800])
-        for i, s in enumerate(enriched)
+        for s in enriched
     )
 
     # ── Build user prompt — file content takes priority ───────────────────────
@@ -829,6 +861,18 @@ async def generate_report(request: Request):
                 min_pts = 2 if chart_type == "line" else 1
                 if len(pts) < min_pts:
                     log.warning("Chart rejected — series '%s' has only %d points", s.get("name","?"), len(pts))
+                    return False
+
+            # Enforce the ≥3-distinct-items rule for bar/pie charts (matches the
+            # system prompt's own STEP 2 rule). A single-series bar chart with
+            # only 2 bars (e.g. just "HDFC Bank" vs "ICICI Bank") reads as a
+            # thin, low-value visual — reject it so the model either pulls in
+            # more comparable entities from the sources or skips the chart.
+            if chart_type in ("bar", "pie") and n_series == 1:
+                n_labels = len(series[0].get("data") or [])
+                if n_labels < 3:
+                    log.warning("Chart rejected — only %d distinct items (need ≥3 for %s chart): %s",
+                                n_labels, chart_type, ch.get("title", "?"))
                     return False
 
             all_pts = [pt for s in series for pt in (s.get("data") or [])]
@@ -916,6 +960,7 @@ async def generate_report(request: Request):
                 log.warning("Report: regex-extracted report field from raw JSON (pass 4)")
 
         charts = await attach_datawrapper_charts(charts)
+        report_text = _strip_citation_markers(report_text)
         return JSONResponse({
             "title":      parsed.get("title", question[:80]),
             "report":     report_text,
@@ -961,7 +1006,7 @@ async def generate_report(request: Request):
             salvaged["charts"] = await attach_datawrapper_charts(salvaged.get("charts", []))
             return JSONResponse({
                 "title":      salvaged.get("title", question[:80]),
-                "report":     salvaged.get("report", ""),
+                "report":     _strip_citation_markers(salvaged.get("report", "")),
                 "charts":     salvaged.get("charts", []),
                 "keyStats":   salvaged.get("keyStats", []),
                 "summary":    salvaged.get("summary", ""),
@@ -980,7 +1025,7 @@ async def generate_report(request: Request):
             repaired_charts = await attach_datawrapper_charts(repaired_parsed.get("charts", []))
             return JSONResponse({
                 "title":      repaired_parsed.get("title", question[:80]),
-                "report":     (repaired_parsed.get("report", "") or "").replace("\\n", "\n"),
+                "report":     _strip_citation_markers((repaired_parsed.get("report", "") or "").replace("\\n", "\n")),
                 "charts":     repaired_charts,
                 "keyStats":   repaired_parsed.get("keyStats", []),
                 "summary":    repaired_parsed.get("summary", ""),
@@ -1040,9 +1085,9 @@ async def generate_report(request: Request):
     log.info("Report: enrichment done (%d sources ready)", len(enriched))
 
     src_text = "\n\n---\n\n".join(
-        f"[{i+1}] **{s['title']}**\nSource: {s['url']}\n"
+        f"- **{s['title']}**\nSource: {s['url']}\n"
         + (s["fullContent"][:1500] if len(s.get("fullContent", "")) > len(s.get("snippet", "")) else s.get("snippet", "")[:800])
-        for i, s in enumerate(enriched)
+        for s in enriched
     )
 
     user_prompt = (

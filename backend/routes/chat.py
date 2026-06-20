@@ -342,12 +342,52 @@ _FILE_INTENT_RE = re.compile(
     re.IGNORECASE | re.VERBOSE,
 )
 
+# Greetings and self-introductions — "hi", "hey", "hi i am albin", "hello my
+# name is priya", "hi i am albin, nice to meet you" — none of these need a web
+# search or a data-heavy persona. Uses fullmatch so a greeting attached to an
+# actual question ("hi can you tell me the latest nifty level") is correctly
+# treated as a real query, not smalltalk.
+_SMALLTALK_RE = re.compile(
+    r"""^\s*
+    (hi+|hey+|hello+|yo+|hiya|sup|good\s?(morning|afternoon|evening|day)|namaste|howdy)
+    \s*[,!.\-]?\s*
+    (
+        (i\s*(a|')?m|i\s+am|my\s+name\s+is|this\s+is|here)\s+
+        [a-zA-Z][a-zA-Z'\-]*(\s+[a-zA-Z][a-zA-Z'\-]*){0,2}
+    )?
+    \s*[,!.\-]*\s*
+    (nice\s+to\s+meet\s+you|there|all|everyone)?
+    \s*[!.]*\s*$
+    """,
+    re.IGNORECASE | re.VERBOSE,
+)
+
+# Pure self-introductions with no greeting word at all — "my name is albin",
+# "this is albin" — also count as smalltalk.
+_SELF_INTRO_RE = re.compile(
+    r"^\s*(my\s+name\s+is|i\s*(a|')?m|i\s+am|this\s+is)\s+"
+    r"[a-zA-Z][a-zA-Z'\-]*(\s+[a-zA-Z][a-zA-Z'\-]*){0,2}\s*[.!]?\s*$",
+    re.IGNORECASE,
+)
+
+
+def is_smalltalk(msg: str) -> bool:
+    """True for greetings / self-introductions that deserve a short, simple
+    reply rather than a full data-driven analyst response — e.g. 'hi',
+    'hi i am albin', 'hello, my name is priya'. Uses fullmatch so it never
+    fires on a real question that merely starts with a greeting word."""
+    m = msg.strip()
+    if not m or len(m) > 60:
+        return False
+    return bool(_SMALLTALK_RE.fullmatch(m) or _SELF_INTRO_RE.fullmatch(m))
+
+
 def needs_web_search(msg: str, has_files: bool = False) -> bool:
     m = msg.lower().strip()
     if len(m) < 4:
         return False
     TRIVIAL = {"hi", "hey", "hello", "ok", "okay", "thanks", "thank you", "bye", "yes", "no", "sure", "great"}
-    if m in TRIVIAL:
+    if m in TRIVIAL or is_smalltalk(msg):
         return False
     # If files are attached, skip web search for file-directed queries
     if has_files:
@@ -465,18 +505,14 @@ async def tavily_search(query: str, max_results: int = 20, min_results: int = 10
             # Tavily SDK returns a dict with "results" list + optional "answer"
             raw_results = data.get("results") or []
 
-            # Prepend the synthesized answer as a virtual result so the LLM
-            # always sees it — it's the highest-quality pre-digested context
-            answer_text = data.get("answer", "") or ""
-            if answer_text and not _looks_like_ai_overview(answer_text):
-                results.append({
-                    "title": f"Tavily Answer: {query[:60]}",
-                    "url": "https://tavily.com",
-                    "snippet": answer_text[:800],
-                    "fullContent": answer_text[:3000],
-                    "score": 1.0,
-                    "published": None,
-                })
+            # NOTE: Tavily's synthesized "answer" field is intentionally NOT added
+            # as a virtual result here. It used to be appended with title
+            # "Tavily Answer: ..." and url "https://tavily.com", which the report
+            # LLM would then cite as if it were a real publication (e.g.
+            # "[1] Tavily. Top banking stocks. https://tavily.com" showing up in
+            # the References section). Tavily is our internal search provider,
+            # not a citable source, so we drop the synthesized answer and rely
+            # on the individual real results below for substance.
 
             for r in raw_results:
                 # chunks_per_source gives us r["chunks"] — concatenate them
@@ -630,9 +666,26 @@ async def load_headlines(limit: int = 30) -> str:
         return ""
 
 
-def build_system(headlines: str, search_results: list[dict], qtype: str) -> str:
+def build_system(headlines: str, search_results: list[dict], qtype: str, smalltalk: bool = False) -> str:
     from datetime import date
     today = date.today().strftime("%A, %B %d, %Y")
+
+    if smalltalk:
+        # Greetings / self-introductions get a short, warm, human reply —
+        # no headlines, no web context, no data-dump instructions. This is
+        # what keeps "hi" or "hi i am albin" simple instead of triggering a
+        # full analyst-style response.
+        return f"""You are **Growth Gradual Assistant**, built into the Growth Gradual platform. Today is {today}.
+
+The user just sent a greeting or introduced themselves — nothing else.
+
+**Behaviour:**
+- Reply in 1-3 short, warm sentences. No headers, no bullet lists, no tables, no markdown formatting.
+- If they gave their name, use it naturally.
+- Briefly mention you can help with Indian stocks, mutual funds, IPOs, market news, or general finance questions — in one short sentence, not a list.
+- Do NOT pull in market data, headlines, statistics, or citations. Do NOT add a "verify live prices" disclaimer — there's no market data here to verify.
+- Keep it conversational, like a person saying hello back — not a report."""
+
     web_ctx = ""
     if search_results:
         snippets = []
@@ -643,7 +696,7 @@ def build_system(headlines: str, search_results: list[dict], qtype: str) -> str:
             else:
                 content = r.get("snippet", "")
             pub = f" ({r['published']})" if r.get("published") else ""
-            snippets.append(f"[{i+1}] {r['title']}\nSource: {r['url']}{pub}\n{content}")
+            snippets.append(f"- {r['title']}\nSource: {r['url']}{pub}\n{content}")
         web_ctx = f"\n\n---\n🌐 WEB SEARCH RESULTS — TOP {len(search_results)} PAGES (with full page content):\n\n" + "\n\n".join(snippets) + "\n---"
 
     finance_persona = f"""You are **Growth Gradual** — an expert AI assistant for Indian financial markets, built into the Growth Gradual platform. Today is {today}.
@@ -651,7 +704,7 @@ def build_system(headlines: str, search_results: list[dict], qtype: str) -> str:
 You specialise in NSE/BSE stocks, IPOs, mutual funds, RBI/SEBI policy, macroeconomics, and personal finance for Indian investors.
 
 **Behaviour:**
-- Give sharp, specific, data-driven answers. Cite sources by [number] when using web results.
+- Give sharp, specific, data-driven answers. When using web results, name the publication inline (e.g. "according to Moneycontrol...") instead of bracket citation numbers like [1].
 - When web results are provided, extract and use ALL numbers, percentages, dates, and figures from them.
 - Use markdown: **bold** key terms, bullet lists, tables where helpful.
 - Always end market-specific answers with "Verify live prices before trading."
@@ -662,7 +715,7 @@ You specialise in NSE/BSE stocks, IPOs, mutual funds, RBI/SEBI policy, macroecon
 **Behaviour:**
 - Answer comprehensively using the provided web search results from the top 18 pages.
 - Extract and present ALL specific numbers, statistics, data points, dates, and figures found in the sources.
-- Cite sources by [number] when referencing web content.
+- When referencing web content, name the publication inline instead of bracket citation numbers like [1].
 - Use markdown for clarity: **bold** key terms, bullet lists, tables where helpful.
 - Be thorough, accurate, and helpful. Where relevant, connect the topic back to financial or economic context."""
 
@@ -926,10 +979,16 @@ async def chat(request: Request):
     last_user_msg = next((m["content"] for m in reversed(messages) if m["role"] == "user"), "")
     do_search = needs_web_search(last_user_msg, has_files=bool(file_context or file_images))
     qtype = classify_query(last_user_msg)
+    # Only treat as smalltalk when there's no file/RAG context riding along —
+    # a greeting attached to an uploaded file still needs the normal flow.
+    is_smalltalk_msg = (
+        is_smalltalk(last_user_msg)
+        and not file_context and not file_images and not has_rag
+    )
 
     log.info(
-        "Chat request: msg=%r  search=%s  type=%s  file_ctx=%s  rag=%s  session=%s",
-        last_user_msg[:80], do_search, qtype, bool(file_context), has_rag, session_id or "none",
+        "Chat request: msg=%r  search=%s  type=%s  file_ctx=%s  rag=%s  smalltalk=%s  session=%s",
+        last_user_msg[:80], do_search, qtype, bool(file_context), has_rag, is_smalltalk_msg, session_id or "none",
     )
 
     # Upsert the session row upfront (fire-and-forget — don't block the stream)
@@ -939,12 +998,15 @@ async def chat(request: Request):
     async def _no_search() -> list:
         return []
 
+    async def _no_headlines() -> str:
+        return ""
+
     search_results, headlines = await asyncio.gather(
         tavily_search(last_user_msg, max_results=20, min_results=10) if do_search else _no_search(),
-        load_headlines(30),
+        load_headlines(30) if not is_smalltalk_msg else _no_headlines(),
     )
 
-    base_prompt = build_system(headlines, search_results, qtype)
+    base_prompt = build_system(headlines, search_results, qtype, smalltalk=is_smalltalk_msg)
 
     # ── Image vision: extract content from attached images via Gemini Vision ─
     # ── Image vision: check cache first, then Gemini Vision for new images ──
