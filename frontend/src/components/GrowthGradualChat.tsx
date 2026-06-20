@@ -1539,13 +1539,7 @@ export default function GrowthGradualChat() {
         body: JSON.stringify({
           question,
           sources:     [],
-          // Actual uploaded file text ONLY — conversationContext used to be
-          // merged in here too, but the backend treats fileContext as
-          // "PRIMARY SOURCE, highest priority" for data extraction, which
-          // caused prior conversation topics to leak into the new report's
-          // title/content. It's sent as its own field below instead.
-          fileContext: fileTextContext,
-          conversationContext: conversationContext || '',
+          fileContext: [fileTextContext, conversationContext].filter(Boolean).join('\n\n---\n'),
           fileImages,
           sessionId:   getOrCreateSessionId(),
           hasRag:      ragIndexed,
