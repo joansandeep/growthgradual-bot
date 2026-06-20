@@ -31,7 +31,7 @@ You MUST respond with valid JSON only — no markdown fences, no preamble, no te
 
 Respond with EXACTLY this shape:
 {
-  "title": "<concise report title, max 12 words — a noun-phrase headline like 'Global Growth Slowdown and AI Investment Trends', NEVER a sentence starting with 'Here are', 'Based on', 'The following', or similar preamble/instruction phrasing>",
+  "title": "<concise NOUN-PHRASE report title, max 12 words. Examples: 'Top Banking Stocks India 2026', 'Indian Mutual Fund SIP Returns Analysis', 'HDFC vs ICICI Bank Comparison'. STRICT RULES: NEVER start with 'So', 'You', 'I', 'Let's', 'Here', 'Based', 'Looking', 'Understanding', 'A look at', 'An analysis of', or any verb/pronoun. NEVER write a full sentence. ALWAYS write a noun phrase — topic first, qualifiers after.>",
   "report": "<full markdown report — target 1000-1400 words, structured and data-rich>",
   "charts": [...],
   "keyStats": [{ "label": "<short label>", "value": "<value string>", "change": "<+/- % or empty string>" }],
@@ -100,6 +100,15 @@ STEP 2 — ONLY create a chart if ALL conditions are met:
     them as additional bars/slices so the chart clears the ≥3-item bar. If no
     third comparable entity exists anywhere in the sources, skip the chart
     entirely rather than rendering a thin 2-item one.
+  → PARTIAL DATA: If some entities in a comparison lack a specific metric (e.g. SBI
+    market cap not found), use only the entities that HAVE that data. A chart with
+    3 entities that have real data is better than 5 entities where 2 have made-up values.
+    NEVER invent chart values. NEVER use 0 as a placeholder — omit the entity instead.
+  → CHART VARIETY: when a topic has multiple metrics (e.g. banking has market cap,
+    P/E, NIM, NPA, ROE), create DIFFERENT charts for different metrics rather than
+    repeating the same entities with the same data. E.g. Chart 1: Market Cap bar chart
+    for banks WITH market cap data; Chart 2: P/E ratio bar chart for banks WITH P/E data;
+    Chart 3: Net Profit bar chart. Each chart stands alone.
 
 STEP 3 — Place [CHART_n] inline in the report markdown right after the paragraph whose data it shows.
   charts[0] = [CHART_1], charts[1] = [CHART_2], etc.
@@ -168,6 +177,15 @@ GLOBAL RULES:
   do NOT include that column for those rows — instead, put indices and individual stocks in
   SEPARATE tables (one for index levels, one for stock market caps), or drop the column entirely
   if it doesn't apply to the row type being shown.
+- TABLE COMPLETENESS: if a data row has no values for ANY column (e.g. SBI row with no market cap,
+  P/E, profit data), OMIT that row entirely from the table rather than including an empty row.
+  A table with 2 data rows of real data is better than 5 rows where 3 are blank.
+- NO DUPLICATE TABLES: each table must appear EXACTLY ONCE in the report. Never repeat a table
+  from section 3.1 in section 3.2 or later. If you need to reference the same data again,
+  refer to it by name ("as shown in the table above") rather than re-rendering it.
+- SECTOR PERFORMANCE TABLE: only include a time-series table (2022/2023/2024 metrics) if you
+  have ACTUAL numeric values for those years from the sources. If the data is not in the sources,
+  skip that table entirely rather than including a table with all empty cells.
 - NEVER use bracket citation markers such as [1], [2], [1, 2], [n] anywhere in the report body. This is a hard rule — the report reads as polished analyst prose, not an academic paper with footnote numbers. If a claim needs attribution, name the source in the sentence (e.g. "Screener.in data shows...").
 - NEVER cite "Tavily" as a publication or source — Tavily is an internal search tool, not a publisher. If a fact's only origin is an internal search summary rather than a named publication, state the fact without attribution rather than inventing a citation.
 - At least 3 markdown data tables
@@ -188,6 +206,32 @@ def _strip_citation_markers(text: str) -> str:
     if not text:
         return text
     return _CITATION_MARKER_RE.sub("", text)
+
+
+_TITLE_PREAMBLE_RE = re.compile(
+    r"^(?:so,?\s+(?:you'?re?|we'?re?|let'?s?)|you'?re?\s+looking|i'?ve?\s+(?:prepared|compiled|created)|"
+    r"let'?s\s+(?:look|explore|dive|examine)|here'?s?\s+(?:a|an|the|your)|based\s+on|"
+    r"looking\s+at|looking\s+for|exploring|understanding|a\s+look\s+at|an?\s+(?:analysis|overview|in-depth|deep|guide)\s+of|"
+    r"the\s+following|below\s+(?:is|are))",
+    re.IGNORECASE,
+)
+
+def _sanitize_title(title: str, question: str) -> str:
+    """Post-process LLM-generated title: strip conversational openers,
+    fall back to a clean noun-phrase from the question."""
+    if not title:
+        title = question
+    title = title.strip().rstrip(".")
+    if _TITLE_PREAMBLE_RE.match(title):
+        # Extract noun-phrase from question
+        q = re.sub(r"(?i)^(tell me about|what are|what is|show me|give me|find me|list the|compare|analyse|analyze|explain|explore|summarize|summarise)\s+", "", question.strip())
+        q = q.rstrip("?!.").strip()
+        # Capitalise words
+        title = q[:80] if len(q) >= 5 else "Research Report"
+    # Title-case if all lowercase
+    if title == title.lower():
+        title = title.title()
+    return title[:120]
 
 
 
@@ -961,8 +1005,9 @@ async def generate_report(request: Request):
 
         charts = await attach_datawrapper_charts(charts)
         report_text = _strip_citation_markers(report_text)
+        clean_title = _sanitize_title(parsed.get("title", ""), question)
         return JSONResponse({
-            "title":      parsed.get("title", question[:80]),
+            "title":      clean_title,
             "report":     report_text,
             "charts":     charts,
             "keyStats":   parsed.get("keyStats", []),
@@ -1005,7 +1050,7 @@ async def generate_report(request: Request):
             log.info("Report: salvaged %d fields from truncated JSON", len(salvaged))
             salvaged["charts"] = await attach_datawrapper_charts(salvaged.get("charts", []))
             return JSONResponse({
-                "title":      salvaged.get("title", question[:80]),
+                "title":      _sanitize_title(salvaged.get("title", ""), question),
                 "report":     _strip_citation_markers(salvaged.get("report", "")),
                 "charts":     salvaged.get("charts", []),
                 "keyStats":   salvaged.get("keyStats", []),
@@ -1024,7 +1069,7 @@ async def generate_report(request: Request):
             log.info("Report: repaired truncated JSON successfully")
             repaired_charts = await attach_datawrapper_charts(repaired_parsed.get("charts", []))
             return JSONResponse({
-                "title":      repaired_parsed.get("title", question[:80]),
+                "title":      _sanitize_title(repaired_parsed.get("title", ""), question),
                 "report":     _strip_citation_markers((repaired_parsed.get("report", "") or "").replace("\\n", "\n")),
                 "charts":     repaired_charts,
                 "keyStats":   repaired_parsed.get("keyStats", []),
@@ -1036,7 +1081,7 @@ async def generate_report(request: Request):
 
         log.error("Report: could not salvage JSON — returning error message")
         return JSONResponse({
-            "title": question[:80],
+            "title": _sanitize_title("", question),
             "report": "## Report Generation Error\n\nThe AI response could not be parsed. Please try a more specific question.",
             "charts": [], "keyStats": [], "summary": "", "fileImages": file_images,
         })
@@ -1316,7 +1361,7 @@ async def generate_report(request: Request):
         # Total failure
         log.error("Report: could not salvage JSON — returning error message")
         return JSONResponse({
-            "title": question[:80],
+            "title": _sanitize_title("", question),
             "report": "## Report Generation Error\n\nThe AI response was too long and could not be parsed. Please try a more specific question.",
             "charts": [], "keyStats": [], "summary": "",
         })

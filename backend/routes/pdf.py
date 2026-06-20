@@ -53,6 +53,43 @@ CHART_COLORS = [BLUE, GREEN, AMBER, RED, PURPLE, CYAN, PINK, NAVY]
 SECTION_ACCENTS = [GOLD, BLUE, GREEN, AMBER, RED, PURPLE]
 
 
+def fmt_inr(value_str: str) -> str:
+    """Format a numeric string into Indian number format with Rs. prefix.
+    E.g. '1224826.38' -> 'Rs. 12,24,826' (crore label added by caller).
+    Leaves non-numeric strings untouched.
+    """
+    if not value_str:
+        return value_str
+    s = str(value_str).strip()
+    # Strip existing currency/comma formatting
+    cleaned = re.sub(r"[Rs.₹$€£,\s]", "", s).replace("Cr","").replace("cr","").strip()
+    try:
+        num = float(cleaned)
+    except (ValueError, TypeError):
+        return s  # not a number — return as-is
+    # Indian format: last 3 digits, then groups of 2
+    is_negative = num < 0
+    num = abs(num)
+    int_part = int(num)
+    # Format integer part in Indian style
+    s_int = str(int_part)
+    if len(s_int) <= 3:
+        formatted = s_int
+    else:
+        last3 = s_int[-3:]
+        rest = s_int[:-3]
+        groups = []
+        while len(rest) > 2:
+            groups.append(rest[-2:])
+            rest = rest[:-2]
+        if rest:
+            groups.append(rest)
+        formatted = ",".join(reversed(groups)) + "," + last3
+    if is_negative:
+        formatted = "-" + formatted
+    return formatted
+
+
 def _coerce_value(v) -> float:
     """Safely coerce a chart data value to float.
     Handles ints, floats, and strings like '-3%', '1,25,957', '₹72119', '$1820.5'.
@@ -297,7 +334,16 @@ def _tokenise(md: str):
                 rows.append(cells)
                 i += 1
             if rows:
-                yield {"type": "table", "rows": rows}
+                # Filter out data rows where ALL non-first cells are empty/dash
+                header = rows[0] if rows else []
+                filtered = [header] if header else []
+                for row in rows[1:]:
+                    data_cells = row[1:] if len(row) > 1 else row
+                    if any(cell.strip() not in ("", "-", "—", "N/A", "n/a") for cell in data_cells):
+                        filtered.append(row)
+                # Only yield if header + at least 1 data row
+                if len(filtered) >= 2:
+                    yield {"type": "table", "rows": filtered}
             continue
 
         elif re.match(r"^\s*[-*+]\s+", stripped):
@@ -765,9 +811,21 @@ def build_pdf(report: str, title: str, question: str, summary: str,
         r"^(?:latest|some of the latest)\b.{0,40}\b(news|trends|updates|data)\b",
         r"^the following\b",
         r"^below (?:is|are)\b",
+        r"^so,?\s",             # "So, you're looking for..."
+        r"^you(?:'re| are)\b",   # "You're looking for..."
+        r"^i(?:'ve| have| will| can)\b",  # "I've prepared..."
+        r"^let(?:'s| us)\b",    # "Let's look at..."
+        r"^looking for\b",
+        r"^exploring\b",
+        r"^understanding\b",
+        r"^a (?:look|guide|deep dive|breakdown|comprehensive|detailed)\b",
+        r"^an (?:analysis|overview|exploration|examination|in-depth)\b",
     )
     if any(re.match(p, raw_title.strip(), re.IGNORECASE) for p in _PREAMBLE_PATTERNS):
-        raw_title = f"{domain} Briefing"
+        # Try to extract a clean noun-phrase from the question itself
+        q_clean = re.sub(r"(?i)^(tell me about|what are|what is|show me|give me|find me|list|compare|analyse|analyze|explain)\s+", "", question.strip())
+        q_clean = q_clean.rstrip("?!").strip()
+        raw_title = q_clean[:80] if len(q_clean) >= 8 else f"{domain} Briefing"
     report_title = _strip_inline(raw_title)
     # Single-line title — truncate with ellipsis if it doesn't fit at a readable size
     title_size = 24
@@ -850,7 +908,7 @@ def build_pdf(report: str, title: str, question: str, summary: str,
         c.line(rx + 12, ty - 18, rx + COL2 - 12, ty - 18)
         ky = ty - 32
         for st in key_stats[:4]:
-            val = _safe_text(st.get("value", ""))[:12]
+            val = _safe_text(fmt_inr(str(st.get("value", ""))))[:14]
             lbl = _safe_text(st.get("label", ""))[:24]
             chg = _safe_text(st.get("change", ""))
             col_c = GREEN if chg.startswith("+") else (RED if chg.startswith("-") else GREY)
@@ -912,7 +970,7 @@ def build_pdf(report: str, title: str, question: str, summary: str,
             for li, ll in enumerate(lbl_lines[:2]):
                 c.drawString(sx + 8, lbl_top - li * 9, ll)
 
-            value    = _safe_text(st.get("value", ""))[:14]
+            value    = _safe_text(fmt_inr(str(st.get("value", ""))))[:14]
             val_font = 13 if len(value) <= 9 else 10
             val_y    = lbl_top - len(lbl_lines[:2]) * 9 - 11
             c.setFillColorRGB(*NAVY); c.setFont("Helvetica-Bold", val_font)
@@ -1006,6 +1064,7 @@ def build_pdf(report: str, title: str, question: str, summary: str,
     tokens = list(_tokenise(report))
     chart_idx = [0]   # next chart to render
     rendered_charts: set[int] = set()  # indices of charts already rendered inline
+    _seen_table_sigs: set[str] = set()  # dedup identical tables (LLM sometimes repeats them)
 
     for tok in tokens:
         tp = tok["type"]
@@ -1186,6 +1245,11 @@ def build_pdf(report: str, title: str, question: str, summary: str,
             rows = tok["rows"]
             if not rows:
                 continue
+            # Deduplicate: skip table if an identical one was already rendered
+            _tbl_sig = "|".join(",".join(r) for r in rows[:3])
+            if _tbl_sig in _seen_table_sigs:
+                continue
+            _seen_table_sigs.add(_tbl_sig)
             col_count = max(len(r) for r in rows)
             col_w = CW / col_count
             ROW_H = 15
@@ -1209,7 +1273,11 @@ def build_pdf(report: str, title: str, question: str, summary: str,
                 for ci, cell in enumerate(row[:col_count]):
                     cx2 = MARGIN + ci * col_w + 4
                     c.setFillColorRGB(*tcol); c.setFont(tfont, tsize)
-                    c.drawString(cx2, y[0] - ROW_H + 7, _strip_inline(str(cell))[:28])
+                    # Format large numbers in Indian style for data rows (not header)
+                    cell_str = str(cell)
+                    if ri > 0 and ci > 0:
+                        cell_str = fmt_inr(cell_str)
+                    c.drawString(cx2, y[0] - ROW_H + 7, _strip_inline(cell_str)[:28])
                 nl(ROW_H)
             nl(8)
 
