@@ -272,6 +272,12 @@ function BarChart({ spec }: { spec: ChartSpec }) {
   const COLORS = ['#1a1f4e','#3b82f6','#22c55e','#f59e0b','#ef4444','#8b5cf6','#06b6d4','#ec4899'];
   // Y-axis grid lines
   const gridVals = [0.25, 0.5, 0.75, 1.0];
+  // With many bars (e.g. 10+ monthly points), narrow bars can't fit a value
+  // label or full category label without text overlapping its neighbors.
+  // Thin those out rather than letting them collide.
+  const showValueLabel = barW >= 22;
+  const labelStep = data.length > 8 ? Math.ceil(data.length / 6) : 1;
+  const maxLabelChars = barW >= 28 ? 9 : barW >= 18 ? 5 : 3;
   return (
     <div className="chart-wrap">
       <div className="chart-title">{spec.title}</div>
@@ -289,12 +295,16 @@ function BarChart({ spec }: { spec: ChartSpec }) {
           return (
             <g key={i}>
               <rect x={x} y={isNeg ? H-22 : H-22-bH} width={barW} height={bH} rx="3" fill={color} opacity=".88"/>
-              <text x={x+barW/2} y={H-6} textAnchor="middle" fontSize="8" fill="#8b93b5" fontFamily="DM Sans,sans-serif">
-                {d.label.length > 9 ? d.label.slice(0,9)+ '…' : d.label}
-              </text>
-              <text x={x+barW/2} y={isNeg ? H-22+bH+10 : H-22-bH-4} textAnchor="middle" fontSize="8" fill={color} fontFamily="DM Mono,monospace" fontWeight="700">
-                {spec.unit==='%' ? `${d.value>0?'+':''}${d.value.toFixed(2)}%` : d.value.toLocaleString('en-IN')}
-              </text>
+              {i % labelStep === 0 && (
+                <text x={x+barW/2} y={H-6} textAnchor="middle" fontSize="8" fill="#8b93b5" fontFamily="DM Sans,sans-serif">
+                  {d.label.length > maxLabelChars ? d.label.slice(0,maxLabelChars)+ '…' : d.label}
+                </text>
+              )}
+              {showValueLabel && (
+                <text x={x+barW/2} y={isNeg ? H-22+bH+10 : H-22-bH-4} textAnchor="middle" fontSize="8" fill={color} fontFamily="DM Mono,monospace" fontWeight="700">
+                  {spec.unit==='%' ? `${d.value>0?'+':''}${d.value.toFixed(2)}%` : d.value.toLocaleString('en-IN')}
+                </text>
+              )}
             </g>
           );
         })}
@@ -1327,13 +1337,22 @@ export default function GrowthGradualChat() {
       // After any data-heavy finance reply, silently call /api/chat/charts to
       // extract + publish charts from the reply text. Charts are attached to
       // the message and rendered inline above the text.
-      if (isSubstantiveQuery && finalText.length > 200) {
+      //
+      // IMPORTANT: if the reply already contains a markdown table that
+      // splitTextAndCharts() will turn into an inline chart *inside* the text,
+      // skip this call entirely — otherwise the same data gets charted twice
+      // (once inline in the text, once again in the "📊 Charts" section above
+      // it), which is what produces the duplicated/overlapping chart look.
+      const alreadyHasInlineChart = splitTextAndCharts(finalText).some(p => p.type === 'chart');
+      const wantsVisual = /\b(chart|graph|plot|visuali[sz]e|trend\s*line)\b/i.test(q);
+      const chartLengthOk = wantsVisual ? finalText.length > 80 : finalText.length > 200;
+      if (isSubstantiveQuery && chartLengthOk && !alreadyHasInlineChart) {
         (async () => {
           try {
             const chartRes = await fetch('/api/chat/charts', {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ question: q, reply: finalText }),
+              body: JSON.stringify({ question: q, reply: finalText, wantsVisual }),
             });
             if (!chartRes.ok) return;
             const chartData = await chartRes.json();

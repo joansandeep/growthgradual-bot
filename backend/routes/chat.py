@@ -781,7 +781,12 @@ You specialise in NSE/BSE stocks, IPOs, mutual funds, RBI/SEBI policy, macroecon
 - NEVER use bracket-style citation markers such as [1], [2], or [1, 2] anywhere in your reply — that's a hard rule. Name the source in the sentence itself instead.
 - When web results are provided, pull in the real numbers, percentages, dates, and figures from them rather than speaking in generalities.
 - Use **bold** for key terms and figures so they're easy to scan.
-- Close out market-specific answers with a quick, natural reminder to verify live prices before trading — phrase it like a person would, not a fixed disclaimer line repeated verbatim every time."""
+- Close out market-specific answers with a quick, natural reminder to verify live prices before trading — phrase it like a person would, not a fixed disclaimer line repeated verbatim every time.
+
+**Charts and tables:**
+- If the user explicitly asks for a chart, graph, plot, or to "visualize" something, give the underlying numbers as a clean markdown table (proper header row + separator row) so it can be rendered as a chart — don't just describe the trend in prose. Use real, distinct numeric values across at least 2 rows/columns; a chart needs actual data points to plot.
+- If the user explicitly asks for a table, give exactly one markdown table — don't also restate the same numbers as a bullet list right after it. Pick one format.
+- Don't repeat a table's figures again in a separate paragraph below it; reference the table instead (e.g. "as the numbers above show...")."""
 
     general_persona = f"""You are **Growth Gradual Assistant** — a knowledgeable AI assistant built into the Growth Gradual platform. Today is {today}.
 
@@ -795,7 +800,11 @@ You specialise in NSE/BSE stocks, IPOs, mutual funds, RBI/SEBI policy, macroecon
 - Pull in the real numbers, statistics, dates, and figures found in the sources rather than vague generalities.
 - When referencing web content, name the publication inline (e.g. "Reuters notes...") — never use bracket-style citation markers like [1] or [1, 2]. That's a hard rule.
 - Use **bold** for key terms where it aids scanning.
-- Be thorough, accurate, and helpful. Where relevant, connect the topic back to financial or economic context."""
+- Be thorough, accurate, and helpful. Where relevant, connect the topic back to financial or economic context.
+
+**Charts and tables:**
+- If the user explicitly asks for a chart, graph, plot, or to "visualize" something, give the underlying numbers as a clean markdown table (proper header row + separator row) so it can be rendered as a chart — don't just describe the trend in prose.
+- If the user explicitly asks for a table, give exactly one markdown table — don't also restate the same numbers as a bullet list right after it."""
 
     base = finance_persona if qtype == "finance" else general_persona
     return base + headlines + web_ctx
@@ -1147,19 +1156,31 @@ async def generate_inline_charts(request: Request):
     question: str = (body.get("question") or "").strip()
     reply:    str = (body.get("reply")    or "").strip()
 
-    if not reply or len(reply) < 100:
+    # The user may have explicitly asked for a chart/graph/plot — in that case
+    # we should try much harder to produce one, even if the reply text doesn't
+    # happen to hit the finance keyword list below and even if it's a bit short.
+    explicit_visual_request = bool(re.search(
+        r"\b(chart|graph|plot|visuali[sz]e|trend\s*line|pie\s*chart|bar\s*chart)\b",
+        question.lower(),
+    )) or bool(body.get("wantsVisual"))
+
+    min_len = 40 if explicit_visual_request else 100
+    if not reply or len(reply) < min_len:
         return JSONResponse({"charts": []})
 
-    # Only generate charts for finance/data-heavy replies
-    q_lower = question.lower() + " " + reply.lower()
-    data_keywords = [
-        "net profit", "revenue", "roe", "npa", "nim", "market cap", "pe", "eps",
-        "return", "growth", "crore", "billion", "%", "percent", "quarter",
-        "fy2", "q1", "q2", "q3", "q4", "2020", "2021", "2022", "2023", "2024", "2025",
-        "₹", "inr", "basis point", "ratio", "margin", "yield", "nav", "cagr",
-    ]
-    if not any(k in q_lower for k in data_keywords):
-        return JSONResponse({"charts": []})
+    # Only generate charts for finance/data-heavy replies — unless the user
+    # explicitly asked for a visual, in which case skip this gate entirely
+    # and let the chart-extraction LLM decide what's chartable.
+    if not explicit_visual_request:
+        q_lower = question.lower() + " " + reply.lower()
+        data_keywords = [
+            "net profit", "revenue", "roe", "npa", "nim", "market cap", "pe", "eps",
+            "return", "growth", "crore", "billion", "%", "percent", "quarter",
+            "fy2", "q1", "q2", "q3", "q4", "2020", "2021", "2022", "2023", "2024", "2025",
+            "₹", "inr", "basis point", "ratio", "margin", "yield", "nav", "cagr",
+        ]
+        if not any(k in q_lower for k in data_keywords):
+            return JSONResponse({"charts": []})
 
     user_prompt = (
         f"USER QUESTION: {question[:500]}\n\n"

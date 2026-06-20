@@ -434,8 +434,14 @@ def _bar(c, spec, x0, y0, w, h):
                 c.setFillColorRGB(*bar_color); c.setFont("Helvetica-Bold", 5.5)
                 c.drawCentredString(bx + (bw - 1) / 2, y0 + PB + bh + 2, vs)
 
-    # X-axis labels — full text, no truncation
+    # X-axis labels — thin these out once bars get too narrow for every
+    # label to fit without the (rotated) text overlapping its neighbor.
+    # Mirrors the line chart's step-based label skipping below.
+    label_step = max(1, math.ceil(n / 10))
+    max_chars  = 18 if sp >= 30 else 12 if sp >= 20 else 8
     for i, d in enumerate(data):
+        if i % label_step != 0 and i != n - 1:
+            continue
         lbl = d.get("label", "")
         bx  = x0 + PL + i * sp + sp / 2
         c.setFillColorRGB(*GREY)
@@ -444,24 +450,30 @@ def _bar(c, spec, x0, y0, w, h):
             c.translate(bx, y0 + PB - 4)
             c.rotate(30)
             c.setFont("Helvetica", 6)
-            c.drawString(0, 0, lbl[:18])
+            c.drawString(0, 0, lbl[:max_chars])
             c.restoreState()
         else:
             c.setFont("Helvetica", 6.5)
-            c.drawCentredString(bx, y0 + PB - 11, lbl[:12])
+            c.drawCentredString(bx, y0 + PB - 11, lbl[:max_chars])
 
-    # Legend for multi-series
+    # Legend for multi-series — wraps to a new row instead of running off
+    # the right edge of the card when there are several series or long names.
     if has_legend:
         lx = x0 + PL
         ly = y0 + PB + ph + 14
+        right_edge = x0 + PL + pw
         for si, ser in enumerate(series_list):
             color = CHART_COLORS[si % len(CHART_COLORS)]
             sname = ser.get("name", f"Series {si+1}")[:22]
+            item_w = 15 + c.stringWidth(sname, "Helvetica", 7) + 22
+            if lx + item_w > right_edge and lx > x0 + PL:
+                lx = x0 + PL
+                ly -= 12
             c.setFillColorRGB(*color)
             c.rect(lx, ly - 4, 12, 6, fill=1, stroke=0)
             c.setFillColorRGB(*BODY_TXT); c.setFont("Helvetica", 7)
             c.drawString(lx + 15, ly - 2, sname)
-            lx += 15 + c.stringWidth(sname, "Helvetica", 7) + 22
+            lx += item_w
 
 
 def _line(c, spec, x0, y0, w, h):
@@ -555,18 +567,24 @@ def _line(c, spec, x0, y0, w, h):
                 c.setFont("Helvetica", 6.5)
                 c.drawCentredString(px2, y0 + PB - 11, lbl[:12])
 
-    # Legend for multi-series
+    # Legend for multi-series — wraps to a new row instead of running off
+    # the right edge of the card when there are several series.
     if has_legend:
         lx = x0 + PL
         ly = y0 + PB + ph + 14
+        right_edge = x0 + PL + pw
         for si, s in enumerate(series):
             color = CHART_COLORS[si % len(CHART_COLORS)]
             sname = s.get("name", f"Series {si+1}")[:20]
+            item_w = 15 + c.stringWidth(sname, "Helvetica", 7) + 20
+            if lx + item_w > right_edge and lx > x0 + PL:
+                lx = x0 + PL
+                ly -= 12
             c.setFillColorRGB(*color)
             c.rect(lx, ly - 4, 12, 6, fill=1, stroke=0)
             c.setFillColorRGB(*BODY_TXT); c.setFont("Helvetica", 7)
             c.drawString(lx + 15, ly - 2, sname)
-            lx += 15 + c.stringWidth(sname, "Helvetica", 7) + 20
+            lx += item_w
 
 
 def _pie(c, spec, x0, y0, w, h):
@@ -593,15 +611,23 @@ def _pie(c, spec, x0, y0, w, h):
 
     lx = cx2 + R + 18
     ly = cy2 + R * 0.8
+    # Cap the per-row height so the legend never runs past the bottom of the
+    # chart card, however many slices there are — with the default spacing
+    # (15pt/row) more than ~ (R*1.8)/15 slices would otherwise overflow the
+    # card's bottom edge and collide with whatever content follows.
+    available_h = max(ly - y0, 30)
+    row_h = min(15.0, available_h / max(len(data), 1))
+    font_sz = 7 if row_h >= 11 else 6
     for i, d in enumerate(data):
         color = CHART_COLORS[i % len(CHART_COLORS)]
         pct = abs(_coerce_value(d.get("value", 0))) / total * 100
         lbl = d.get("label", "")[:22]
-        iy = ly - i * 15
-        c.setFillColorRGB(*color); c.rect(lx, iy - 5, 8, 8, fill=1, stroke=0)
-        c.setFillColorRGB(*BODY_TXT); c.setFont("Helvetica", 7)
+        iy = ly - i * row_h
+        box = min(8, row_h - 3)
+        c.setFillColorRGB(*color); c.rect(lx, iy - box*0.6, box, box, fill=1, stroke=0)
+        c.setFillColorRGB(*BODY_TXT); c.setFont("Helvetica", font_sz)
         c.drawString(lx + 12, iy - 1, lbl)
-        c.setFont("Helvetica-Bold", 7)
+        c.setFont("Helvetica-Bold", font_sz)
         c.drawRightString(lx + 12 + 110, iy - 1, f"{pct:.1f}%")
 
 
@@ -635,7 +661,14 @@ def _table(c, spec, x0, y0, w, h):
     n_cols = len(columns)
     col_w = w / n_cols
     header_h = 18
-    max_rows = max(1, int((h - header_h) // 14))
+    row_h = 14
+    # If showing every row wouldn't fit, reserve one row's worth of space for
+    # the "+N more rows" note up front — otherwise that note gets computed
+    # AFTER filling every available row and ends up drawn below the card's
+    # bottom edge, overlapping whatever content follows the table.
+    max_rows_no_note = max(1, int((h - header_h) // row_h))
+    needs_note = len(rows) > max_rows_no_note
+    max_rows = max(1, max_rows_no_note - 1) if needs_note else max_rows_no_note
     shown_rows = rows[:max_rows]
 
     # Header
@@ -649,7 +682,6 @@ def _table(c, spec, x0, y0, w, h):
 
     # Rows
     c.setFont("Helvetica", 7)
-    row_h = 14
     for ri, row in enumerate(shown_rows):
         ry = y0 + h - header_h - (ri + 1) * row_h
         if ri % 2 == 1:
@@ -821,20 +853,28 @@ def build_pdf(report: str, title: str, question: str, summary: str,
         r"^a (?:look|guide|deep dive|breakdown|comprehensive|detailed)\b",
         r"^an (?:analysis|overview|exploration|examination|in-depth)\b",
     )
-    if any(re.match(p, raw_title.strip(), re.IGNORECASE) for p in _PREAMBLE_PATTERNS):
+    # Full-sentence titles that don't start with one of the preamble phrases
+    # above but still read as a sentence, not a noun phrase — e.g. "...are as
+    # follows", or anything ending in a colon (always a sentence lead-in).
+    _SENTENCE_PATTERNS = (
+        r":\s*$",
+        r"\bas\s+follows\s*$",
+        r"\b(?:are|is|were|have\s+been|has\s+been)\s+(?:as\s+follows|below|here|outlined|shown|listed|summarized|summarised)\b",
+    )
+    if (any(re.match(p, raw_title.strip(), re.IGNORECASE) for p in _PREAMBLE_PATTERNS)
+            or any(re.search(p, raw_title.strip(), re.IGNORECASE) for p in _SENTENCE_PATTERNS)):
         # Try to extract a clean noun-phrase from the question itself
         q_clean = re.sub(r"(?i)^(tell me about|what are|what is|show me|give me|find me|list|compare|analyse|analyze|explain)\s+", "", question.strip())
         q_clean = q_clean.rstrip("?!").strip()
         raw_title = q_clean[:80] if len(q_clean) >= 8 else f"{domain} Briefing"
     report_title = _strip_inline(raw_title)
-    # Single-line title — truncate with ellipsis if it doesn't fit at a readable size
+    # Single-line title — shrink font first, then truncate with an ellipsis
+    # (reserving room for "..." from the start) if it still doesn't fit even
+    # at the minimum size.
     title_size = 24
     while title_size > 14 and c.stringWidth(report_title, "Helvetica-Bold", title_size) > CW:
         title_size -= 1
-    while c.stringWidth(report_title, "Helvetica-Bold", title_size) > CW and len(report_title) > 10:
-        report_title = report_title[:-1]
     if c.stringWidth(report_title, "Helvetica-Bold", title_size) > CW:
-        report_title = report_title.rstrip() 
         while c.stringWidth(report_title + "...", "Helvetica-Bold", title_size) > CW and len(report_title) > 10:
             report_title = report_title[:-1]
         report_title = report_title.rstrip() + "..."

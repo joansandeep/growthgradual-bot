@@ -31,7 +31,7 @@ You MUST respond with valid JSON only — no markdown fences, no preamble, no te
 
 Respond with EXACTLY this shape:
 {
-  "title": "<concise NOUN-PHRASE report title, max 12 words. Examples: 'Top Banking Stocks India 2026', 'Indian Mutual Fund SIP Returns Analysis', 'HDFC vs ICICI Bank Comparison'. STRICT RULES: NEVER start with 'So', 'You', 'I', 'Let's', 'Here', 'Based', 'Looking', 'Understanding', 'A look at', 'An analysis of', or any verb/pronoun. NEVER write a full sentence. ALWAYS write a noun phrase — topic first, qualifiers after.>",
+  "title": "<concise NOUN-PHRASE report title, max 12 words. Examples: 'Top Banking Stocks India 2026', 'Indian Mutual Fund SIP Returns Analysis', 'HDFC vs ICICI Bank Comparison'. STRICT RULES: NEVER start with 'So', 'You', 'I', 'Let's', 'Here', 'Based', 'Looking', 'Understanding', 'A look at', 'An analysis of', or any verb/pronoun. NEVER write a full sentence — this includes sentences that don't start with one of those words too, e.g. BAD: 'The Minimum Investment Amounts For These Top-Performing SIPs Are As Follows' (full sentence, ends mid-thought) → GOOD: 'Top-Performing SIP Funds — Minimum Investment Requirements'. Never end a title with a colon or with 'as follows' — those introduce a sentence, not a heading. ALWAYS write a noun phrase — topic first, qualifiers after.>",
   "report": "<full markdown report — target 1000-1400 words, structured and data-rich>",
   "charts": [...],
   "keyStats": [{ "label": "<short label>", "value": "<value string>", "change": "<+/- % or empty string>" }],
@@ -77,7 +77,23 @@ STEP 1 — AGGRESSIVELY SCAN sources for ANY chartable numbers:
      GOOD: Make ONE chart for price trend (line, % change), ONE separate bar chart for key stats like 1-month return %
   → Also add a bar chart comparing key stats (1-month return %, 52-week high/low, current price) — but ONLY if you have ≥3 distinct comparable stats from the sources
 
-  For EVERY topic, these charts almost ALWAYS make sense — create them if data exists:
+  COMPOSITION / BREAKDOWN TOPICS — USE A STACKED BAR WHEN IT FITS:
+  When a label (e.g. a quarter, a fund, a sector) breaks down into 2+ parts of
+  a whole — portfolio allocation by asset class per fund, revenue split by
+  segment per quarter, expense breakdown by category — use a multi-series bar
+  chart with each part as its own series sharing the same labels. This
+  automatically renders as a STACKED column chart, which reads far better than
+  a single flat bar or a separate pie per label.
+  → Example: "Portfolio Allocation by Fund" → bar,
+     series: [{"name":"Equity","data":[{"label":"Fund A","value":65},{"label":"Fund B","value":40}]},
+              {"name":"Debt","data":[{"label":"Fund A","value":25},{"label":"Fund B","value":45}]},
+              {"name":"Cash","data":[{"label":"Fund A","value":10},{"label":"Fund B","value":15}]}]
+  → Only do this when the parts genuinely sum to the whole for each label (e.g. ~100% allocation,
+     or segments of one total revenue figure) — don't force unrelated metrics into a stacked shape.
+  → A single pie chart still works fine for ONE label's breakdown; reach for the stacked-bar
+     shape above once you're comparing that breakdown ACROSS multiple labels (funds/quarters/sectors).
+
+
   • SIP topic → bar chart of top 5 funds by 3-yr return %
   • Stock topic → bar chart of key financial metrics (revenue, profit growth %)
   • Banking topic → bar chart of NIM/NPA/ROE across banks
@@ -113,7 +129,11 @@ STEP 2 — ONLY create a chart if ALL conditions are met:
 STEP 3 — Place [CHART_n] inline in the report markdown right after the paragraph whose data it shows.
   charts[0] = [CHART_1], charts[1] = [CHART_2], etc.
 
-STEP 4 — Aim for 2-4 charts per report when data supports it. Quality over quantity.
+STEP 4 — Aim for 3-5 charts per report when data supports it. Quality over quantity,
+  but lean toward MORE high-level visuals rather than fewer when the sources have the numbers
+  for it — readers respond well to charts. Vary the shapes (bar, stacked bar, line, pie) rather
+  than repeating the same shape for every chart; use the stacked-bar shape above whenever a
+  breakdown is compared across multiple labels.
   If sources genuinely lack numeric data → 0 charts is acceptable. But look hard first.
 
 Chart spec shape:
@@ -130,6 +150,7 @@ GOOD chart examples — do exactly this:
   • "Nifty 50 Quarterly EPS" → line, labels=[Q1FY25,Q2FY25,Q3FY25,Q4FY25,Q1FY26], values=[actual numbers from source]
   • "Top Banking Stocks — ROE %" → bar, labels=[HDFC Bank, ICICI Bank, Kotak, SBI, Axis], values from source
   • "MF Category Inflows" → pie, labels=[Large Cap, Mid Cap, Small Cap, Flexi Cap, ELSS], values=₹ crore
+  • "Portfolio Allocation by Fund" → STACKED bar (multi-series, parts of a whole per label — see above)
 
 BAD chart examples — NEVER do this:
   ✗ labels=["Today","Today","Today"] — duplicate labels
@@ -149,6 +170,8 @@ REPORT STRUCTURE (each section MUST be substantive — minimum 150 words per sec
 
 ## 2. Data Sources & Methodology
 One markdown table of sources (Publication | URL | Data type). 2 short paragraphs: describe what sources were used, what metrics were collected, how comparisons were made, and any caveats in the data.
+SOURCE BREADTH: list EVERY distinct publication below that contributed any real fact, figure, or context — not only whichever source happened to have the most granular numbers. If five sources were provided and three had usable content (numbers, context, definitions, market commentary), the table and the Sources section should show three rows, not one. Only cite a single source if every other source genuinely had nothing usable (e.g. paywalled, off-topic, or duplicate of another result) — and if so, do not claim more sources were used than actually were. Never list a publication that contributed nothing to the report.
+URL COLUMN: the URL column must contain the EXACT "Source: <url>" value given for that publication in the supplementary sources below — never a paraphrase or placeholder like "Data provided via primary source." If a publication's URL truly is not in the source list, omit that row from the table rather than inventing or vaguely describing a URL.
 
 ## 3. Data Analysis
 
@@ -168,7 +191,7 @@ Only include if sources have trend/time-series data with ≥4 distinct time poin
 2-3 paragraphs (minimum 120 words): synthesise findings, explain implications for different types of investors/stakeholders, and give forward outlook from sources only.
 
 ## 6. Sources
-A plain bulleted list of the publications actually used, one per line: "- Publication Name — URL". Do NOT number this list and do NOT reference these numbers anywhere else in the report — it exists purely as a reading list, not a citation index.
+A plain bulleted list of the publications actually used, one per line: "- Publication Name — URL". Do NOT number this list and do NOT reference these numbers anywhere else in the report — it exists purely as a reading list, not a citation index. This list must match section 2's source table exactly — same publications, same count, same URLs.
 
 GLOBAL RULES:
 - NEVER invent any number, date, name, or statistic
@@ -202,6 +225,48 @@ GLOBAL RULES:
 _CITATION_MARKER_RE = re.compile(r"\s?\[\s*\d+(?:\s*,\s*\d+)*\s*\]")
 
 
+_CHART_PLACEHOLDER_RE = re.compile(r"\[CHART_(\d+)\]")
+
+
+def _remap_chart_placeholders(report_text: str, original_charts: list, valid_mask: list[bool]) -> str:
+    """After `_is_plausible_chart` filtering drops some charts from the array,
+    the [CHART_n] placeholders the LLM placed inline (numbered against the
+    ORIGINAL, unfiltered charts list) point at the wrong array index — every
+    placeholder after a rejected chart is off by however many charts were
+    dropped before it, and trailing placeholders run off the end of the
+    shrunken array entirely.
+
+    This rewrites every [CHART_n] in report_text to the chart's new 1-based
+    position in the filtered list, or removes the placeholder line entirely
+    if that chart was rejected — so a rejected chart never silently shifts
+    a later, valid chart into its paragraph.
+    """
+    # old 1-based index -> new 1-based index (or None if rejected)
+    remap: dict[int, int | None] = {}
+    new_pos = 0
+    for old_idx, keep in enumerate(valid_mask, start=1):
+        if keep:
+            new_pos += 1
+            remap[old_idx] = new_pos
+        else:
+            remap[old_idx] = None
+
+    def _sub(m: re.Match) -> str:
+        old_n = int(m.group(1))
+        new_n = remap.get(old_n)
+        return f"[CHART_{new_n}]" if new_n is not None else ""
+
+    out_lines = []
+    for line in report_text.split("\n"):
+        replaced = _CHART_PLACEHOLDER_RE.sub(_sub, line)
+        # If the whole line was just a (now-removed) placeholder, drop the
+        # line rather than leaving a blank gap.
+        if line.strip().startswith("[CHART_") and not replaced.strip():
+            continue
+        out_lines.append(replaced)
+    return "\n".join(out_lines)
+
+
 def _strip_citation_markers(text: str) -> str:
     if not text:
         return text
@@ -216,13 +281,23 @@ _TITLE_PREAMBLE_RE = re.compile(
     re.IGNORECASE,
 )
 
+# Catches full-sentence titles that don't start with one of the preamble
+# phrases above but still read as a sentence rather than a noun phrase —
+# e.g. "The minimum investment amounts ... are as follows", or anything
+# ending in a colon (which always introduces a sentence, not a heading).
+_TITLE_SENTENCE_RE = re.compile(
+    r"(:\s*$|\bas\s+follows\s*$|\b(?:are|is|were|have\s+been|has\s+been)\s+"
+    r"(?:as\s+follows|below|here|outlined|shown|listed|summarized|summarised)\b)",
+    re.IGNORECASE,
+)
+
 def _sanitize_title(title: str, question: str) -> str:
     """Post-process LLM-generated title: strip conversational openers,
     fall back to a clean noun-phrase from the question."""
     if not title:
         title = question
     title = title.strip().rstrip(".")
-    if _TITLE_PREAMBLE_RE.match(title):
+    if _TITLE_PREAMBLE_RE.match(title) or _TITLE_SENTENCE_RE.search(title):
         # Extract noun-phrase from question
         q = re.sub(r"(?i)^(tell me about|what are|what is|show me|give me|find me|list the|compare|analyse|analyze|explain|explore|summarize|summarise)\s+", "", question.strip())
         q = q.rstrip("?!.").strip()
@@ -821,7 +896,7 @@ async def generate_report(request: Request):
         return src
 
     log.info("Report: enriching sources...")
-    enriched = list(await asyncio.gather(*[enrich(s, i) for i, s in enumerate(sources[:12])]))
+    enriched = list(await asyncio.gather(*[enrich(s, i) for i, s in enumerate(sources[:20])]))
     log.info("Report: enrichment done (%d sources ready)", len(enriched))
 
     src_text = "\n\n---\n\n".join(
@@ -959,15 +1034,22 @@ async def generate_report(request: Request):
                         return False
             return True
 
-        charts = [c for c in (parsed.get("charts") or []) if _is_plausible_chart(c)]
-        if len(charts) < len(parsed.get("charts") or []):
-            log.info("Chart validation: kept %d / %d charts", len(charts), len(parsed.get("charts") or []))
+        original_charts_list = parsed.get("charts") or []
+        valid_mask = [_is_plausible_chart(c) for c in original_charts_list]
+        charts = [c for c, keep in zip(original_charts_list, valid_mask) if keep]
+        if len(charts) < len(original_charts_list):
+            log.info("Chart validation: kept %d / %d charts", len(charts), len(original_charts_list))
 
         elapsed = (time.perf_counter() - t0) * 1000
         log.info("Report complete in %.0fms — title=%r  charts=%d  keyStats=%d",
                  elapsed, parsed.get("title", "")[:60], len(charts), len(parsed.get("keyStats", [])))
 
         report_text = parsed.get("report", "")
+        # Renumber/strip [CHART_n] placeholders so they still point at the
+        # right chart now that some may have been dropped above — otherwise
+        # every placeholder after a rejected chart points one slot too far
+        # into the now-shorter array (see _remap_chart_placeholders docstring).
+        report_text = _remap_chart_placeholders(report_text, original_charts_list, valid_mask)
         if "\\n" in report_text:
             report_text = report_text.replace("\\n", "\n")
         report_text = re.sub(r"^```(?:json|markdown)?\s*", "", report_text.strip())
@@ -1207,15 +1289,20 @@ async def generate_report(request: Request):
                         return False
             return True
 
-        charts = [c for c in (parsed.get("charts") or []) if _is_plausible_chart(c)]
-        if len(charts) < len(parsed.get("charts") or []):
-            log.info("Chart validation: kept %d / %d charts", len(charts), len(parsed.get("charts") or []))
+        original_charts_list = parsed.get("charts") or []
+        valid_mask = [_is_plausible_chart(c) for c in original_charts_list]
+        charts = [c for c, keep in zip(original_charts_list, valid_mask) if keep]
+        if len(charts) < len(original_charts_list):
+            log.info("Chart validation: kept %d / %d charts", len(charts), len(original_charts_list))
         elapsed = (time.perf_counter() - t0) * 1000
         log.info(
             "Report complete in %.0fms — title=%r  charts=%d  keyStats=%d",
             elapsed, parsed.get("title", "")[:60], len(charts), len(parsed.get("keyStats", [])),
         )
         report_text = parsed.get("report", "")
+        # Renumber/strip [CHART_n] placeholders to match the filtered list —
+        # see _remap_chart_placeholders docstring for why this matters.
+        report_text = _remap_chart_placeholders(report_text, original_charts_list, valid_mask)
 
         # Safety pass 1: unescape literal \n that some models emit
         if "\\n" in report_text:
