@@ -19,6 +19,7 @@ from utils.keys import (
 )
 
 from utils.rag_client import rag_report as _rag_report
+from utils.datawrapper import attach_datawrapper_charts
 
 router = APIRouter()
 log = logging.getLogger("report")
@@ -276,6 +277,64 @@ def _extract_inline_chart_jsons(report_text: str, existing_charts: list) -> tupl
     # Collapse any blank-line runs left behind by removed blobs
     cleaned = re.sub(r"\n{3,}", "\n\n", cleaned).strip()
     return cleaned, charts
+
+
+_MD_TABLE_ROW_RE = re.compile(r"^[ \t]*\|(.+)\|[ \t]*$")
+_MD_TABLE_SEP_RE = re.compile(r"^[ \t]*\|[ \t:|\-]+\|[ \t]*$")
+_MD_HEADING_RE   = re.compile(r"^#{1,6}\s+(.+?)\s*$")
+
+
+def _extract_markdown_tables(report_text: str, existing_charts: list) -> tuple[str, list]:
+    """Find markdown pipe-tables (header row + |---|---| separator + data rows)
+    in the report body, turn each into a {"type": "table", ...} chart-spec so
+    it gets published as a real Datawrapper table, and replace it inline with
+    a [CHART_n] placeholder — same convention already used for bar/line/pie
+    charts. Tables too small to bother with (a single data row, or a row
+    that's really just a one-off list) are left as plain markdown.
+    """
+    lines = report_text.split("\n")
+    charts = list(existing_charts)
+    out: list[str] = []
+    last_heading = ""
+    i, n = 0, len(lines)
+
+    while i < n:
+        line = lines[i]
+        h = _MD_HEADING_RE.match(line.strip())
+        if h:
+            last_heading = h.group(1).strip()
+
+        header_m = _MD_TABLE_ROW_RE.match(line)
+        if header_m and i + 1 < n and _MD_TABLE_SEP_RE.match(lines[i + 1]):
+            header_cells = [c.strip() for c in header_m.group(1).split("|")]
+            j = i + 2
+            rows: list[list[str]] = []
+            while j < n:
+                row_m = _MD_TABLE_ROW_RE.match(lines[j])
+                if not row_m or _MD_TABLE_SEP_RE.match(lines[j]):
+                    break
+                cells = [c.strip() for c in row_m.group(1).split("|")]
+                if len(cells) < len(header_cells):
+                    cells += [""] * (len(header_cells) - len(cells))
+                rows.append(cells[: len(header_cells)])
+                j += 1
+
+            if len(header_cells) >= 2 and len(rows) >= 2:
+                charts.append({
+                    "type":    "table",
+                    "title":   last_heading or "Data Table",
+                    "columns": header_cells,
+                    "rows":    rows,
+                })
+                out.append(f"[CHART_{len(charts)}]")
+                i = j
+                continue
+            # Too small to be worth a Datawrapper table — leave as markdown.
+
+        out.append(line)
+        i += 1
+
+    return "\n".join(out), charts
 
 
 # Groq context limit: ~6K tokens input. Trim prompt to avoid 413.
@@ -753,6 +812,10 @@ async def generate_report(request: Request):
         parsed = json.loads(clean)
 
         def _is_plausible_chart(ch: dict) -> bool:
+            if ch.get("type") == "table":
+                cols = ch.get("columns") or []
+                rows = ch.get("rows") or []
+                return bool(ch.get("title")) and len(cols) >= 2 and len(rows) >= 2
             series = ch.get("series") or []
             if not series or not ch.get("type") or not ch.get("title"):
                 return False
@@ -824,6 +887,8 @@ async def generate_report(request: Request):
         # Strip raw JSON chart blobs the LLM leaked into the report body and
         # convert each into a [CHART_n] placeholder so it still renders.
         report_text, charts = _extract_inline_chart_jsons(report_text, charts)
+        # Turn markdown data tables into Datawrapper table charts too.
+        report_text, charts = _extract_markdown_tables(report_text, charts)
 
         for _attempt in range(2):
             stripped = report_text.strip()
@@ -850,6 +915,7 @@ async def generate_report(request: Request):
                 report_text = m.group(1).replace("\\n", "\n").replace('\\"', '"')
                 log.warning("Report: regex-extracted report field from raw JSON (pass 4)")
 
+        charts = await attach_datawrapper_charts(charts)
         return JSONResponse({
             "title":      parsed.get("title", question[:80]),
             "report":     report_text,
@@ -892,6 +958,7 @@ async def generate_report(request: Request):
         salvaged = _try_extract_fields(clean)
         if salvaged:
             log.info("Report: salvaged %d fields from truncated JSON", len(salvaged))
+            salvaged["charts"] = await attach_datawrapper_charts(salvaged.get("charts", []))
             return JSONResponse({
                 "title":      salvaged.get("title", question[:80]),
                 "report":     salvaged.get("report", ""),
@@ -910,10 +977,11 @@ async def generate_report(request: Request):
             repaired += "]" * max(opens_arr, 0)
             repaired_parsed = json.loads(repaired)
             log.info("Report: repaired truncated JSON successfully")
+            repaired_charts = await attach_datawrapper_charts(repaired_parsed.get("charts", []))
             return JSONResponse({
                 "title":      repaired_parsed.get("title", question[:80]),
                 "report":     (repaired_parsed.get("report", "") or "").replace("\\n", "\n"),
-                "charts":     repaired_parsed.get("charts", []),
+                "charts":     repaired_charts,
                 "keyStats":   repaired_parsed.get("keyStats", []),
                 "summary":    repaired_parsed.get("summary", ""),
                 "fileImages": file_images,
@@ -1014,6 +1082,10 @@ async def generate_report(request: Request):
 
         def _is_plausible_chart(ch: dict) -> bool:
             """Reject charts that look invented rather than sourced from real data."""
+            if ch.get("type") == "table":
+                cols = ch.get("columns") or []
+                rows = ch.get("rows") or []
+                return bool(ch.get("title")) and len(cols) >= 2 and len(rows) >= 2
             series = ch.get("series") or []
             if not series or not ch.get("type") or not ch.get("title"):
                 return False
@@ -1066,6 +1138,8 @@ async def generate_report(request: Request):
         # Safety pass 2b: convert any raw JSON chart blobs the LLM leaked into
         # the report body into [CHART_n] placeholders so they still render.
         report_text, charts = _extract_inline_chart_jsons(report_text, charts)
+        # Safety pass 2c: turn markdown data tables into Datawrapper table charts.
+        report_text, charts = _extract_markdown_tables(report_text, charts)
 
         # Safety pass 3: if the model stuffed the ENTIRE JSON response into the report field,
         # unwrap it. This happens when Gemini/Groq returns JSON inside the "report" string.
@@ -1098,6 +1172,7 @@ async def generate_report(request: Request):
                 report_text = m.group(1).replace("\\n", "\n").replace('\\"', '"')
                 log.warning("Report: regex-extracted report field from raw JSON (pass 4)")
 
+        charts = await attach_datawrapper_charts(charts)
         return JSONResponse({
             "title":    parsed.get("title", question[:80]),
             "report":   report_text,
@@ -1159,6 +1234,7 @@ async def generate_report(request: Request):
         if salvaged:
             log.info("Report: salvaged %d fields from truncated JSON (report=%d chars)",
                      len(salvaged), len(salvaged.get("report", "")))
+            salvaged["charts"] = await attach_datawrapper_charts(salvaged.get("charts", []))
             return JSONResponse({
                 "title":    salvaged.get("title", question[:80]),
                 "report":   salvaged.get("report", ""),
@@ -1181,10 +1257,11 @@ async def generate_report(request: Request):
             repaired = repaired + ("]" * max(opens_arr, 0))
             repaired_parsed = json.loads(repaired)
             log.info("Report: repaired truncated JSON successfully")
+            repaired_charts = await attach_datawrapper_charts(repaired_parsed.get("charts", []))
             return JSONResponse({
                 "title":    repaired_parsed.get("title", question[:80]),
                 "report":   (repaired_parsed.get("report", "") or "").replace("\\n", "\n"),
-                "charts":   repaired_parsed.get("charts", []),
+                "charts":   repaired_charts,
                 "keyStats": repaired_parsed.get("keyStats", []),
                 "summary":  repaired_parsed.get("summary", ""),
             })

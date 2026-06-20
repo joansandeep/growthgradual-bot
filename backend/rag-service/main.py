@@ -50,14 +50,7 @@ class ReportReq(BaseModel):
 
 # ── Routes ────────────────────────────────────────────────────
 
-@app.get("/ping")
-@app.head("/ping")
-async def ping():
-    """Lightweight wake-up endpoint — keeps HF Space warm and confirms it's alive."""
-    return {"pong": True, "model": engine.model_name}
-
 @app.get("/health")
-@app.head("/health")
 async def health():
     sessions = engine.list_sessions()
     return {

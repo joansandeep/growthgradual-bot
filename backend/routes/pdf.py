@@ -25,6 +25,10 @@ from fastapi import APIRouter
 from fastapi.requests import Request
 from fastapi.responses import JSONResponse, Response
 
+from utils.datawrapper import attach_datawrapper_charts, fetch_png
+import asyncio
+import httpx
+
 router = APIRouter()
 log = logging.getLogger("pdf")
 
@@ -69,6 +73,11 @@ def _coerce_value(v) -> float:
 # ─── Chart data validator ─────────────────────────────────────────────────────
 def _is_valid_chart(spec: dict) -> bool:
     """Return False for charts with no data, all-zero, or all-identical values."""
+    if spec.get("type") == "table":
+        cols = spec.get("columns") or []
+        rows = spec.get("rows") or []
+        return len(cols) >= 2 and len(rows) >= 1
+
     series = spec.get("series") or []
     if not series:
         return False
@@ -550,9 +559,75 @@ def _pie(c, spec, x0, y0, w, h):
         c.drawRightString(lx + 12 + 110, iy - 1, f"{pct:.1f}%")
 
 
+def _datawrapper_image(c, spec, x0, y0, w, h):
+    """Draw a fetched Datawrapper PNG export, scaled to fit the card, centred."""
+    from reportlab.lib.utils import ImageReader
+    png_bytes = (spec.get("datawrapper") or {}).get("pngBytes")
+    if not png_bytes:
+        return False
+    try:
+        img = ImageReader(io.BytesIO(png_bytes))
+        iw, ih = img.getSize()
+        scale = min(w / iw, h / ih)
+        dw, dh = iw * scale, ih * scale
+        dx = x0 + (w - dw) / 2
+        dy = y0 + (h - dh) / 2
+        c.drawImage(img, dx, dy, width=dw, height=dh,
+                    preserveAspectRatio=True, mask="auto")
+        return True
+    except Exception as exc:
+        log.warning("Failed to draw Datawrapper PNG for chart %r: %s", spec.get("title", "?"), exc)
+        return False
+
+
+def _table(c, spec, x0, y0, w, h):
+    """Fallback grid renderer used only if the Datawrapper PNG isn't available."""
+    columns = spec.get("columns") or []
+    rows = spec.get("rows") or []
+    if not columns:
+        return
+    n_cols = len(columns)
+    col_w = w / n_cols
+    header_h = 18
+    max_rows = max(1, int((h - header_h) // 14))
+    shown_rows = rows[:max_rows]
+
+    # Header
+    c.setFillColorRGB(*NAVY)
+    c.rect(x0, y0 + h - header_h, w, header_h, fill=1, stroke=0)
+    c.setFillColorRGB(*WHITE)
+    c.setFont("Helvetica-Bold", 7)
+    for ci, col in enumerate(columns):
+        cx = x0 + ci * col_w + 4
+        c.drawString(cx, y0 + h - header_h + 6, str(col)[:int(col_w / 4)])
+
+    # Rows
+    c.setFont("Helvetica", 7)
+    row_h = 14
+    for ri, row in enumerate(shown_rows):
+        ry = y0 + h - header_h - (ri + 1) * row_h
+        if ri % 2 == 1:
+            c.setFillColorRGB(*LIGHT)
+            c.rect(x0, ry, w, row_h, fill=1, stroke=0)
+        c.setFillColorRGB(*BODY_TXT)
+        for ci, cell in enumerate(row):
+            cx = x0 + ci * col_w + 4
+            c.drawString(cx, ry + 4, str(cell)[:int(col_w / 4)])
+
+    if len(rows) > max_rows:
+        c.setFillColorRGB(*GREY)
+        c.setFont("Helvetica-Oblique", 6.5)
+        c.drawString(x0, y0 + h - header_h - (max_rows + 1) * row_h - 2,
+                     f"+ {len(rows) - max_rows} more rows — see full table on Datawrapper")
+
+
 def _draw_chart(c, spec, x0, y0, w, h):
+    if _datawrapper_image(c, spec, x0, y0, w, h):
+        return
     t = spec.get("type", "bar")
-    if t == "pie":
+    if t == "table":
+        _table(c, spec, x0, y0, w, h)
+    elif t == "pie":
         _pie(c, spec, x0, y0, w, h)
     elif t == "line":
         _line(c, spec, x0, y0, w, h)
@@ -1198,6 +1273,33 @@ async def generate_pdf(request: Request):
     report = re.sub(r"```\s*$", "", report).strip()
 
     log.info("PDF: generating — title=%r  charts=%d  keyStats=%d", title[:60], len(charts), len(key_stats))
+
+    # Charts arriving from the report step already carry chart["datawrapper"]
+    # (id/embedUrl/publicUrl/pngUrl) but not the PNG bytes — fetch those now
+    # so we can embed real Datawrapper renders in the PDF. Any chart that
+    # doesn't have a "datawrapper" block yet (e.g. PDF requested standalone)
+    # gets published on the fly. Failures just fall back to the hand-drawn
+    # renderer in _draw_chart.
+    async def _hydrate_charts(chs: list) -> list:
+        needs_publish = [ch for ch in chs if not ch.get("datawrapper")]
+        if needs_publish:
+            await attach_datawrapper_charts(needs_publish, fetch_png_bytes=False)
+
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            async def _one(ch):
+                dw = ch.get("datawrapper")
+                if not dw or dw.get("pngBytes"):
+                    return
+                png = await fetch_png(client, dw.get("id", ""), dw.get("pngUrl", ""))
+                if png:
+                    dw["pngBytes"] = png
+            await asyncio.gather(*[_one(ch) for ch in chs])
+        return chs
+
+    try:
+        charts = await _hydrate_charts(charts)
+    except Exception as exc:
+        log.warning("PDF: Datawrapper hydration failed, falling back to drawn charts: %s", exc)
 
     try:
         pdf_bytes = build_pdf(report, title, question, summary, key_stats, charts, logo_b64, file_images)

@@ -7,7 +7,8 @@ import Image from 'next/image';
 interface Source { title: string; url: string; snippet: string; }
 interface ChartDataPoint { label: string; value: number; }
 interface ChartSeries { name: string; data: ChartDataPoint[]; color?: string; }
-interface ChartSpec { type: 'bar' | 'line' | 'pie'; title: string; series: ChartSeries[]; unit?: string; }
+interface DatawrapperInfo { id: string; embedUrl: string; publicUrl: string; }
+interface ChartSpec { type: 'bar' | 'line' | 'pie' | 'table'; title: string; series?: ChartSeries[]; unit?: string; columns?: string[]; rows?: string[][]; datawrapper?: DatawrapperInfo; }
 interface ReportData { report: string; charts: ChartSpec[]; keyStats: {label:string;value:string;change?:string}[]; summary: string; fileImages?: {name:string;mimeType:string;data:string}[]; }
 interface Message {
   id: string; role: 'user' | 'assistant'; text: string; ts: number;
@@ -124,7 +125,12 @@ function renderMd(text: string): string {
 
 // ─── Chart validation ────────────────────────────────────────────────────────
 function isValidChart(spec: ChartSpec): boolean {
-  const allPts = spec.series.flatMap(s => s.data ?? []);
+  if (spec.type === 'table') {
+    const cols = spec.columns ?? [];
+    const rows = spec.rows ?? [];
+    return cols.length >= 2 && rows.length >= 1;
+  }
+  const allPts = (spec.series ?? []).flatMap(s => s.data ?? []);
   if (allPts.length < 2) return false;                          // need at least 2 points
   const vals = allPts.map(d => d.value);
   if (new Set(vals).size < 2) return false;                     // all values identical = useless
@@ -136,7 +142,7 @@ function isValidChart(spec: ChartSpec): boolean {
 
 // ─── Mini SVG Charts ──────────────────────────────────────────────────────────
 function BarChart({ spec }: { spec: ChartSpec }) {
-  const data = spec.series[0]?.data ?? [];
+  const data = (spec.series ?? [])[0]?.data ?? [];
   if (data.length < 2) return null;
   const absVals = data.map(d => Math.abs(d.value));
   const max = Math.max(...absVals, 1);
@@ -178,9 +184,10 @@ function BarChart({ spec }: { spec: ChartSpec }) {
 
 function LineChart({ spec }: { spec: ChartSpec }) {
   const W = 320, H = 130, pad = 32;
-  const allV = spec.series.flatMap(s => s.data.map(d => d.value));
+  const series = spec.series ?? [];
+  const allV = series.flatMap(s => s.data.map(d => d.value));
   // Need at least 2 distinct time points to draw a meaningful line
-  const allLabels = spec.series.flatMap(s => s.data.map(d => d.label));
+  const allLabels = series.flatMap(s => s.data.map(d => d.label));
   const uniqueLabels = new Set(allLabels);
   if (allV.length < 2 || uniqueLabels.size < 2) return null;
   let mn = Math.min(...allV), mx = Math.max(...allV);
@@ -195,7 +202,7 @@ function LineChart({ spec }: { spec: ChartSpec }) {
       return `${x.toFixed(1)},${y.toFixed(1)}`;
     }).join(' ');
   }
-  const labels = spec.series[0]?.data ?? [];
+  const labels = series[0]?.data ?? [];
   const step = Math.max(1, Math.ceil(labels.length/5));
   return (
     <div className="chart-wrap">
@@ -206,7 +213,7 @@ function LineChart({ spec }: { spec: ChartSpec }) {
             stroke="#f0f2f8" strokeWidth="1"/>
         ))}
         <line x1={pad} y1={H-28} x2={W-pad} y2={H-28} stroke="#e2e6f0" strokeWidth="1"/>
-        {spec.series.map((s,si) => (
+        {series.map((s,si) => (
           <polyline key={si} points={pts(s.data)} fill="none"
             stroke={s.color ?? COLORS[si%COLORS.length]} strokeWidth="2"
             strokeLinecap="round" strokeLinejoin="round"/>
@@ -217,9 +224,9 @@ function LineChart({ spec }: { spec: ChartSpec }) {
           return <text key={oi} x={x} y={H-12} textAnchor="middle" fontSize="8" fill="#8b93b5" fontFamily="DM Sans,sans-serif">{d.label}</text>;
         })}
       </svg>
-      {spec.series.length > 1 && (
+      {series.length > 1 && (
         <div className="chart-legend">
-          {spec.series.map((s,i) => (
+          {series.map((s,i) => (
             <span key={i} className="chart-leg">
               <i style={{ background: s.color ?? COLORS[i%COLORS.length] }}/>
               {s.name}
@@ -232,7 +239,7 @@ function LineChart({ spec }: { spec: ChartSpec }) {
 }
 
 function PieChart({ spec }: { spec: ChartSpec }) {
-  const data = spec.series[0]?.data ?? [];
+  const data = (spec.series ?? [])[0]?.data ?? [];
   if (data.length < 2) return null;
   const total = data.reduce((s,d) => s+Math.abs(d.value),0) || 1;
   const COLORS = ['#1a1f4e','#3b82f6','#22c55e','#f59e0b','#ef4444','#8b5cf6'];
@@ -268,9 +275,74 @@ function PieChart({ spec }: { spec: ChartSpec }) {
   );
 }
 
+// ─── Datawrapper chart embed ──────────────────────────────────────────────────
+function DatawrapperChart({ spec }: { spec: ChartSpec }) {
+  const dw = spec.datawrapper!;
+  const [loaded, setLoaded] = useState(false);
+  return (
+    <div className="chart-wrap">
+      <div className="chart-title">{spec.title}</div>
+      <div style={{ position: 'relative', minHeight: loaded ? undefined : 220 }}>
+        {!loaded && (
+          <div style={{
+            position: 'absolute', inset: 0, display: 'flex', alignItems: 'center',
+            justifyContent: 'center', fontSize: 12, color: '#8b93b5', fontFamily: 'DM Sans,sans-serif',
+          }}>
+            Loading chart…
+          </div>
+        )}
+        <iframe
+          title={spec.title}
+          src={dw.embedUrl}
+          style={{ width: '100%', border: 0, minHeight: 280, display: 'block' }}
+          height="280"
+          scrolling="no"
+          onLoad={() => setLoaded(true)}
+        />
+      </div>
+      <a
+        href={dw.publicUrl}
+        target="_blank"
+        rel="noopener noreferrer"
+        style={{ fontSize: 10, color: '#8b93b5', fontFamily: 'DM Sans,sans-serif', display: 'inline-block', marginTop: 4 }}
+      >
+        View on Datawrapper ↗
+      </a>
+    </div>
+  );
+}
+
+// ─── Table fallback (used only if Datawrapper isn't configured/available) ────
+function TableChart({ spec }: { spec: ChartSpec }) {
+  const columns = spec.columns ?? [];
+  const rows = spec.rows ?? [];
+  if (columns.length < 2 || rows.length < 1) return null;
+  return (
+    <div className="chart-wrap">
+      <div className="chart-title">{spec.title}</div>
+      <div style={{ overflowX: 'auto' }}>
+        <table className="md-table">
+          <thead>
+            <tr>{columns.map((c,i) => <th key={i} className="md-th">{c}</th>)}</tr>
+          </thead>
+          <tbody>
+            {rows.map((r,ri) => (
+              <tr key={ri}>{r.map((cell,ci) => <td key={ci} className="md-td">{cell}</td>)}</tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
 function ChartBlock({ spec }: { spec: ChartSpec }) {
   // Hard gate: never render a chart that has bad/useless data
   if (!isValidChart(spec)) return null;
+  // Prefer the published Datawrapper chart; fall back to the lightweight
+  // inline renderer if Datawrapper publishing failed or isn't configured.
+  if (spec.datawrapper?.embedUrl) return <DatawrapperChart spec={spec}/>;
+  if (spec.type === 'table') return <TableChart spec={spec}/>;
   if (spec.type === 'pie') return <PieChart spec={spec}/>;
   if (spec.type === 'line') return <LineChart spec={spec}/>;
   return <BarChart spec={spec}/>;

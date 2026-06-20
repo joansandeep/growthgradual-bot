@@ -1,0 +1,27 @@
+FROM python:3.11-slim
+
+# System deps for sentence-transformers and faiss
+RUN apt-get update && apt-get install -y \
+    build-essential \
+    libgfortran5 \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+# Install Python deps (heavy — do this layer first for cache efficiency)
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+
+# Pre-download the embedding model so the container starts faster
+# Model is cached in /root/.cache/huggingface
+RUN python -c "from sentence_transformers import SentenceTransformer; SentenceTransformer('all-MiniLM-L6-v2')"
+
+# Copy source
+COPY . .
+
+EXPOSE 4005
+
+HEALTHCHECK --interval=20s --timeout=8s --start-period=40s --retries=3 \
+  CMD python -c "import httpx; r=httpx.get('http://localhost:4005/health',timeout=5); r.raise_for_status()"
+
+CMD ["python", "main.py"]

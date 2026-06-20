@@ -18,6 +18,7 @@ Pure-Python backend replacing all Next.js API routes. No browser automation, no 
 | `GROQ_API_KEYS` | Comma-separated Groq API keys |
 | `TAVILY_API_KEY` | Comma-separated Tavily search API keys |
 | `GEMINI_API_KEY` | Comma-separated Gemini API keys |
+| `DATAWRAPPER_API_TOKEN` | Datawrapper API token (Settings → API Tokens). Powers the report's bar/line/pie charts in both the chat view and PDF export. If unset, charts fall back to the built-in lightweight SVG renderer. |
 | `LOGO_B64` | (Optional) Base64-encoded logo image for PDF cover |
 
 ## Local Development

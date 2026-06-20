@@ -1,23 +1,10 @@
-# ── Web framework ─────────────────────────────────────────────────────────────
+# RAG Service dependencies
 fastapi==0.111.0
-uvicorn[standard]==0.30.1
+uvicorn==0.30.1
 pydantic==2.7.4
 python-dotenv==1.0.1
-
-# ── RAG stack ─────────────────────────────────────────────────────────────────
-# faiss-cpu: unpinned so pip picks the latest pre-built wheel for this platform.
-# Pinning to 1.8.0 causes build-from-source on some HF runners (needs swig/cmake).
-faiss-cpu>=1.8.0
-
-# numpy pinned below 2.x — faiss-cpu 1.8.x built against numpy 1.x ABI
-numpy>=1.26.4,<2.0
-
-# sentence-transformers: torch is installed separately in Dockerfile (CPU-only wheel)
-# so we install without deps to avoid pulling a 2 GB CUDA torch here.
+numpy==1.26.4
+faiss-cpu==1.8.0
 sentence-transformers==3.0.1
-
-# text splitting (tiny, no heavy deps)
 langchain-text-splitters==0.2.1
-
-# HTTP client (used in gateway health checks if needed)
 httpx==0.27.0
