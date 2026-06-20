@@ -1539,12 +1539,19 @@ export default function GrowthGradualChat() {
         body: JSON.stringify({
           question,
           sources:     [],
+<<<<<<< HEAD
           // Actual uploaded file text ONLY — conversationContext used to be
           // merged in here too, but the backend treats fileContext as
           // "PRIMARY SOURCE, highest priority" for data extraction, which
           // caused prior conversation topics to leak into the new report's
           // title/content. It's sent as its own field below instead.
           fileContext: fileTextContext,
+=======
+          fileContext: [fileTextContext, conversationContext].filter(Boolean).join('\n\n---\n'),
+          // Sent separately (not just merged into fileContext) so the backend
+          // can fold the previous turn's response into the search query for
+          // follow-up reports, without mixing in unrelated file text.
+>>>>>>> 651d7b86462b57e4668eb7bea6281c49987d2f76
           conversationContext: conversationContext || '',
           fileImages,
           sessionId:   getOrCreateSessionId(),
