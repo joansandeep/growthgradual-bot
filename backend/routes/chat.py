@@ -531,6 +531,15 @@ async def tavily_search(query: str, max_results: int = 20, min_results: int = 10
         log.warning("Tavily search skipped — no keys configured")
         return []
 
+    # Tavily hard-caps query length at 400 chars — truncate on a word boundary
+    # so long user messages (which skip the LLM rewrite above 180 chars) don't
+    # get rejected outright and burn through every key before falling back.
+    TAVILY_MAX_QUERY_LEN = 400
+    if len(query) > TAVILY_MAX_QUERY_LEN:
+        truncated = query[:TAVILY_MAX_QUERY_LEN].rsplit(" ", 1)[0]
+        log.info("Tavily query truncated: %d → %d chars", len(query), len(truncated))
+        query = truncated
+
     qtype = classify_query(query)
     domains = FINANCE_DOMAINS if qtype == "finance" else GENERAL_DOMAINS
     log.info("Tavily search (SDK): query=%r  type=%s  max_results=%d", query[:60], qtype, max_results)

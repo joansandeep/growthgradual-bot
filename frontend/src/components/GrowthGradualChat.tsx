@@ -1540,6 +1540,10 @@ export default function GrowthGradualChat() {
           question,
           sources:     [],
           fileContext: [fileTextContext, conversationContext].filter(Boolean).join('\n\n---\n'),
+          // Sent separately (not just merged into fileContext) so the backend
+          // can fold the previous turn's response into the search query for
+          // follow-up reports, without mixing in unrelated file text.
+          conversationContext: conversationContext || '',
           fileImages,
           sessionId:   getOrCreateSessionId(),
           hasRag:      ragIndexed,

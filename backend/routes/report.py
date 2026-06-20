@@ -789,6 +789,35 @@ async def extract_data_from_images(question: str, file_images: list[dict]) -> st
     return ""
 
 
+def _build_followup_search_query(question: str, conversation_context: str) -> str:
+    """
+    Follow-up report questions (e.g. "what about its peers", "and the risks")
+    are often meaningless to a search engine on their own — they only make
+    sense alongside the prior turn. Fold in the most recent assistant
+    response (and the user question that produced it) so the search engine
+    gets real grounding instead of a bare pronoun-heavy fragment.
+
+    This deliberately makes the query longer than `question` alone — that's
+    fine, tavily_search() truncates to Tavily's 400-char API limit on a word
+    boundary before it ever hits the wire.
+    """
+    if not conversation_context.strip():
+        return question
+
+    # conversation_context is "User: ...\n\nAssistant: ...\n\nUser: ...\n\nAssistant: ..."
+    # Grab the last Assistant block — that's the response this follow-up is
+    # actually building on.
+    turns = [t.strip() for t in conversation_context.split("\n\n") if t.strip()]
+    last_assistant = next(
+        (t[len("Assistant:"):].strip() for t in reversed(turns) if t.startswith("Assistant:")),
+        "",
+    )
+    if not last_assistant:
+        return question
+
+    return f"{question} — context: {last_assistant[:300]}"
+
+
 @router.post("")
 async def generate_report(request: Request):
     t0 = time.perf_counter()
@@ -803,6 +832,10 @@ async def generate_report(request: Request):
     file_images: list[dict] = body.get("fileImages", [])
     session_id: str     = body.get("sessionId", "").strip()
     has_rag: bool       = bool(body.get("hasRag", False))
+    # Separate from fileContext (which mixes in file text too) so the search
+    # query builder below can target prior Q&A specifically — see
+    # _build_followup_search_query.
+    conversation_context: str = body.get("conversationContext", "")
 
     # Defensive filter: Tavily (and any other internal search/aggregator domains)
     # must never be cited as if they were a publisher. Strip them here so they
@@ -851,7 +884,8 @@ async def generate_report(request: Request):
             # Question implies it wants more than just the file (e.g. asks for
             # market context, comparisons, recent news) — supplement with web data.
             log.info("Report: file-first mode — supplementing with web search")
-            searched = await _tavily_search(question, max_results=20, min_results=10)
+            search_query = _build_followup_search_query(question, conversation_context)
+            searched = await _tavily_search(search_query, max_results=20, min_results=10)
             sources = [
                 {"title": r["title"], "url": r["url"],
                  "snippet": r["snippet"], "fullContent": r.get("fullContent", "")}
@@ -865,7 +899,11 @@ async def generate_report(request: Request):
     elif not sources:
         log.info("Report: no sources — running own Tavily search for %r", question[:60])
         from routes.chat import tavily_search as _tavily_search, _looks_like_ai_overview
-        searched = await _tavily_search(question, max_results=20)
+        search_query = _build_followup_search_query(question, conversation_context)
+        if search_query != question:
+            log.info("Report: search query enriched with prior context (%d → %d chars)",
+                      len(question), len(search_query))
+        searched = await _tavily_search(search_query, max_results=20)
         sources = [
             {"title": r["title"], "url": r["url"],
              "snippet": r["snippet"], "fullContent": r.get("fullContent", "")}
