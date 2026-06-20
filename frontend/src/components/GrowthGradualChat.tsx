@@ -1209,9 +1209,24 @@ export default function GrowthGradualChat() {
         : m));
 
       // ── Follow-up question generation ──────────────────────────────────────
-      // Fire-and-forget: generate 3 contextual follow-up questions and attach
-      // them to the bot message so the user can tap to continue the conversation.
-      if (isSubstantiveQuery && finalText.length > 80) {
+      // Always show follow-up chips after every bot reply.
+      // For greetings/chitchat: show hardcoded starter suggestions instantly.
+      // For substantive queries: generate contextual ones via API.
+      const GREETING_FOLLOWUPS = [
+        { icon: '📈', label: 'Nifty outlook today' },
+        { icon: '🏦', label: 'Top banking stocks' },
+        { icon: '💰', label: 'Best SIPs right now' },
+        { icon: '🚀', label: 'Upcoming IPOs' },
+        { icon: '📊', label: 'Sector performance' },
+      ];
+
+      if (!isSubstantiveQuery) {
+        // Greeting/chitchat — show starter chips immediately, no API call
+        setMessages(prev => prev.map(m => m.id === botMsgId
+          ? { ...m, followUpQuestions: GREETING_FOLLOWUPS.map(s => `${s.icon} ${s.label}`) }
+          : m));
+      } else {
+        // Substantive query — generate contextual follow-ups via API
         (async () => {
           try {
             const fuRes = await fetch('/api/chat', {
@@ -1222,7 +1237,8 @@ export default function GrowthGradualChat() {
                   {
                     role: 'user',
                     content:
-                      `Based on this Q&A, suggest exactly 3 short follow-up questions a user might ask next. ` +
+                      `Based on this Q&A about Indian finance/markets, suggest exactly 3 short follow-up questions ` +
+                      `a user might ask next. Add a relevant emoji before each question. ` +
                       `Return ONLY a JSON array of 3 strings, no explanation, no markdown.\n\n` +
                       `Q: ${q.slice(0, 200)}\nA: ${finalText.slice(0, 600)}`,
                   },
@@ -1235,7 +1251,6 @@ export default function GrowthGradualChat() {
               }),
             });
             if (!fuRes.ok) return;
-            // Consume the SSE stream and collect full text
             const reader = fuRes.body!.getReader();
             const dec = new TextDecoder();
             let buf = '', acc = '';
@@ -1256,7 +1271,6 @@ export default function GrowthGradualChat() {
                 } catch { /* ignore */ }
               }
             }
-            // Parse the JSON array from the response
             const match = acc.match(/\[[\s\S]*\]/);
             if (!match) return;
             const questions: string[] = JSON.parse(match[0]);
@@ -1616,17 +1630,20 @@ export default function GrowthGradualChat() {
         }
         .msg-ts { font-size: clamp(9px,.85vw,11px); color: #b0b8d4; padding: 0 4px; }
         .msg-row--user .msg-ts { text-align: right; }
-        .followup-chips { display:flex; flex-wrap:wrap; gap:6px; margin-top:8px; align-items:center; }
-        .followup-label { font-size:10px; font-weight:600; color:#8892b0; text-transform:uppercase; letter-spacing:.06em; flex-basis:100%; margin-bottom:1px; }
+        .followup-chips { display:flex; flex-wrap:wrap; gap:6px; margin-top:10px; }
+        .followup-label { font-size:10px; font-weight:600; color:#8892b0; text-transform:uppercase; letter-spacing:.06em; flex-basis:100%; margin-bottom:3px; }
         .followup-chip {
-          display:inline-flex; align-items:center; gap:4px;
-          background:rgba(26,31,78,.04); border:1px solid rgba(26,31,78,.14);
-          border-radius:20px; padding:5px 11px; font-size:clamp(11px,1vw,12.5px);
-          color:#1a1f4e; cursor:pointer; transition:background .15s,border-color .15s,transform .1s;
-          font-family:inherit; text-align:left; line-height:1.3;
+          display:inline-flex; align-items:center; gap:6px;
+          background:#fff; border:1.5px solid #e2e6f0;
+          border-radius:50px; padding:6px 13px;
+          font-size:clamp(11px,1vw,12.5px); color:#1a1f4e;
+          cursor:pointer; font-family:inherit; text-align:left; line-height:1.3;
+          transition:background .15s, border-color .15s, box-shadow .15s, transform .1s;
+          box-shadow:0 1px 3px rgba(26,31,78,.07);
         }
-        .followup-chip:hover { background:rgba(26,31,78,.09); border-color:rgba(26,31,78,.28); transform:translateY(-1px); }
+        .followup-chip:hover { background:#f0f3ff; border-color:#c7d0f0; box-shadow:0 2px 8px rgba(26,31,78,.12); transform:translateY(-1px); }
         .followup-chip:active { transform:translateY(0); }
+        .followup-chip-icon { font-size:13px; line-height:1; }
 
         /* Markdown */
         .msg-text .md-p { margin: 0 0 8px; }
@@ -2147,12 +2164,19 @@ export default function GrowthGradualChat() {
                         {/* Follow-up question chips */}
                         {!isUser && isLast && !streaming && msg.followUpQuestions && msg.followUpQuestions.length > 0 && (
                           <div className="followup-chips">
-                            <span className="followup-label">Follow-up</span>
-                            {msg.followUpQuestions.map((q, qi) => (
-                              <button key={qi} className="followup-chip" onClick={() => send(q)}>
-                                {q}
-                              </button>
-                            ))}
+                            <span className="followup-label">You might also ask</span>
+                            {msg.followUpQuestions.map((q, qi) => {
+                              // Split leading emoji from text (handles emoji followed by space)
+                              const emojiMatch = q.match(/^(\p{Emoji_Presentation}|\p{Extended_Pictographic})\s*/u);
+                              const icon = emojiMatch ? emojiMatch[0].trim() : '💬';
+                              const label = emojiMatch ? q.slice(emojiMatch[0].length) : q;
+                              return (
+                                <button key={qi} className="followup-chip" onClick={() => send(label)}>
+                                  <span className="followup-chip-icon">{icon}</span>
+                                  <span>{label}</span>
+                                </button>
+                              );
+                            })}
                           </div>
                         )}
                         {/* Web search chip hidden — sources used internally only */}
