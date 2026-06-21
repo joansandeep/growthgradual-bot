@@ -432,6 +432,15 @@ _MD_TABLE_ROW_RE = re.compile(r"^[ \t]*\|(.+)\|[ \t]*$")
 _MD_TABLE_SEP_RE = re.compile(r"^[ \t]*\|[ \t:|\-]+\|[ \t]*$")
 _MD_HEADING_RE   = re.compile(r"^#{1,6}\s+(.+?)\s*$")
 
+# Section headings whose tables are structural/metadata, not analytical data
+# (e.g. the "Data Sources & Methodology" table listing publications/URLs) —
+# these should never be turned into a "chart" even though they technically
+# satisfy the >=2 cols / >=2 rows size check below.
+_NON_CHART_HEADING_RE = re.compile(
+    r"\b(sources?|methodology|data\s+sources?|references?|citations?|bibliography|appendix)\b",
+    re.IGNORECASE,
+)
+
 
 def _extract_markdown_tables(report_text: str, existing_charts: list) -> tuple[str, list]:
     """Find markdown pipe-tables (header row + |---|---| separator + data rows)
@@ -439,7 +448,9 @@ def _extract_markdown_tables(report_text: str, existing_charts: list) -> tuple[s
     it gets published as a real Datawrapper table, and replace it inline with
     a [CHART_n] placeholder — same convention already used for bar/line/pie
     charts. Tables too small to bother with (a single data row, or a row
-    that's really just a one-off list) are left as plain markdown.
+    that's really just a one-off list) are left as plain markdown. Tables
+    under a Sources/Methodology/References-style heading are also left as
+    plain markdown — they're report metadata, not chartable data.
     """
     lines = report_text.split("\n")
     charts = list(existing_charts)
@@ -468,7 +479,8 @@ def _extract_markdown_tables(report_text: str, existing_charts: list) -> tuple[s
                 rows.append(cells[: len(header_cells)])
                 j += 1
 
-            if len(header_cells) >= 2 and len(rows) >= 2:
+            is_metadata_table = bool(_NON_CHART_HEADING_RE.search(last_heading))
+            if len(header_cells) >= 2 and len(rows) >= 2 and not is_metadata_table:
                 # Defensive scrub: if a column is literally a URL/Link column,
                 # blank any cell that isn't an actual http(s) link rather than
                 # let placeholder/descriptive text (e.g. an LLM echoing a
@@ -492,7 +504,8 @@ def _extract_markdown_tables(report_text: str, existing_charts: list) -> tuple[s
                 out.append(f"[CHART_{len(charts)}]")
                 i = j
                 continue
-            # Too small to be worth a Datawrapper table — leave as markdown.
+            # Too small, or a Sources/Methodology-style metadata table —
+            # leave it as plain markdown rather than charting it.
 
         out.append(line)
         i += 1
@@ -827,14 +840,26 @@ def _build_followup_search_query(question: str, conversation_context: str) -> st
         return question
 
     # conversation_context is "User: ...\n\nAssistant: ...\n\nUser: ...\n\nAssistant: ..."
-    # Grab the last Assistant block — that's the response this follow-up is
-    # actually building on.
+    # Grab the last Assistant block (and the User turn that produced it) —
+    # that's the exchange this follow-up is actually building on.
     turns = [t.strip() for t in conversation_context.split("\n\n") if t.strip()]
-    last_assistant = next(
-        (t[len("Assistant:"):].strip() for t in reversed(turns) if t.startswith("Assistant:")),
-        "",
-    )
+    last_assistant = ""
+    last_user = ""
+    for idx in range(len(turns) - 1, -1, -1):
+        if turns[idx].startswith("Assistant:"):
+            last_assistant = turns[idx][len("Assistant:"):].strip()
+            if idx > 0 and turns[idx - 1].startswith("User:"):
+                last_user = turns[idx - 1][len("User:"):].strip()
+            break
     if not last_assistant:
+        return question
+
+    # If that exchange was just smalltalk (e.g. "hi" → "Hello, nice to meet
+    # you"), it carries no real topical grounding — folding it in actively
+    # hurts search relevance rather than helping it, so treat this as if
+    # there were no prior context at all.
+    from routes.chat import is_smalltalk
+    if is_smalltalk(last_user):
         return question
 
     return f"{question} — context: {last_assistant[:300]}"

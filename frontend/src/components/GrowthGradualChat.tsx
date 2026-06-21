@@ -9,12 +9,12 @@ interface ChartDataPoint { label: string; value: number; }
 interface ChartSeries { name: string; data: ChartDataPoint[]; color?: string; }
 interface DatawrapperInfo { id: string; embedUrl: string; publicUrl: string; }
 interface ChartSpec { type: 'bar' | 'line' | 'pie' | 'table'; title: string; series?: ChartSeries[]; unit?: string; columns?: string[]; rows?: string[][]; datawrapper?: DatawrapperInfo; }
-interface ReportData { report: string; charts: ChartSpec[]; keyStats: {label:string;value:string;change?:string}[]; summary: string; fileImages?: {name:string;mimeType:string;data:string}[]; }
+interface ReportData { report: string; title?: string; charts: ChartSpec[]; keyStats: {label:string;value:string;change?:string}[]; summary: string; fileImages?: {name:string;mimeType:string;data:string}[]; }
 interface Message {
   id: string; role: 'user' | 'assistant'; text: string; ts: number;
   sources?: Source[]; searchPerformed?: boolean; queryType?: string;
   reportData?: ReportData; reportLoading?: boolean;
-  inlineCharts?: ChartSpec[];
+  inlineCharts?: ChartSpec[]; wantsVisual?: boolean;
   // Report is no longer auto-generated — these carry what's needed so the
   // "Generate Report" button can build the request whenever the user taps it.
   reportEligible?: boolean; reportQuestion?: string; reportFiles?: AttachedFile[];
@@ -606,12 +606,16 @@ function EmailModal({ onClose, onSend, sending, result, defaultSubject }: {
 }
 
 // ─── Report Panel ─────────────────────────────────────────────────────────────
-function ReportPanel({ msg, question, onGenerate }: { msg: Message; question: string; onGenerate: () => void }) {
+function ReportPanel({ msg, question, hasPriorContext, onGenerate }: { msg: Message; question: string; hasPriorContext: boolean; onGenerate: (includeContext: boolean) => void }) {
   const [open, setOpen]               = useState(false);
   const [pdfLoading, setPdfLoading]   = useState(false);
   const [emailOpen, setEmailOpen]     = useState(false);
   const [emailSending, setEmailSending] = useState(false);
   const [emailResult, setEmailResult] = useState<{ ok: boolean; msg: string } | null>(null);
+  // Default ON to match the previous always-include behaviour; only ever
+  // shown when there's actually prior conversation to include (i.e. not the
+  // very first response in the thread).
+  const [includeContext, setIncludeContext] = useState(true);
 
   const rd = msg.reportData;
   const loading = msg.reportLoading ?? false;
@@ -627,7 +631,7 @@ function ReportPanel({ msg, question, onGenerate }: { msg: Message; question: st
       const res = await fetch('/api/chat/report/pdf', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ report: rd.report, charts: rd.charts, question, keyStats: rd.keyStats, summary: rd.summary, fileImages: rd.fileImages ?? [] }),
+        body: JSON.stringify({ report: rd.report, title: rd.title, charts: rd.charts, question, keyStats: rd.keyStats, summary: rd.summary, fileImages: rd.fileImages ?? [] }),
       });
       const contentType = res.headers.get('Content-Type') ?? '';
       if (contentType.includes('application/pdf')) {
@@ -662,8 +666,10 @@ function ReportPanel({ msg, question, onGenerate }: { msg: Message; question: st
       fd.append('subject',    subject || 'Growth Gradual Research Report');
       fd.append('recipients', recipients);
       fd.append('report',     rd.report   ?? '');
-      // Extract the first H1/H2 heading from the report markdown as the title
+      // Prefer the clean backend-generated title; fall back to the first H1/H2
+      // heading in the report markdown, then the original question.
       const reportTitle = (() => {
+        if (rd.title) return sanitizeText(rd.title).slice(0, 120);
         const match = (rd.report ?? '').match(/^#{1,2}\s+(.+)$/m);
         return match ? sanitizeText(match[1]).slice(0, 120) : sanitizeText(question).slice(0, 120);
       })();
@@ -713,8 +719,19 @@ function ReportPanel({ msg, question, onGenerate }: { msg: Message; question: st
               Generating report…
             </div>
           )}
+          {!loading && !done && eligible && hasPriorContext && (
+            <label className="report-context-toggle" title="When on, earlier questions and answers in this chat are included as background for the report">
+              <input
+                type="checkbox"
+                checked={includeContext}
+                onChange={(e) => setIncludeContext(e.target.checked)}
+              />
+              <span className="report-context-track"><span className="report-context-thumb"/></span>
+              <span className="report-context-label">Include previous context</span>
+            </label>
+          )}
           {!loading && !done && eligible && (
-            <button className="report-btn" onClick={onGenerate}>
+            <button className="report-btn" onClick={() => onGenerate(hasPriorContext ? includeContext : false)}>
               <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="12" y1="11" x2="12" y2="17"/><line x1="9" y1="14" x2="15" y2="14"/></svg>
               Generate Report
             </button>
@@ -1319,6 +1336,7 @@ export default function GrowthGradualChat() {
       // button can build the request later without re-deriving state.
       const botMsgId = botMsg.id;
       const currentFiles = attachedFiles;
+      const wantsVisual = /\b(chart|graph|plot|visuali[sz]e|trend\s*line)\b/i.test(q);
       const isSubstantiveQuery = (() => {
         const lower = q.toLowerCase().trim();
         // Skip very short messages (under 15 chars) — greetings, "hi", "hello", "ok", etc.
@@ -1330,7 +1348,7 @@ export default function GrowthGradualChat() {
       })();
 
       setMessages(prev => prev.map(m => m.id === botMsgId
-        ? { ...m, reportEligible: isSubstantiveQuery, reportQuestion: q, reportFiles: currentFiles }
+        ? { ...m, reportEligible: isSubstantiveQuery, reportQuestion: q, reportFiles: currentFiles, wantsVisual }
         : m));
 
       // ── Inline chart generation ────────────────────────────────────────────
@@ -1343,8 +1361,7 @@ export default function GrowthGradualChat() {
       // skip this call entirely — otherwise the same data gets charted twice
       // (once inline in the text, once again in the "📊 Charts" section above
       // it), which is what produces the duplicated/overlapping chart look.
-      const alreadyHasInlineChart = splitTextAndCharts(finalText).some(p => p.type === 'chart');
-      const wantsVisual = /\b(chart|graph|plot|visuali[sz]e|trend\s*line)\b/i.test(q);
+      const alreadyHasInlineChart = wantsVisual && splitTextAndCharts(finalText).some(p => p.type === 'chart');
       const chartLengthOk = wantsVisual ? finalText.length > 80 : finalText.length > 200;
       if (isSubstantiveQuery && chartLengthOk && !alreadyHasInlineChart) {
         (async () => {
@@ -1559,6 +1576,7 @@ export default function GrowthGradualChat() {
           reportLoading: false,
           reportData: {
             report:     data.report     ?? '',
+            title:      data.title      ?? '',
             charts:     data.charts     ?? [],
             keyStats:   data.keyStats   ?? [],
             summary:    data.summary    ?? '',
@@ -1863,6 +1881,14 @@ export default function GrowthGradualChat() {
         .dw-chart-wrap { padding: 6px 6px 4px !important; }
         .report-btn { display:flex;align-items:center;gap:5px;background:linear-gradient(135deg,#0d4f3c,#1a1f4e);border:none;border-radius:7px;padding:6px 12px;font-size:clamp(10px,.9vw,11.5px);color:#fff;cursor:pointer;font-family:'DM Sans',sans-serif;transition:opacity .15s,box-shadow .15s;box-shadow:0 2px 8px rgba(13,79,60,.25); }
         .report-btn:hover { opacity: .85; }
+        .report-context-toggle { position:relative;display:flex;align-items:center;gap:6px;cursor:pointer;user-select:none;font-family:'DM Sans',sans-serif; }
+        .report-context-toggle input { position:absolute;opacity:0;width:0;height:0; }
+        .report-context-track { position:relative;width:28px;height:16px;border-radius:999px;background:#d7dbea;transition:background .15s;flex-shrink:0; }
+        .report-context-thumb { position:absolute;top:2px;left:2px;width:12px;height:12px;border-radius:50%;background:#fff;box-shadow:0 1px 2px rgba(0,0,0,.25);transition:transform .15s; }
+        .report-context-toggle input:checked + .report-context-track { background:#0d4f3c; }
+        .report-context-toggle input:checked + .report-context-track .report-context-thumb { transform:translateX(12px); }
+        .report-context-toggle input:focus-visible + .report-context-track { outline:2px solid #1a1f4e;outline-offset:2px; }
+        .report-context-label { font-size:clamp(10px,.85vw,11px);color:#5a6178; }
         .report-body { margin-top:8px;background:#f8f9fc;border:1px solid #e2e6f0;border-radius:12px;padding:clamp(10px,2vw,18px);max-height:clamp(280px,40vh,560px);overflow-y:auto; }
         .report-loading { display:flex;align-items:center;gap:8px;font-size:12px;color:#8b93b5;font-family:'DM Sans',sans-serif; }
         .dots { display:inline-flex;gap:4px; }
@@ -2329,8 +2355,13 @@ export default function GrowthGradualChat() {
                             dangerouslySetInnerHTML={{ __html: msg.text.replace(/\n/g,'<br/>') }}
                           />
                         ) : (() => {
-                          const parts = splitTextAndCharts(msg.text);
-                          // Only bother splitting if there are actual charts
+                          // Only swap a markdown table for a rendered chart when the
+                          // user's question actually asked for one (chart/graph/plot/
+                          // visualize). Otherwise a "give me a table" request would
+                          // silently lose its table and show a bar chart instead —
+                          // respect what was asked for; the table itself renders fine
+                          // via renderMd()'s <table class="md-table"> handling.
+                          const parts = msg.wantsVisual ? splitTextAndCharts(msg.text) : [];
                           const hasCharts = parts.some(p => p.type === 'chart');
                           const hasInlineCharts = (msg.inlineCharts ?? []).length > 0;
                           return (
@@ -2366,14 +2397,19 @@ export default function GrowthGradualChat() {
                         {!isUser && (msg.reportEligible || msg.reportLoading || msg.reportData) && (
                           <ReportPanel
                             msg={msg}
-                            question={msg.text.slice(0,300)}
-                            onGenerate={() => {
-                              // Build conversation context from all prior messages in this thread
-                              const conversationContext = messages
-                                .slice(0, i) // all messages before this one
-                                .filter(m => m.text && m.text.trim())
-                                .map(m => `${m.role === 'user' ? 'User' : 'Assistant'}: ${m.text.slice(0, 800)}`)
-                                .join('\n\n');
+                            question={msg.reportQuestion ?? msg.text}
+                            hasPriorContext={i > 0}
+                            onGenerate={(includeContext) => {
+                              // Build conversation context from all prior messages in this thread —
+                              // only when the toggle is on (it's hidden/defaults false for the
+                              // very first response, since there's nothing prior to include).
+                              const conversationContext = includeContext
+                                ? messages
+                                    .slice(0, i) // all messages before this one
+                                    .filter(m => m.text && m.text.trim())
+                                    .map(m => `${m.role === 'user' ? 'User' : 'Assistant'}: ${m.text.slice(0, 800)}`)
+                                    .join('\n\n')
+                                : '';
                               generateReport(
                                 msg.id,
                                 msg.reportQuestion ?? msg.text,
