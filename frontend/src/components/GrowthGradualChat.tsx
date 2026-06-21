@@ -103,12 +103,25 @@ function saveConversations(convs: Conversation[]) {
 // ─── Markdown renderer ────────────────────────────────────────────────────────
 function renderMd(text: string): string {
   return text
+    // Normalize line endings, strip trailing spaces, and collapse runs of 3+
+    // blank lines (common in LLM output) down to a single blank line so we
+    // don't end up stacking extra empty paragraphs / gaps before tables etc.
+    .replace(/\r\n/g, '\n')
+    .replace(/[ \t]+$/gm, '')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim()
     .replace(/^### (.+)$/gm, '<h3 class="md-h3">$1</h3>')
     .replace(/^## (.+)$/gm,  '<h2 class="md-h2">$1</h2>')
     .replace(/^# (.+)$/gm,   '<h1 class="md-h1">$1</h1>')
     .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
     .replace(/\*(.+?)\*/g, '<em>$1</em>')
     .replace(/`([^`]+)`/g, '<code class="md-code">$1</code>')
+    // Collapse any blank line(s) sitting directly above a table into a
+    // single newline, so the paragraph-break logic below doesn't insert a
+    // stray empty <p> right before the <table> (the line break itself must
+    // stay, since the per-line table-row regex below needs each row to
+    // start at the beginning of a line).
+    .replace(/\n{2,}(?=\|.+\|\n\|[\s|:-]+\|)/g, '\n')
     .replace(/^\|(.+)\|$/gm, (row) => {
       if (/^[\s|:-]+$/.test(row)) return '<!--sep-->';
       const cells = row.split('|').filter(Boolean).map(c => `<td class="md-td">${c.trim()}</td>`).join('');
@@ -118,11 +131,18 @@ function renderMd(text: string): string {
       /((?:<tr>.*?<\/tr>\n?))(<!--sep-->\n)?((?:<tr>.*?<\/tr>\n?)*)/gs,
       (_: string, firstRow: string, sep: string, restRows: string) => {
         if (!firstRow.trim()) return _;
+        // The optional trailing \n? in each repeated group gets captured as
+        // part of the group text itself (regex groups don't "consume and
+        // discard" — whatever they match is included). Strip those here so
+        // they don't survive into the table HTML and later get turned into
+        // stray <br/> tags by the \n → <br/> pass below.
+        const cleanFirst = firstRow.replace(/\n/g, '');
+        const cleanRest = restRows.replace(/\n/g, '');
         if (sep) {
-          const head = firstRow.replace(/<td class="md-td">/g, '<th class="md-th">').replace(/<\/td>/g, '<\/th>');
-          return `<table class="md-table"><thead>${head}<\/thead><tbody>${restRows}<\/tbody><\/table>`;
+          const head = cleanFirst.replace(/<td class="md-td">/g, '<th class="md-th">').replace(/<\/td>/g, '<\/th>');
+          return `<table class="md-table"><thead>${head}<\/thead><tbody>${cleanRest}<\/tbody><\/table>`;
         }
-        return `<table class="md-table"><tbody>${firstRow}${restRows}<\/tbody><\/table>`;
+        return `<table class="md-table"><tbody>${cleanFirst}${cleanRest}<\/tbody><\/table>`;
       }
     )
     .replace(/^\s*[-*+]\s+(.+)$/gm, '<li class="md-li">$1</li>')
@@ -131,7 +151,20 @@ function renderMd(text: string): string {
     .replace(/\n\n/g, '</p><p class="md-p">')
     .replace(/\n/g, '<br/>')
     .replace(/^(?!<)/, '<p class="md-p">')
-    .replace(/(?<!>)$/, '</p>');
+    .replace(/(?<!>)$/, '</p>')
+    // <table>/<ul>/<h1-3> are block-level elements that browsers refuse to
+    // nest inside <p>, which silently mangles the DOM (auto-closing the <p>
+    // and re-opening a new, often-empty one) and shows up as a big visual
+    // gap. Unwrap any paragraph tags that ended up wrapping these blocks.
+    .replace(/<p class="md-p">(\s|<br\/>)*(<table|<ul|<h[123])/g, '$2')
+    .replace(/(<\/table>|<\/ul>|<\/h[123]>)(\s|<br\/>)*<\/p>/g, '$1')
+    // A stray <br/> can also end up directly in front of a block element
+    // even when it's not at the very start of the paragraph (e.g. "Here's
+    // the data:<br/><table>...") — drop it, since the block element forces
+    // its own line break anyway.
+    .replace(/(?:<br\/>)+(?=<table|<ul|<h[123])/g, '')
+    // Clean up any empty paragraphs left behind by the above.
+    .replace(/<p class="md-p">(\s|<br\/>)*<\/p>/g, '');
 }
 
 // ─── Inline chart extraction from markdown tables ─────────────────────────────
@@ -771,12 +804,46 @@ function ReportPanel({ msg, question, hasPriorContext, onGenerate }: { msg: Mess
                   ))}
                 </div>
               )}
-              {rd.charts.length > 0 && (
-                <div className="charts-grid">
-                  {rd.charts.map((c,i) => <ChartBlock key={i} spec={c}/>)}
-                </div>
-              )}
-              <div dangerouslySetInnerHTML={{ __html: renderMd(rd.report) }}/>
+              {/* Render report text with charts interleaved at [CHART_n] placeholders */}
+              {rd.charts.length > 0
+                ? (() => {
+                    // Split report on [CHART_1], [CHART_2], … placeholders
+                    const parts = rd.report.split(/\[CHART_(\d+)\]/gi);
+                    // parts alternates: text, chartIndex, text, chartIndex, …
+                    return (
+                      <>
+                        {parts.map((part, idx) => {
+                          if (idx % 2 === 0) {
+                            // Text segment — render as markdown (skip if empty)
+                            return part.trim()
+                              ? <div key={idx} dangerouslySetInnerHTML={{ __html: renderMd(part) }}/>
+                              : null;
+                          } else {
+                            // Chart placeholder — part is the captured digit(s)
+                            const chartIdx = parseInt(part, 10) - 1; // [CHART_1] → index 0
+                            const spec = rd.charts[chartIdx];
+                            return spec
+                              ? <div key={idx} className="inline-report-chart"><ChartBlock spec={spec}/></div>
+                              : null;
+                          }
+                        })}
+                        {/* Fallback: any charts not referenced by a placeholder */}
+                        {rd.charts
+                          .filter((_, ci) => {
+                            const placeholderRe = new RegExp(`\\[CHART_${ci + 1}\\]`, 'i');
+                            return !placeholderRe.test(rd.report);
+                          })
+                          .map((c, i) => (
+                            <div key={`fallback-${i}`} className="inline-report-chart">
+                              <ChartBlock spec={c}/>
+                            </div>
+                          ))
+                        }
+                      </>
+                    );
+                  })()
+                : <div dangerouslySetInnerHTML={{ __html: renderMd(rd.report) }}/>
+              }
             </div>
           </div>
         )}
@@ -1874,6 +1941,7 @@ export default function GrowthGradualChat() {
         .report-wrap { margin-top: 7px; }
         .inline-chart-wrap { margin: 10px 0; background: #f8f9fc; border-radius: 10px; border: 1px solid #e2e6f0; padding: 4px 6px 6px; overflow: hidden; }
         .inline-chart-wrap .chart-wrap { margin: 0; background: transparent; border: none; box-shadow: none; padding: 4px 0 0; }
+        .inline-report-chart { margin: 18px 0; }
         .inline-charts-section { margin-bottom: 10px; border: 1px solid #e2e6f0; border-radius: 12px; overflow: hidden; background: #f8f9fc; }
         .inline-charts-label { padding: 7px 12px 4px; font-size: 10px; font-weight: 700; color: #8b93b5; text-transform: uppercase; letter-spacing: .06em; font-family: 'DM Sans',sans-serif; }
         .inline-charts-section .charts-grid { padding: 0 6px 8px; gap: 8px; }
