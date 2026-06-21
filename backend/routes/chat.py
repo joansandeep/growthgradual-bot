@@ -247,23 +247,47 @@ async def _store_image_extractions(
                     log.warning("Supabase _store_image_extractions upsert failed: %s", exc)
 
 # ─── Domain lists ──────────────────────────────────────────────────────────────
-FINANCE_DOMAINS = [
-    # Indian finance — reliable scrapers
-    "economictimes.indiatimes.com", "livemint.com", "business-standard.com",
-    "ndtvprofit.com", "cnbctv18.com", "financialexpress.com",
-    "thehindubusinessline.com", "zeebiz.com", "outlookbusiness.com",
-    "moneycontrol.com", "bseindia.com", "nseindia.com",
-    "screener.in", "tickertape.in", "equitymaster.com",
-    "cafemutual.com", "amfiindia.com", "capitalmarket.com",
-    # MF / SIP data
-    "groww.in", "etmoney.com", "paytmmoney.com", "kuvera.in",
-    "mfuindia.com", "advisorkhoj.com",
-    # Global reliable
-    "reuters.com", "cnbc.com", "marketwatch.com",
-    "investing.com", "tradingeconomics.com",
-    "rbi.org.in", "sebi.gov.in",
-    "forbes.com", "businessinsider.com",
+# Curated 60-source list, split into 3 groups of 20 — one group per Tavily key
+# (TAVILY_API_KEY env var, keys[0:3]). Each group is searched in parallel with
+# include_domains restricted to just that group, so 3 keys × 20 results = up to
+# 60 trusted results per query. keys[3:5] are reserved as a general/unrestricted
+# fallback — see tavily_search() below.
+TAVILY_DOMAIN_GROUP_1 = [
+    "moneycontrol.com", "valueresearchonline.com", "mutualfundssahihai.com",
+    "thehindubusinessline.com", "livemint.com", "icicipruamc.com",
+    "mutualfund.adityabirlacapital.com", "mf.nipponindiaim.com", "dspim.com",
+    "cmie.com", "crisil.com", "careedge.in",
+    "investing.com", "tradingeconomics.com", "equitymaster.com",
+    "screener.in", "trendlyne.com", "tickertape.in",
+    "economictimes.indiatimes.com", "financialexpress.com",
 ]
+
+TAVILY_DOMAIN_GROUP_2 = [
+    "bloomberg.com", "reuters.com", "finance.yahoo.com",
+    "marketwatch.com", "morningstar.in", "bseindia.com",
+    "nseindia.com", "sebi.gov.in", "rbi.org.in",
+    "investopedia.com", "livecharts.co.uk", "stockedge.com",
+    "simplywall.st", "macrotrends.net", "tradingview.com",
+    "zerodha.com", "groww.in", "upstox.com",
+    "angelone.in", "kotaksecurities.com",
+]
+
+TAVILY_DOMAIN_GROUP_3 = [
+    "hdfcsec.com", "motilaloswal.com", "sharekhan.com",
+    "icicidirect.com", "moneylife.in", "dsij.in",
+    "seekingalpha.com", "gurufocus.com", "finology.in",
+    "alphaspread.com", "koyfin.com", "fred.stlouisfed.org",
+    "worldbank.org", "imf.org", "oecd.org",
+    "statista.com", "rediff.com", "indiainfoline.com",
+    "indiabudget.gov.in",
+]
+
+TAVILY_CURATED_DOMAIN_GROUPS = [
+    TAVILY_DOMAIN_GROUP_1, TAVILY_DOMAIN_GROUP_2, TAVILY_DOMAIN_GROUP_3,
+]
+
+# Kept for the non-finance / <5-key fallback path (see tavily_search)
+FINANCE_DOMAINS = TAVILY_DOMAIN_GROUP_1 + TAVILY_DOMAIN_GROUP_2 + TAVILY_DOMAIN_GROUP_3
 
 GENERAL_DOMAINS = [
     "reuters.com", "apnews.com", "bbc.com", "theguardian.com", "nytimes.com",
@@ -402,6 +426,51 @@ def classify_query(msg: str) -> str:
     return "finance" if any(t in m for t in FINANCE_TERMS) else "general"
 
 
+# ─── Country detection for Tavily's `country` boost param ──────────────────
+# Tavily docs: country boosts ranking toward that country's sources, but is
+# "available only if topic is general" — it's a no-op when topic="finance"
+# (which is what most queries here use). We still set it on every call so it
+# takes effect for non-finance queries, and so geographic bias is correct if
+# Tavily lifts that restriction later. For finance-topic queries, geographic
+# relevance still comes from which curated TAVILY_DOMAIN_GROUP gets hit.
+GLOBAL_TERMS = [
+    "globally", "global", "worldwide", "world", "international",
+    "around the world", "across the world", "all countries", "every country",
+]
+
+# country name -> Tavily country value. Add more as needed; keep keys lowercase.
+COUNTRY_ALIASES: dict[str, list[str]] = {
+    "india":           ["india", "indian", "bharat", "rupee", "inr", " rbi", "sebi", "nse", "bse", "nifty", "sensex"],
+    "united kingdom":  ["uk", "u.k.", "united kingdom", "britain", "british", "england", "scotland",
+                         "wales", "pound sterling", "gbp", "ftse", "lse", "bank of england"],
+    "united states":   ["usa", "u.s.", "u.s.a.", "united states", "america", "american",
+                         "nasdaq", "dow jones", "s&p 500", "wall street", "federal reserve", " fed ", "dollar"],
+    "canada":          ["canada", "canadian", "tsx"],
+    "australia":       ["australia", "australian", "asx"],
+    "singapore":       ["singapore", "sgx"],
+    "japan":           ["japan", "japanese", "nikkei", "yen"],
+    "china":           ["china", "chinese", "yuan", "shanghai composite", "shenzhen"],
+    "germany":         ["germany", "german", "dax"],
+    "france":          ["france", "french", "cac 40"],
+    "united arab emirates": ["uae", "dubai", "abu dhabi", "emirates"],
+}
+
+
+def detect_country(query: str) -> str | None:
+    """
+    "" / no mention             -> "india" (default)
+    explicit country mentioned  -> that country's Tavily value
+    "global"/"world"/"worldwide"-> None (no country bias — search everything)
+    """
+    q = f" {query.lower()} "
+    if any(term in q for term in GLOBAL_TERMS):
+        return None
+    for country, keywords in COUNTRY_ALIASES.items():
+        if any(kw in q for kw in keywords):
+            return country
+    return "india"
+
+
 _FILE_INTENT_RE = re.compile(
     r"""\b(explain|summaris[e]?|summariz[e]?|describe|analys[e]?|analyz[e]?|read|
     translate|what.s|tell\sme|extract|find|list|show|convert|interpret|transcribe|
@@ -512,19 +581,108 @@ def _clean_result_content(r: dict) -> dict:
     return r
 
 
+async def _tavily_one_call(
+    key: str, query: str, domains: list[str] | None, max_results: int, qtype: str,
+    country: str | None = "india",
+) -> list[dict]:
+    """
+    One Tavily SDK call on a single key. domains=None means no include_domains
+    restriction (used for the 2 general/fallback keys). country=None means no
+    geographic boost (used for "globally"/"world" style queries). Returns []
+    on any failure — caller decides what to do with a thin/empty result.
+    """
+    try:
+        from tavily import AsyncTavilyClient
+    except ImportError:
+        return await _tavily_search_httpx_fallback(query, max_results, domains or GENERAL_DOMAINS, qtype)
+
+    if is_rate_limited(key):
+        return []
+
+    try:
+        client = AsyncTavilyClient(api_key=key)
+        search_kwargs: dict = {
+            "query": query,
+            "search_depth": "advanced",
+            "max_results": max_results,
+            "chunks_per_source": 3,
+            "include_answer": "advanced",
+            "include_raw_content": True,
+            "include_images": False,
+            "include_image_descriptions": False,
+            "include_favicon": False,
+        }
+        if country:
+            search_kwargs["country"] = country
+        if domains:
+            search_kwargs["include_domains"] = domains
+        if qtype == "finance":
+            search_kwargs["topic"] = "finance"
+
+        data = await client.search(**search_kwargs)
+        raw_results = data.get("results") or []
+
+        results: list[dict] = []
+        for r in raw_results:
+            chunks = r.get("chunks") or []
+            chunk_text = "\n\n".join(c.get("content", "") for c in chunks if c.get("content"))
+            raw_content = chunk_text or r.get("raw_content") or r.get("content") or ""
+            results.append({
+                "title":       r.get("title", ""),
+                "url":         r.get("url", ""),
+                "snippet":     r.get("content", "")[:800],
+                "fullContent": raw_content[:5000],
+                "score":       r.get("score"),
+                "published":   r.get("published_date"),
+            })
+        return [_clean_result_content(r) for r in results]
+
+    except Exception as exc:
+        err_str = str(exc).lower()
+        if "429" in err_str or "rate" in err_str:
+            log.warning("Tavily 429/rate-limit on key ...%s — backing off 60s", key[-4:])
+            mark_rate_limited(key, 60_000)
+        elif "401" in err_str or "403" in err_str or "invalid" in err_str:
+            log.warning("Tavily auth error on key ...%s — banning 24h", key[-4:])
+            mark_rate_limited(key, 24 * 60 * 60_000)
+        else:
+            log.warning("Tavily exception key ...%s: %s", key[-4:], exc)
+        return []
+
+
+async def _enrich_thin_results(results: list[dict]) -> list[dict]:
+    """Fetch full page content for results whose fullContent is still thin."""
+    async def _passthrough(val: str) -> str:
+        return val
+
+    enrich_tasks = [
+        fetch_page_content(r["url"], 3000)
+        if len(r.get("fullContent", "")) < 500 else _passthrough(r.get("fullContent", ""))
+        for r in results
+    ]
+    extra_contents = await asyncio.gather(*enrich_tasks, return_exceptions=True)
+    for i, r in enumerate(results):
+        extra = extra_contents[i] if not isinstance(extra_contents[i], Exception) else ""
+        if isinstance(extra, str) and len(extra) > len(r.get("fullContent", "")):
+            r["fullContent"] = extra
+    return results
+
+
 async def tavily_search(query: str, max_results: int = 20, min_results: int = 10) -> list[dict]:
     """
-    Search via the official tavily-python SDK.
+    5-key fan-out search.
 
-    Key params used:
-      search_depth="advanced"     — deeper crawl, more content per source
-      chunks_per_source=3         — up to 3 content chunks per page (SDK feature)
-      include_answer="advanced"   — pre-synthesized answer injected as result[0]
-      include_raw_content=True    — full page text (not just snippet)
-      country="india"             — biases Tavily's ranking toward Indian sources
-      topic="finance"             — activates Tavily's finance-optimised index
-      max_results=20              — Tavily plan cap; playground confirms 20 max_results;
-                                    asking for more wastes quota without extra results (verified in API Playground)
+    keys[0:3] — one call each, restricted to TAVILY_DOMAIN_GROUP_1/2/3
+                (curated trusted-source list, 20 domains each). Run in
+                parallel → up to 60 deduped "trusted_source": True results.
+    keys[3:5] — unrestricted/general web search, used only when the trusted
+                group didn't clear `min_results`. Their results are tagged
+                "trusted_source": False so the report layer can flag them as
+                outside the curated list rather than silently mixing them in.
+
+    Falls back to the old single-key round-robin behaviour (one call, one
+    domain list) if fewer than 5 keys are configured, or for non-finance
+    queries where the curated finance source list doesn't apply.
     """
     keys = get_tavily_keys()
     if not keys:
@@ -532,8 +690,6 @@ async def tavily_search(query: str, max_results: int = 20, min_results: int = 10
         return []
 
     # Tavily hard-caps query length at 400 chars — truncate on a word boundary
-    # so long user messages (which skip the LLM rewrite above 180 chars) don't
-    # get rejected outright and burn through every key before falling back.
     TAVILY_MAX_QUERY_LEN = 400
     if len(query) > TAVILY_MAX_QUERY_LEN:
         truncated = query[:TAVILY_MAX_QUERY_LEN].rsplit(" ", 1)[0]
@@ -541,114 +697,59 @@ async def tavily_search(query: str, max_results: int = 20, min_results: int = 10
         query = truncated
 
     qtype = classify_query(query)
-    domains = FINANCE_DOMAINS if qtype == "finance" else GENERAL_DOMAINS
-    log.info("Tavily search (SDK): query=%r  type=%s  max_results=%d", query[:60], qtype, max_results)
+    country = detect_country(query)
+    log.info("Tavily country resolved: %r (qtype=%s)", country, qtype)
     t0 = time.perf_counter()
 
-    # Import here so the module works even if tavily-python isn't installed yet
-    try:
-        from tavily import AsyncTavilyClient
-    except ImportError:
-        log.warning("tavily-python not installed — falling back to httpx REST call")
-        return await _tavily_search_httpx_fallback(query, max_results, domains, qtype)
+    if qtype == "finance" and len(keys) >= 5:
+        domain_keys, general_keys = keys[:3], keys[3:5]
+
+        domain_lists = await asyncio.gather(*[
+            _tavily_one_call(domain_keys[i], query, TAVILY_CURATED_DOMAIN_GROUPS[i], max_results, qtype, country)
+            for i in range(3)
+        ])
+
+        seen_urls: set[str] = set()
+        trusted: list[dict] = []
+        for res in domain_lists:
+            for r in res:
+                if r["url"] and r["url"] not in seen_urls:
+                    seen_urls.add(r["url"])
+                    r["trusted_source"] = True
+                    trusted.append(r)
+
+        general: list[dict] = []
+        if len(trusted) < min_results:
+            log.info("Tavily curated groups returned %d (< min %d) — adding general fallback keys",
+                      len(trusted), min_results)
+            general_lists = await asyncio.gather(*[
+                _tavily_one_call(k, query, None, max_results, qtype, country) for k in general_keys
+            ])
+            for res in general_lists:
+                for r in res:
+                    if r["url"] and r["url"] not in seen_urls:
+                        seen_urls.add(r["url"])
+                        r["trusted_source"] = False
+                        general.append(r)
+
+        combined = await _enrich_thin_results(trusted + general)
+        elapsed = (time.perf_counter() - t0) * 1000
+        log.info("Tavily 5-key fan-out done: %d trusted + %d general = %d total in %.0fms",
+                  len(trusted), len(general), len(combined), elapsed)
+        return combined
+
+    # ── Fallback: <5 keys configured, or non-finance query ──────────────────
+    domains = FINANCE_DOMAINS if qtype == "finance" else GENERAL_DOMAINS
+    log.info("Tavily search (single-key fallback): query=%r  type=%s  max_results=%d",
+              query[:60], qtype, max_results)
 
     for key in round_robin(keys):
-        if is_rate_limited(key):
-            continue
-        try:
-            client = AsyncTavilyClient(api_key=key)
-
-            search_kwargs: dict = {
-                "query": query,
-                "search_depth": "advanced",
-                "max_results": max_results,          # reliable cap for all plan tiers
-                "chunks_per_source": 3,              # 3 content chunks per page
-                "include_answer": "advanced",        # synthesized answer as bonus context
-                "include_raw_content": True,         # full page text
-                "include_images": False,             # not needed for text chat
-                "include_image_descriptions": False,
-                "include_favicon": False,
-                "country": "india",                  # bias toward Indian sources
-                "include_domains": domains,
-            }
-            if qtype == "finance":
-                search_kwargs["topic"] = "finance"   # Tavily finance index
-
-            data = await client.search(**search_kwargs)
-
-            results: list[dict] = []
-
-            # Tavily SDK returns a dict with "results" list + optional "answer"
-            raw_results = data.get("results") or []
-
-            # NOTE: Tavily's synthesized "answer" field is intentionally NOT added
-            # as a virtual result here. It used to be appended with title
-            # "Tavily Answer: ..." and url "https://tavily.com", which the report
-            # LLM would then cite as if it were a real publication (e.g.
-            # "[1] Tavily. Top banking stocks. https://tavily.com" showing up in
-            # the References section). Tavily is our internal search provider,
-            # not a citable source, so we drop the synthesized answer and rely
-            # on the individual real results below for substance.
-
-            for r in raw_results:
-                # chunks_per_source gives us r["chunks"] — concatenate them
-                chunks = r.get("chunks") or []
-                chunk_text = "\n\n".join(
-                    c.get("content", "") for c in chunks if c.get("content")
-                )
-                raw_content = (
-                    chunk_text
-                    or r.get("raw_content")
-                    or r.get("content")
-                    or ""
-                )
-                results.append({
-                    "title":       r.get("title", ""),
-                    "url":         r.get("url", ""),
-                    "snippet":     r.get("content", "")[:800],
-                    "fullContent": raw_content[:5000],
-                    "score":       r.get("score"),
-                    "published":   r.get("published_date"),
-                })
-
-            results = [_clean_result_content(r) for r in results]
-
-            if len(results) < min_results:
-                log.info(
-                    "Tavily SDK: %d results (target min=%d) — keeping domain filter",
-                    len(results), min_results,
-                )
-
-            # Enrich results that still have thin content (< 500 chars)
-            async def _passthrough(val: str) -> str:
-                return val
-
-            enrich_tasks = [
-                fetch_page_content(r["url"], 3000)
-                if len(r.get("fullContent", "")) < 500 else _passthrough(r.get("fullContent", ""))
-                for r in results
-            ]
-            extra_contents = await asyncio.gather(*enrich_tasks, return_exceptions=True)
-            for i, r in enumerate(results):
-                extra = extra_contents[i] if not isinstance(extra_contents[i], Exception) else ""
-                if isinstance(extra, str) and len(extra) > len(r.get("fullContent", "")):
-                    r["fullContent"] = extra
-
+        results = await _tavily_one_call(key, query, domains, max_results, qtype, country)
+        if results:
+            results = await _enrich_thin_results(results)
             elapsed = (time.perf_counter() - t0) * 1000
-            log.info("Tavily SDK done: %d results in %.0fms", len(results), elapsed)
+            log.info("Tavily fallback done: %d results in %.0fms", len(results), elapsed)
             return results
-
-        except Exception as exc:
-            err_str = str(exc).lower()
-            if "429" in err_str or "rate" in err_str:
-                log.warning("Tavily SDK 429/rate-limit on key ...%s — backing off 60s", key[-4:])
-                mark_rate_limited(key, 60_000)
-            elif "401" in err_str or "403" in err_str or "invalid" in err_str:
-                log.warning("Tavily SDK auth error on key ...%s — banning 24h", key[-4:])
-                mark_rate_limited(key, 24 * 60 * 60_000)
-            else:
-                log.warning("Tavily SDK exception key ...%s: %s", key[-4:], exc)
-            continue
 
     log.error("Tavily: all keys exhausted or failed — trying httpx fallback")
     return await _tavily_search_httpx_fallback(query, max_results, domains, qtype)
@@ -793,6 +894,7 @@ You specialise in NSE/BSE stocks, IPOs, mutual funds, RBI/SEBI policy, macroecon
 - Close out market-specific answers with a quick, natural reminder to verify live prices before trading — phrase it like a person would, not a fixed disclaimer line repeated verbatim every time.
 
 **Charts and tables:**
+- Default to a markdown table — not prose paragraphs — whenever the answer is a set of 2+ comparable items each with the same few numeric fields: market summaries (index levels + % change), top gainers/losers, multiple stock/fund quotes, earnings figures across companies, etc. This applies even if the user didn't explicitly say "table" — e.g. "latest market news" or "top gainers today" should come back as a table of name/price/change, not a paragraph narrating the same numbers. Add 1-2 sentences of context above or below the table, not instead of it.
 - If the user explicitly asks for a chart, graph, plot, or to "visualize" something, give the underlying numbers as a clean markdown table (proper header row + separator row) so it can be rendered as a chart — don't just describe the trend in prose. Use real, distinct numeric values across at least 2 rows/columns; a chart needs actual data points to plot.
 - If the user explicitly asks for a table, give exactly one markdown table — don't also restate the same numbers as a bullet list right after it. Pick one format.
 - Don't repeat a table's figures again in a separate paragraph below it; reference the table instead (e.g. "as the numbers above show...")."""
@@ -812,6 +914,7 @@ You specialise in NSE/BSE stocks, IPOs, mutual funds, RBI/SEBI policy, macroecon
 - Be thorough, accurate, and helpful. Where relevant, connect the topic back to financial or economic context.
 
 **Charts and tables:**
+- Default to a markdown table — not prose paragraphs — whenever the answer is a set of 2+ comparable items each with the same few numeric fields, even if the user didn't explicitly say "table." Add 1-2 sentences of context above or below it, not instead of it.
 - If the user explicitly asks for a chart, graph, plot, or to "visualize" something, give the underlying numbers as a clean markdown table (proper header row + separator row) so it can be rendered as a chart — don't just describe the trend in prose.
 - If the user explicitly asks for a table, give exactly one markdown table — don't also restate the same numbers as a bullet list right after it."""
 

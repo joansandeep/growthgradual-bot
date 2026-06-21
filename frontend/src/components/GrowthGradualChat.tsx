@@ -2398,7 +2398,7 @@ export default function GrowthGradualChat() {
                           <ReportPanel
                             msg={msg}
                             question={msg.reportQuestion ?? msg.text}
-                            hasPriorContext={i > 0}
+                            hasPriorContext={i > 1}
                             onGenerate={(includeContext) => {
                               // Build conversation context from all prior messages in this thread —
                               // only when the toggle is on (it's hidden/defaults false for the
