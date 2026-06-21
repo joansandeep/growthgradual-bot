@@ -31,7 +31,7 @@ You MUST respond with valid JSON only — no markdown fences, no preamble, no te
 
 Respond with EXACTLY this shape:
 {
-  "title": "<concise NOUN-PHRASE report title, max 12 words. Examples: 'Top Banking Stocks India 2026', 'Indian Mutual Fund SIP Returns Analysis', 'HDFC vs ICICI Bank Comparison'. STRICT RULES: NEVER start with 'So', 'You', 'I', 'Let's', 'Here', 'Based', 'Looking', 'Understanding', 'A look at', 'An analysis of', or any verb/pronoun. NEVER write a full sentence — this includes sentences that don't start with one of those words too, e.g. BAD: 'The Minimum Investment Amounts For These Top-Performing SIPs Are As Follows' (full sentence, ends mid-thought) → GOOD: 'Top-Performing SIP Funds — Minimum Investment Requirements'. Never end a title with a colon or with 'as follows' — those introduce a sentence, not a heading. ALWAYS write a noun phrase — topic first, qualifiers after.>",
+  "title": "<concise NOUN-PHRASE report title, max 12 words. Examples: 'Top Banking Stocks India 2026', 'Indian Mutual Fund SIP Returns Analysis', 'HDFC vs ICICI Bank Comparison', 'Nifty 50 Market Outlook — June 2026'. STRICT RULES: NEVER start with 'So', 'You', 'I', 'Let's', 'Here', 'Based', 'Looking', 'Understanding', 'A look at', 'An analysis of', or any verb/pronoun. NEVER start with 'The' followed by a verb — e.g. BAD: 'The Nifty outlook today is mixed, with some analysts predicting...' (full sentence starting with The) → GOOD: 'Nifty 50 Outlook — Mixed Signals Amid Volatility'. NEVER write a full sentence — this includes sentences that don't start with one of those words too, e.g. BAD: 'The Minimum Investment Amounts For These Top-Performing SIPs Are As Follows' → GOOD: 'Top-Performing SIP Funds — Minimum Investment Requirements'. Never end a title with a colon, 'as follows', or '...' — those signal an incomplete sentence, not a heading. ALWAYS write a noun phrase — topic first, qualifiers after.>",
   "report": "<full markdown report — target 1000-1400 words, structured and data-rich>",
   "charts": [...],
   "keyStats": [{ "label": "<short label>", "value": "<value string>", "change": "<+/- % or empty string>" }],
@@ -279,17 +279,21 @@ _TITLE_PREAMBLE_RE = re.compile(
     r"let'?s\s+(?:look|explore|dive|examine)|here'?s?\s+(?:a|an|the|your)|based\s+on|"
     r"according\s+to|as\s+per|in\s+light\s+of|"
     r"looking\s+at|looking\s+for|exploring|understanding|a\s+look\s+at|an?\s+(?:analysis|overview|in-depth|deep|guide)\s+of|"
-    r"the\s+following|below\s+(?:is|are))",
+    r"the\s+following|below\s+(?:is|are)|"
+    # Catch "The X is/are/was/were/has/have/will/would/could/should/may/might ..."
+    r"the\s+\w+(?:\s+\w+){0,4}\s+(?:is|are|was|were|has|have|will|would|could|should|may|might)\s)",
     re.IGNORECASE,
 )
 
 # Catches full-sentence titles that don't start with one of the preamble
 # phrases above but still read as a sentence rather than a noun phrase —
 # e.g. "The minimum investment amounts ... are as follows", or anything
-# ending in a colon (which always introduces a sentence, not a heading).
+# ending in a colon (which always introduces a sentence, not a heading),
+# or ending with "..." / "…" (truncated LLM sentence used as title).
 _TITLE_SENTENCE_RE = re.compile(
     r"(:\s*$|\bas\s+follows\s*$|\b(?:are|is|were|have\s+been|has\s+been)\s+"
-    r"(?:as\s+follows|below|here|outlined|shown|listed|summarized|summarised)\b)",
+    r"(?:as\s+follows|below|here|outlined|shown|listed|summarized|summarised)\b|"
+    r"\.{3}\s*$|…\s*$|,\s+with\s+[a-z]|,\s+as\s+[a-z]|,\s+while\s+[a-z])",
     re.IGNORECASE,
 )
 
