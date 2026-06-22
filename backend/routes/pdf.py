@@ -632,10 +632,22 @@ def _pie(c, spec, x0, y0, w, h):
 
 
 def _datawrapper_image(c, spec, x0, y0, w, h):
-    """Draw a fetched Datawrapper PNG export, scaled to fit the card, centred."""
+    """Draw a fetched Datawrapper PNG export, scaled to fit the card, centred.
+
+    Falls back to the native renderer if pngBytes is missing, corrupt, or not
+    a valid PNG (e.g. a JSON status object returned while Datawrapper was still
+    rendering the export).
+    """
     from reportlab.lib.utils import ImageReader
     png_bytes = (spec.get("datawrapper") or {}).get("pngBytes")
     if not png_bytes:
+        return False
+    # Reject non-PNG payloads (JSON status objects, HTML error pages, etc.)
+    if not isinstance(png_bytes, (bytes, bytearray)) or png_bytes[:4] != b"\x89PNG":
+        log.warning(
+            "Datawrapper pngBytes for chart %r is not a valid PNG (%d bytes, starts %r) — using native renderer",
+            spec.get("title", "?"), len(png_bytes), png_bytes[:16],
+        )
         return False
     try:
         img = ImageReader(io.BytesIO(png_bytes))
@@ -980,49 +992,6 @@ def build_pdf(report: str, title: str, question: str, summary: str,
             tly -= 16
 
     ty -= PANEL_H + 20
-
-    # ── Key stats cards row ───────────────────────────────────────────────────
-    if key_stats:
-        stats    = key_stats[:4]
-        n_cards  = len(stats)
-        gap      = 8
-        card_w   = (CW - gap * (n_cards - 1)) / n_cards
-        CARD_H   = 62
-        BAR_H    = 4
-
-        for i, st in enumerate(stats):
-            sx       = MARGIN + i * (card_w + gap)
-            card_bot = ty - CARD_H
-            card_top = ty
-
-            c.setFillColorRGB(*LIGHT)
-            c.roundRect(sx, card_bot, card_w, CARD_H, 4, fill=1, stroke=0)
-            c.setStrokeColorRGB(0.84, 0.87, 0.94)
-            c.roundRect(sx, card_bot, card_w, CARD_H, 4, fill=0, stroke=1)
-            c.setFillColorRGB(*GOLD)
-            c.rect(sx, card_top - BAR_H, card_w, BAR_H, fill=1, stroke=0)
-
-            label    = _safe_text(st.get("label", "")).upper()
-            lbl_w    = card_w - 16
-            lbl_lines = _wrap(c, label, "Helvetica", 6.5, lbl_w)
-            c.setFillColorRGB(*GREY); c.setFont("Helvetica", 6.5)
-            lbl_top = card_top - BAR_H - 9
-            for li, ll in enumerate(lbl_lines[:2]):
-                c.drawString(sx + 8, lbl_top - li * 9, ll)
-
-            value    = _safe_text(fmt_inr(str(st.get("value", ""))))[:14]
-            val_font = 13 if len(value) <= 9 else 10
-            val_y    = lbl_top - len(lbl_lines[:2]) * 9 - 11
-            c.setFillColorRGB(*NAVY); c.setFont("Helvetica-Bold", val_font)
-            c.drawString(sx + 8, val_y, value)
-
-            chg = _safe_text(st.get("change", ""))
-            if chg:
-                col_c = GREEN if chg.startswith("+") else (RED if chg.startswith("-") else GREY)
-                c.setFillColorRGB(*col_c); c.setFont("Helvetica", 7)
-                c.drawString(sx + 8, val_y - val_font - 3, chg[:12])
-
-        ty -= CARD_H + 18
 
     # ── Table of contents ─────────────────────────────────────────────────────
     section_headings = []
@@ -1393,7 +1362,7 @@ async def generate_pdf(request: Request):
         if needs_publish:
             await attach_datawrapper_charts(needs_publish, fetch_png_bytes=False)
 
-        async with httpx.AsyncClient(timeout=30.0) as client:
+        async with httpx.AsyncClient(timeout=60.0) as client:
             async def _one(ch):
                 dw = ch.get("datawrapper")
                 if not dw or dw.get("pngBytes"):
