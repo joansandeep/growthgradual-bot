@@ -1377,20 +1377,6 @@ def build_pdf(report: str, title: str, question: str, summary: str,
                 nl(ROW_H)
             nl(8)
 
-    # ── Minimum page count padding ────────────────────────────────────────────
-    # If the body text was too short (e.g. LLM under-generated), pad to ≥8 pages
-    # by adding blank continuation pages so the PDF never feels skeletal.
-    MIN_PAGES = 8
-    while page_num[0] < MIN_PAGES:
-        c.showPage()
-        hf(current_section[0])
-        y[0] = BODY_TOP
-        # Subtle "continued" marker so it doesn't look like a bug
-        c.setFillColorRGB(*GREY); c.setFont("Helvetica-Oblique", 9)
-        c.drawCentredString(PAGE_W / 2, BODY_TOP - 30,
-                            "[End of report content]")
-        y[0] = BODY_BOT  # prevent further content being placed
-
     # Fallback chart rendering is intentionally suppressed.
     # The LLM system prompt places all charts inline via [CHART_n] placeholders.
     # Dumping leftovers after References corrupts the document structure.

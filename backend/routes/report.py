@@ -747,15 +747,9 @@ async def call_groq(user_prompt: str) -> str:
             if text:
                 elapsed = (time.perf_counter() - t0) * 1000
                 log.info("Groq: report generated in %.0fms (%d chars)", elapsed, len(text))
-<<<<<<< HEAD
                 if len(text) < 15_000:
                     log.warning(
                         "Groq: report too short (%d chars < 15000) — skipping, falling through to Gemini",
-=======
-                if len(text) < 8_000:
-                    log.warning(
-                        "Groq: report too short (%d chars < 8000) — skipping, falling through to Gemini",
->>>>>>> a49cda27f433486119d3f091991ccb4a4f1f97e4
                         len(text),
                     )
                     continue
@@ -869,15 +863,9 @@ async def call_gemini(user_prompt: str) -> str:
                          elapsed, len(text), model, key[-4:])
                 # Reject under-length reports — the system prompt mandates ≥15K chars.
                 # Treat short output as a soft failure and try the next model/key.
-<<<<<<< HEAD
                 if len(text) < 15_000:
                     log.warning(
                         "Gemini: report too short (%d chars < 15000) — model=%s key=...%s — retrying next slot",
-=======
-                if len(text) < 8_000:
-                    log.warning(
-                        "Gemini: report too short (%d chars < 8000) — model=%s key=...%s — retrying next slot",
->>>>>>> a49cda27f433486119d3f091991ccb4a4f1f97e4
                         len(text), model, key[-4:],
                     )
                     continue
