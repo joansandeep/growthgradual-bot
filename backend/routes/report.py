@@ -764,19 +764,19 @@ async def call_groq(user_prompt: str) -> str:
 
 # Gemini model priority: try best model first, fall back on 503/429/404
 GEMINI_MODELS = [
-    # Ordered by RPD on the free tier so the highest-quota model is tried first.
-    # Source: Google AI Studio rate limits dashboard (verified 2026-06-24)
-    # gemini-3.1-flash-lite:  15 RPM / 250K TPM / 500 RPD  ← workhorse; try this first
-    # gemini-2.5-flash-lite:  10 RPM / 250K TPM /  20 RPD
+    # Ordered by availability/quota on the free tier (verified 2026-06-24).
+    # gemini-3.1-flash-lite does NOT exist on the REST API — removed.
+    # gemini-2.5-flash-lite:  10 RPM / 250K TPM /  20 RPD  ← most reliable workhorse
     # gemini-2.5-flash:        5 RPM / 250K TPM /  20 RPD
-    # gemini-3-flash-preview:  5 RPM / 250K TPM /  20 RPD  (API string; shown as "Gemini 3 Flash" in console)
+    # gemini-2.5-pro:          5 RPM / 250K TPM /  25 RPD  (largest context, best quality)
+    # gemini-3-flash-preview:  5 RPM / 250K TPM /  20 RPD  (API string for "Gemini 3 Flash")
     # gemini-3.5-flash:        5 RPM / 250K TPM /  20 RPD
-    # Removed: gemini-2.0-flash / gemini-2.0-flash-lite (0/0/0 quota, retired June 2026)
-    "gemini-3.1-flash-lite",   # 15 RPM / 250K TPM / 500 RPD — highest free quota by far
-    "gemini-2.5-flash-lite",   # 10 RPM / 250K TPM /  20 RPD
-    "gemini-2.5-flash",        #  5 RPM / 250K TPM /  20 RPD
-    "gemini-3-flash-preview",  #  5 RPM / 250K TPM /  20 RPD
-    "gemini-3.5-flash",        #  5 RPM / 250K TPM /  20 RPD
+    # Removed: gemini-2.0-flash / gemini-2.0-flash-lite (retired June 2026)
+    "gemini-2.5-flash-lite",   # 10 RPM / 250K TPM / 20 RPD — highest free quota
+    "gemini-2.5-flash",        #  5 RPM / 250K TPM / 20 RPD
+    "gemini-2.5-pro",          #  5 RPM / 250K TPM / 25 RPD — best quality, largest context
+    "gemini-3-flash-preview",  #  5 RPM / 250K TPM / 20 RPD
+    "gemini-3.5-flash",        #  5 RPM / 250K TPM / 20 RPD
 ]
 
 
@@ -816,14 +816,15 @@ async def call_gemini(user_prompt: str) -> str:
             generation_config = {
                 "maxOutputTokens": 32000,
                 "temperature": 0.1,
-                "responseMimeType": "application/json",  # force JSON — avoids markdown fences
+                # NOTE: responseMimeType:"application/json" is intentionally NOT set.
+                # When set, Gemini hard-truncates output mid-JSON at the token limit,
+                # causing JSON parse failures on long reports. Without it, Gemini
+                # finishes the object cleanly; the fence-strip pass below handles any
+                # stray ``` Gemini might add around the output.
             }
-            # Suppress thinking tokens for structured-output tasks — we want the
-            # full token budget to go to the actual JSON report, not hidden reasoning.
-            # Gemini 2.5 uses the legacy thinkingBudget:0 param.
-            # Gemini 3 uses thinkingLevel (mixing both in one request → 400).
-            # gemini-3.1-flash-lite defaults to "minimal" so no param needed.
-            if model in ("gemini-2.5-flash", "gemini-2.5-flash-lite"):
+            # Suppress thinking tokens — keep full token budget for report JSON.
+            # Gemini 2.5 uses thinkingBudget:0; Gemini 3.x uses thinkingLevel; mixing → 400.
+            if model in ("gemini-2.5-flash", "gemini-2.5-flash-lite", "gemini-2.5-pro"):
                 generation_config["thinkingConfig"] = {"thinkingBudget": 0}
             elif model in ("gemini-3-flash-preview", "gemini-3.5-flash"):
                 generation_config["thinkingConfig"] = {"thinkingLevel": "minimal"}
@@ -930,7 +931,7 @@ async def extract_data_from_images(question: str, file_images: list[dict]) -> st
         available_keys = vision_keys
 
     for key in available_keys[:3]:  # try up to 3 keys
-        for model in ["gemini-3.1-flash-lite", "gemini-2.5-flash-lite", "gemini-2.5-flash", "gemini-3-flash-preview", "gemini-3.5-flash"]:
+        for model in ["gemini-2.5-flash-lite", "gemini-2.5-flash", "gemini-2.5-pro", "gemini-3-flash-preview", "gemini-3.5-flash"]:
             try:
                 async with httpx.AsyncClient(timeout=60) as client:
                     res = await client.post(
@@ -1428,301 +1429,3 @@ async def generate_report(request: Request):
             "charts": [], "images": [], "keyStats": [], "summary": "", "fileImages": file_images,
         })
 
-    question: str = body.get("question", "")
-    sources: list[dict] = body.get("sources", [])
-
-    log.info("Report request: question=%r  sources=%d", question[:80], len(sources))
-
-    # If no sources were passed, run our own Tavily search so the report always has real data
-    if not sources:
-        log.info("Report: no sources from client — running own Tavily search for %r", question[:60])
-        from routes.chat import tavily_search as _tavily_search, _looks_like_ai_overview
-        searched = await _tavily_search(question, max_results=20, images_out=image_candidates_raw)
-        sources = [
-            {"title": r["title"], "url": r["url"],
-             "snippet": r["snippet"], "fullContent": r.get("fullContent", "")}
-            for r in searched
-        ]
-        log.info("Report: self-search returned %d sources", len(sources))
-    else:
-        from routes.chat import _looks_like_ai_overview
-
-    if not sources:
-        log.warning("Report: still no sources after self-search")
-        return JSONResponse({"report": "Could not retrieve data for this topic. Please try again.", "charts": [], "keyStats": [], "summary": "", "title": ""})
-
-    async def enrich(src: dict, idx: int) -> dict:
-        if _looks_like_ai_overview(src.get("snippet", "")):
-            src = {**src, "snippet": ""}
-        if _looks_like_ai_overview(src.get("fullContent", "")):
-            src = {**src, "fullContent": ""}
-        if len(src.get("fullContent", "")) > 600:
-            return src
-        if idx < 15:
-            fetched = await fetch_page_content(src["url"], 1500)
-            if _looks_like_ai_overview(fetched):
-                return src
-            if len(fetched) > len(src.get("snippet", "")):
-                log.debug("Enriched source %d: %s (+%d chars)", idx + 1, src.get("title", "")[:40], len(fetched))
-                return {**src, "fullContent": fetched}
-        return src
-
-    log.info("Report: enriching up to 25 sources...")
-    enriched = list(await asyncio.gather(*[enrich(s, i) for i, s in enumerate(sources[:12])]) )
-    log.info("Report: enrichment done (%d sources ready)", len(enriched))
-
-    src_text = "\n\n---\n\n".join(
-        f"- **{s['title']}**\nSource: {s['url']}\n"
-        + (s["fullContent"][:1500] if len(s.get("fullContent", "")) > len(s.get("snippet", "")) else s.get("snippet", "")[:800])
-        for s in enriched
-    )
-
-    image_candidates = _filter_image_candidates(image_candidates_raw)
-    image_candidates_block = _build_image_candidates_block(image_candidates)
-
-    user_prompt = (
-        f"Research Question / Topic: {question}\n\n"
-        f"Scraped content from the top {len(enriched)} web sources:\n\n{src_text}\n\n"
-        + image_candidates_block
-        + "INSTRUCTIONS:\n"
-        "1. Extract ALL numbers, tables, percentages, and statistics verbatim from the sources above.\n"
-        "2. Follow the CHART RULES in the system prompt exactly — only produce charts for real distinct data.\n"
-        "3. Write the full 7-section, long-form report (target 2800-3500 words (MINIMUM 18000 characters — shorter responses will be rejected and retried)). Insert [CHART_n] placeholders inline only where valid chart data exists.\n"
-        "4. Follow IMAGE RULES — select 2-4 genuinely relevant candidates by index and insert [WEB_IMG_n] inline.\n"
-        "5. Respond ONLY with the JSON object — no markdown fences, no text outside JSON."
-    )
-
-    raw = await call_groq(user_prompt)
-    if not raw:
-        log.info("Report: Groq failed — trying Gemini fallback")
-        raw = await call_gemini(user_prompt)
-    if not raw:
-        log.error("Report: all LLM providers exhausted")
-        return JSONResponse({
-            "report": "All LLM keys exhausted or rate-limited. Try again in a minute.",
-            "charts": [], "keyStats": [], "summary": "", "title": "",
-        })
-
-    # Strip markdown fences (Gemini without responseMimeType may add them)
-    clean = raw.strip()
-    clean = re.sub(r"^```json\s*", "", clean, flags=re.IGNORECASE)
-    clean = re.sub(r"^```\s*", "", clean)
-    clean = re.sub(r"```\s*$", "", clean).strip()
-    # If response starts with text before the JSON object, find the first {
-    brace_idx = clean.find("{")
-    if brace_idx > 0:
-        log.debug("Report: skipping %d chars of preamble before JSON", brace_idx)
-        clean = clean[brace_idx:]
-
-    try:
-        parsed = json.loads(clean)
-
-        def _is_plausible_chart(ch: dict) -> bool:
-            """Reject charts that look invented rather than sourced from real data."""
-            if ch.get("type") == "table":
-                cols = ch.get("columns") or []
-                rows = ch.get("rows") or []
-                return bool(ch.get("title")) and len(cols) >= 2 and len(rows) >= 2
-            series = ch.get("series") or []
-            if not series or not ch.get("type") or not ch.get("title"):
-                return False
-            n_series   = len(series)
-            chart_type = ch.get("type", "bar")
-            for s in series:
-                pts = s.get("data") or []
-                min_pts = 2 if chart_type == "line" else 1
-                if len(pts) < min_pts:
-                    log.warning("Chart rejected — series '%s' has only %d points", s.get("name","?"), len(pts))
-                    return False
-            all_pts = [pt for s in series for pt in (s.get("data") or [])]
-            values  = [pt.get("value", 0) for pt in all_pts]
-            if len(values) > 1 and len(set(values)) <= 1:
-                log.warning("Chart rejected — identical values: %s", values[:6])
-                return False
-            for s in series:
-                labels = [str(pt.get("label", "")) for pt in (s.get("data") or [])]
-                if len(set(labels)) < len(labels):
-                    log.warning("Chart rejected — duplicate labels in '%s': %s", s.get("name","?"), labels[:6])
-                    return False
-            if chart_type == "line" and n_series == 1 and len(values) >= 3:
-                diffs = [abs(values[i+1] - values[i]) for i in range(len(values)-1)]
-                if diffs and max(diffs) > 0:
-                    variance = sum((d - sum(diffs)/len(diffs))**2 for d in diffs) / len(diffs)
-                    cv = (variance ** 0.5) / (sum(diffs)/len(diffs))
-                    if cv < 0.05:
-                        log.warning("Chart rejected — values look arithmetically generated (cv=%.3f): %s", cv, values)
-                        return False
-            return True
-
-        original_charts_list = parsed.get("charts") or []
-        valid_mask = [_is_plausible_chart(c) for c in original_charts_list]
-        charts = [c for c, keep in zip(original_charts_list, valid_mask) if keep]
-        if len(charts) < len(original_charts_list):
-            log.info("Chart validation: kept %d / %d charts", len(charts), len(original_charts_list))
-        report_text = parsed.get("report", "")
-        # Renumber/strip [CHART_n] placeholders to match the filtered list —
-        # see _remap_chart_placeholders docstring for why this matters.
-        report_text = _remap_chart_placeholders(report_text, original_charts_list, valid_mask)
-
-        original_images_list = parsed.get("images") or []
-        images, images_valid_mask = _validate_image_selections(original_images_list, image_candidates)
-        if len(images) < len(original_images_list):
-            log.info("Image validation: kept %d / %d selections", len(images), len(original_images_list))
-        report_text = _remap_web_image_placeholders(report_text, images_valid_mask)
-
-        # Safety pass 1: unescape literal \n that some models emit
-        if "\\n" in report_text:
-            report_text = report_text.replace("\\n", "\n")
-
-        # Safety pass 2: strip markdown/json fences
-        report_text = re.sub(r"^```(?:json|markdown)?\s*", "", report_text.strip())
-        report_text = re.sub(r"```\s*$", "", report_text).strip()
-
-        # Safety pass 2b: convert any raw JSON chart blobs the LLM leaked into
-        # the report body into [CHART_n] placeholders so they still render.
-        report_text, charts = _extract_inline_chart_jsons(report_text, charts)
-        # Safety pass 2c: turn markdown data tables into Datawrapper table charts.
-        report_text, charts = _extract_markdown_tables(report_text, charts)
-
-        # Safety pass 3: if the model stuffed the ENTIRE JSON response into the report field,
-        # unwrap it. This happens when Gemini/Groq returns JSON inside the "report" string.
-        for _attempt in range(2):
-            stripped = report_text.strip()
-            if not stripped.startswith("{"):
-                break
-            try:
-                inner = json.loads(stripped)
-                if not isinstance(inner, dict) or "report" not in inner:
-                    break
-                inner_report = (inner.get("report") or "").replace("\\n", "\n").strip()
-                # Pull nested fields back out if they weren't already set
-                if not charts and inner.get("charts"):
-                    charts = [c for c in (inner["charts"] or [])
-                              if c.get("type") and c.get("series")]
-                for key in ("keyStats", "summary", "title"):
-                    if not parsed.get(key) and inner.get(key):
-                        parsed[key] = inner[key]
-                report_text = inner_report
-                log.warning("Report: unwrapped double-encoded JSON from report field (pass %d)", _attempt + 1)
-            except Exception:
-                break
-
-        # Safety pass 4: if the report still starts with { and contains "title" + "report"
-        # keys it's still raw JSON — extract just the report field one final time
-        if report_text.strip().startswith("{") and '"report"' in report_text:
-            m = re.search(r'"report"\s*:\s*"((?:[^"\\]|\\.)*)"', report_text)
-            if m:
-                report_text = m.group(1).replace("\\n", "\n").replace('\\"', '"')
-                log.warning("Report: regex-extracted report field from raw JSON (pass 4)")
-
-        charts = await attach_datawrapper_charts(charts)
-        elapsed = (time.perf_counter() - t0) * 1000
-        log.info(
-            "Report complete in %.0fms — title=%r  charts=%d  images=%d  keyStats=%d",
-            elapsed, parsed.get("title", "")[:60], len(charts), len(images), len(parsed.get("keyStats", [])),
-        )
-        return JSONResponse({
-            "title":    parsed.get("title", question[:80]),
-            "report":   report_text,
-            "charts":   charts,
-            "images":   images,
-            "keyStats": parsed.get("keyStats", []),
-            "summary":  parsed.get("summary", ""),
-        })
-    except Exception as exc:
-        log.error("Report: JSON parse failed: %s  (raw length: %d)", exc, len(raw))
-
-        def _try_extract_fields(text: str) -> dict | None:
-            """Best-effort field extraction from truncated/malformed JSON."""
-            result = {}
-
-            # 1. Try extracting "title" with a regex
-            m = re.search(r'"title"\s*:\s*"([^"\\\n]{1,200})"', text)
-            if m:
-                result["title"] = m.group(1)
-
-            # 2. Try extracting "summary"
-            m = re.search(r'"summary"\s*:\s*"((?:[^"\\]|\\.)*)"', text)
-            if m:
-                result["summary"] = m.group(1).replace("\\n", "\n")
-
-            # 3. Try extracting "report" — handle truncation by taking everything up to last complete section
-            m = re.search(r'"report"\s*:\s*"((?:[^"\\]|\\.)*)', text)
-            if m:
-                report_raw = m.group(1).replace("\\n", "\n").replace('\\"', '"')
-                # Trim to last complete markdown heading or paragraph
-                for boundary in ["\n## ", "\n### ", "\n\n"]:
-                    last = report_raw.rfind(boundary)
-                    if last > len(report_raw) * 0.4:
-                        report_raw = report_raw[:last].strip()
-                        break
-                if len(report_raw) > 200:
-                    result["report"] = report_raw + "\n\n*Note: Report was truncated due to response length limits.*"
-
-            # 4. Try extracting keyStats array
-            m = re.search(r'"keyStats"\s*:\s*(\[[\s\S]*?\])', text)
-            if m:
-                try:
-                    result["keyStats"] = json.loads(m.group(1))
-                except Exception:
-                    pass
-
-            # 5. Try extracting charts array — best effort, may be partial
-            m = re.search(r'"charts"\s*:\s*(\[[\s\S]*?\]\s*[,}])', text)
-            if m:
-                try:
-                    arr_text = m.group(1).rstrip(",}").strip()
-                    result["charts"] = json.loads(arr_text)
-                except Exception:
-                    pass
-
-            return result if result.get("report") else None
-
-        # Try 1: regex-based field extraction from truncated output
-        salvaged = _try_extract_fields(clean)
-        if salvaged:
-            log.info("Report: salvaged %d fields from truncated JSON (report=%d chars)",
-                     len(salvaged), len(salvaged.get("report", "")))
-            salvaged["charts"] = await attach_datawrapper_charts(salvaged.get("charts", []))
-            return JSONResponse({
-                "title":    salvaged.get("title", question[:80]),
-                "report":   salvaged.get("report", ""),
-                "charts":   salvaged.get("charts", []),
-                "images":   [],
-                "keyStats": salvaged.get("keyStats", []),
-                "summary":  salvaged.get("summary", ""),
-            })
-
-        # Try 2: attempt json.loads on a repaired string (close open strings/arrays)
-        try:
-            repaired = clean
-            # Close any unterminated string by finding last quote boundary
-            open_strings = repaired.count('"') % 2
-            if open_strings:
-                repaired = repaired + '"'
-            # Close any unclosed arrays/objects
-            opens = repaired.count("{") - repaired.count("}")
-            repaired = repaired + ("}" * max(opens, 0))
-            opens_arr = repaired.count("[") - repaired.count("]")
-            repaired = repaired + ("]" * max(opens_arr, 0))
-            repaired_parsed = json.loads(repaired)
-            log.info("Report: repaired truncated JSON successfully")
-            repaired_charts = await attach_datawrapper_charts(repaired_parsed.get("charts", []))
-            return JSONResponse({
-                "title":    repaired_parsed.get("title", question[:80]),
-                "report":   (repaired_parsed.get("report", "") or "").replace("\\n", "\n"),
-                "charts":   repaired_charts,
-                "images":   [],
-                "keyStats": repaired_parsed.get("keyStats", []),
-                "summary":  repaired_parsed.get("summary", ""),
-            })
-        except Exception:
-            pass
-
-        # Total failure
-        log.error("Report: could not salvage JSON — returning error message")
-        return JSONResponse({
-            "title": _sanitize_title("", question),
-            "report": "## Report Generation Error\n\nThe AI response was too long and could not be parsed. Please try a more specific question.",
-            "charts": [], "images": [], "keyStats": [], "summary": "",
-        })
