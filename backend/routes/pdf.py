@@ -311,6 +311,10 @@ def _tokenise(md: str):
             m = re.match(r"^\[PAGE_IMG_(\d+)\]", stripped)
             yield {"type": "page_img_placeholder", "index": int(m.group(1)) - 1}
 
+        elif re.match(r"^\[WEB_IMG_\d+\]", stripped):
+            m = re.match(r"^\[WEB_IMG_(\d+)\]", stripped)
+            yield {"type": "web_img_placeholder", "index": int(m.group(1)) - 1}
+
         elif stripped.startswith("#### "):
             yield {"type": "h4", "text": stripped[5:].strip()}
         elif stripped.startswith("### "):
@@ -728,7 +732,7 @@ def _draw_chart(c, spec, x0, y0, w, h):
 # ─── PDF builder ──────────────────────────────────────────────────────────────
 def build_pdf(report: str, title: str, question: str, summary: str,
               key_stats: list, charts: list, logo_b64: str = "",
-              file_images: list | None = None) -> bytes:
+              file_images: list | None = None, web_images: list | None = None) -> bytes:
     import json as _json
 
     # Last-resort: if report arrived as raw JSON, extract the markdown field
@@ -1154,6 +1158,46 @@ def build_pdf(report: str, title: str, question: str, summary: str,
                 except Exception as exc:
                     log.warning("PAGE_IMG_%d render failed: %s", pi + 1, exc)
             continue
+
+        # ── Web-search image placeholder (fetched from Tavily image results) ──
+        if tp == "web_img_placeholder":
+            imgs = web_images or []
+            wi = tok.get("index", 0)
+            if wi < len(imgs) and imgs[wi]:
+                img_info = imgs[wi]
+                try:
+                    import base64 as _b64
+                    import io as _io
+                    img_data = _b64.b64decode(img_info["data"])
+                    pil_img = PILImage.open(_io.BytesIO(img_data))
+                    if pil_img.mode not in ("RGB", "L"):
+                        pil_img = pil_img.convert("RGB")
+                    MAX_IMG_W = CW
+                    MAX_IMG_H = 300
+                    ow, oh = pil_img.size
+                    scale = min(MAX_IMG_W / ow, MAX_IMG_H / oh, 1.0)
+                    iw, ih = ow * scale, oh * scale
+                    cap = (img_info.get("caption") or "")[:120]
+                    cap_h = 18 if cap else 0
+                    need(ih + 26 + cap_h, current_section[0])
+                    nl(10)
+                    cx = MARGIN + (CW - iw) / 2
+                    c.setFillColorRGB(0.97, 0.97, 0.98)
+                    c.roundRect(MARGIN, y[0] - ih - 22 - cap_h, CW, ih + 22 + cap_h, 4, fill=1, stroke=0)
+                    c.setStrokeColorRGB(0.88, 0.89, 0.91)
+                    c.roundRect(MARGIN, y[0] - ih - 22 - cap_h, CW, ih + 22 + cap_h, 4, fill=0, stroke=1)
+                    img_buf = _io.BytesIO()
+                    pil_img.save(img_buf, format="JPEG", quality=85)
+                    img_buf.seek(0)
+                    rl_img = RLImage(img_buf, width=iw, height=ih)
+                    rl_img.drawOn(c, cx, y[0] - ih - 10)
+                    if cap:
+                        c.setFillColorRGB(0.4, 0.42, 0.46); c.setFont("Helvetica-Oblique", 7.5)
+                        c.drawCentredString(MARGIN + CW / 2, y[0] - ih - 10 - cap_h + 5, cap)
+                    y[0] = y[0] - ih - 22 - cap_h - 10
+                except Exception as exc:
+                    log.warning("WEB_IMG_%d render failed: %s", wi + 1, exc)
+            continue
         if tp == "hr":
             need(12, current_section[0])
             c.setStrokeColorRGB(0.87, 0.9, 0.94); c.setLineWidth(0.6)
@@ -1322,6 +1366,7 @@ async def generate_pdf(request: Request):
     charts: list    = body.get("charts", [])
     logo_b64: str   = body.get("logoB64", "")
     file_images: list = body.get("fileImages", [])  # [{name, mimeType, data}]
+    images: list    = body.get("images", [])  # [{url, caption}] from report generation
 
     # ── Safety: unwrap double-encoded report (LLM sometimes stuffs JSON into report field) ──
     stripped = report.strip()
@@ -1378,8 +1423,57 @@ async def generate_pdf(request: Request):
     except Exception as exc:
         log.warning("PDF: Datawrapper hydration failed, falling back to drawn charts: %s", exc)
 
+    # The report step only returns {url, caption} for selected web images —
+    # fetch the actual bytes now, right before rendering, same pattern as the
+    # Datawrapper PNG hydration above. Each image fetch is independent and
+    # failures are skipped rather than failing the whole PDF — a missing
+    # photo just means one fewer [WEB_IMG_n] renders, nothing else degrades.
+    async def _fetch_web_images(imgs: list, max_count: int = 6, max_bytes: int = 6_000_000) -> list[dict | None]:
+        if not imgs:
+            return []
+        sem = asyncio.Semaphore(4)
+        out: list[dict | None] = [None] * min(len(imgs), max_count)
+
+        async def _one(i: int, info: dict):
+            url = (info.get("url") or "").strip()
+            if not url:
+                return
+            async with sem:
+                try:
+                    async with httpx.AsyncClient(timeout=10.0, follow_redirects=True) as client:
+                        resp = await client.get(url, headers={"User-Agent": "Mozilla/5.0"})
+                    ctype = resp.headers.get("content-type", "")
+                    if not resp.is_success or not ctype.startswith("image/"):
+                        return
+                    if len(resp.content) > max_bytes or len(resp.content) < 500:
+                        return
+                    out[i] = {"data": base64.b64encode(resp.content).decode("ascii"),
+                              "caption": (info.get("caption") or "")[:120]}
+                except Exception as exc:
+                    log.debug("WEB_IMG fetch failed for %s: %s", url[:80], exc)
+
+        await asyncio.gather(*[_one(i, info) for i, info in enumerate(imgs[:max_count])])
+        # IMPORTANT: don't compact `out` by dropping the None gaps left by failed
+        # fetches — report_text already has [WEB_IMG_n] placeholders baked in
+        # against the ORIGINAL 1-based image order. Compacting would shift every
+        # placeholder after a failed fetch onto the wrong photo/caption (or, if
+        # the count shrinks below a later placeholder's index, silently drop a
+        # perfectly good image instead of the one that actually failed). The
+        # renderer in build_pdf already treats a None/missing entry as "skip
+        # this placeholder" via its try/except, so leaving the gaps is safe.
+        n_ok = sum(1 for img in out if img)
+        if n_ok:
+            log.info("PDF: fetched %d/%d web images", n_ok, len(out))
+        return out
+
     try:
-        pdf_bytes = build_pdf(report, title, question, summary, key_stats, charts, logo_b64, file_images)
+        web_images = await _fetch_web_images(images)
+    except Exception as exc:
+        log.warning("PDF: web image fetch failed entirely, continuing without images: %s", exc)
+        web_images = []
+
+    try:
+        pdf_bytes = build_pdf(report, title, question, summary, key_stats, charts, logo_b64, file_images, web_images)
     except Exception as e:
         log.error("PDF: build_pdf failed: %s", e)
         return JSONResponse({"error": f"Failed to generate PDF: {e}"}, status_code=500)

@@ -32,8 +32,9 @@ You MUST respond with valid JSON only — no markdown fences, no preamble, no te
 Respond with EXACTLY this shape:
 {
   "title": "<concise NOUN-PHRASE report title, max 12 words. Examples: 'Top Banking Stocks India 2026', 'Indian Mutual Fund SIP Returns Analysis', 'HDFC vs ICICI Bank Comparison', 'Nifty 50 Market Outlook — June 2026'. STRICT RULES: NEVER start with 'So', 'You', 'I', 'Let's', 'Here', 'Based', 'Looking', 'Understanding', 'A look at', 'An analysis of', or any verb/pronoun. NEVER start with 'The' followed by a verb — e.g. BAD: 'The Nifty outlook today is mixed, with some analysts predicting...' (full sentence starting with The) → GOOD: 'Nifty 50 Outlook — Mixed Signals Amid Volatility'. NEVER write a full sentence — this includes sentences that don't start with one of those words too, e.g. BAD: 'The Minimum Investment Amounts For These Top-Performing SIPs Are As Follows' → GOOD: 'Top-Performing SIP Funds — Minimum Investment Requirements'. Never end a title with a colon, 'as follows', or '...' — those signal an incomplete sentence, not a heading. ALWAYS write a noun phrase — topic first, qualifiers after.>",
-  "report": "<full markdown report — target 1000-1400 words, structured and data-rich>",
+  "report": "<full markdown report — target 2600-3400 words, structured and data-rich. This is a LONG-FORM report (aim for ~10-12 printed pages once charts/tables/images are laid in) — see REPORT STRUCTURE below for the section list that gets you there. Add DEPTH, not invented data: more context, more explanation of mechanisms and causes, more comparison and discussion of what the numbers mean — never pad with filler sentences or numbers not in the sources.>",
   "charts": [...],
+  "images": [...],
   "keyStats": [{ "label": "<short label>", "value": "<value string>", "change": "<+/- % or empty string>" }],
   "summary": "<2-3 sentence executive summary>"
 }
@@ -47,6 +48,8 @@ CRITICAL DATA INTEGRITY RULES — VIOLATIONS DEGRADE REPORT QUALITY:
 ✗ If a specific number is NOT in the sources, write "data not available from sources" rather than guessing.
 ✓ You MAY use your knowledge for definitions, context, explanations, and general market dynamics.
 ✓ Every key metric in keyStats and every chart data point must be traceable to the scraped source content.
+✓ The longer length target below is a DEPTH requirement, not a license to pad: hit it by explaining
+  mechanisms, context, comparisons, and implications more thoroughly — never by inventing extra figures.
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -129,12 +132,12 @@ STEP 2 — ONLY create a chart if ALL conditions are met:
 STEP 3 — Place [CHART_n] inline in the report markdown right after the paragraph whose data it shows.
   charts[0] = [CHART_1], charts[1] = [CHART_2], etc.
 
-STEP 4 — Aim for 3-5 charts per report when data supports it. Quality over quantity,
-  but lean toward MORE high-level visuals rather than fewer when the sources have the numbers
-  for it — readers respond well to charts. Vary the shapes (bar, stacked bar, line, pie) rather
-  than repeating the same shape for every chart; use the stacked-bar shape above whenever a
-  breakdown is compared across multiple labels.
-  If sources genuinely lack numeric data → 0 charts is acceptable. But look hard first.
+STEP 4 — Aim for 5-8 charts/tables per report when data supports it — this report runs long
+  (10-12 pages), and visuals are what fill that length well rather than walls of text. Quality
+  over quantity, but lean toward MORE high-level visuals rather than fewer when the sources have
+  the numbers for it. Vary the shapes (bar, stacked bar, line, pie) rather than repeating the same
+  shape for every chart; use the stacked-bar shape above whenever a breakdown is compared across
+  multiple labels. If sources genuinely lack numeric data → 0 charts is acceptable. But look hard first.
 
 Chart spec shape:
 {
@@ -160,37 +163,66 @@ BAD chart examples — NEVER do this:
   ✗ [CHART_n] in report without matching charts[n-1] entry
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-REPORT STRUCTURE (each section MUST be substantive — minimum 150 words per section):
+IMAGE RULES — the user prompt below the sources includes a CANDIDATE IMAGES list,
+each with a 1-based index, a short description, and the page it came from.
+Use them to make the report visual, not just chart-heavy:
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  ✓ Pick 2-4 of the candidates that are genuinely relevant and illustrative — a company's
+    building/branch/product/leadership photo, a relevant chart screenshot from a source, a
+    sector/market photo, etc.
+  ✗ SKIP any candidate that is obviously a logo, icon, banner ad, social-media share icon,
+    avatar, or generic stock photo unrelated to the topic — the description usually gives this
+    away (e.g. "logo", "icon", a person's name with no topical connection).
+  ✗ NEVER invent an image URL. You may ONLY reference an image by its candidateIndex exactly
+    as given in the candidate list — never type out or alter a URL yourself.
+  ✗ If there are no genuinely relevant candidates, return "images": [] — 0 images is correct
+    for very abstract/numeric topics (e.g. "FII flows this week") where no photo adds value.
+  → Output shape: "images": [{ "candidateIndex": <int from the candidate list>, "caption": "<short caption, max 14 words, e.g. 'HDFC Bank's corporate headquarters in Mumbai'>" }]
+  → Place [WEB_IMG_n] inline in the report markdown the same way as [CHART_n] — images[0] = [WEB_IMG_1],
+    images[1] = [WEB_IMG_2], etc. — right after the paragraph it illustrates. Don't cluster all
+    images together at the top; spread them across the sections they're actually relevant to.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+REPORT STRUCTURE (each section MUST be substantive — this is a LONG-FORM report, ~10-12 pages
+once charts/tables/images are laid in. Minimum word counts below are FLOORS, not targets —
+write as much genuinely substantive analysis as the sources support):
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 # [Report Title]
 
 ## 1. Introduction
-3-4 paragraphs (minimum 150 words): Provide rich context — explain the sector/topic, why it matters now, who the key stakeholders are, what macro or market forces are driving interest, and what this report covers. Write in plain prose — do NOT insert bracket citation markers like [1] or [n] anywhere; name the publication inline instead if attribution is needed (e.g. "according to Screener.in data..."). No filler, every sentence must add context or data.
+4-5 paragraphs (minimum 250 words): Provide rich context — explain the sector/topic, why it matters now, who the key stakeholders are, what macro or market forces are driving interest, the history/background that led here, and what this report covers. Write in plain prose — do NOT insert bracket citation markers like [1] or [n] anywhere; name the publication inline instead if attribution is needed (e.g. "according to Screener.in data..."). No filler, every sentence must add context or data. If a relevant image candidate exists (e.g. company HQ, product, logo of the sector), place [WEB_IMG_n] near the end of this section.
 
 ## 2. Data Sources & Methodology
-One markdown table of sources (Publication | URL | Data type). 2 short paragraphs: describe what sources were used, what metrics were collected, how comparisons were made, and any caveats in the data.
+One markdown table of sources (Publication | URL | Data type). 2-3 paragraphs (minimum 150 words): describe what sources were used, what metrics were collected, how comparisons were made, and any caveats in the data.
 SOURCE BREADTH: list EVERY distinct publication below that contributed any real fact, figure, or context — not only whichever source happened to have the most granular numbers. If five sources were provided and three had usable content (numbers, context, definitions, market commentary), the table and the Sources section should show three rows, not one. Only cite a single source if every other source genuinely had nothing usable (e.g. paywalled, off-topic, or duplicate of another result) — and if so, do not claim more sources were used than actually were. Never list a publication that contributed nothing to the report.
 URL COLUMN: the URL column must contain the EXACT "Source: <url>" value given for that publication in the supplementary sources below — never a description, a paraphrase, or any placeholder text standing in for a missing link. If a publication's URL truly is not in the source list, omit that row entirely from the table rather than writing anything else in its place.
 
 ## 3. Data Analysis
 
 ### 3.1 [Heading matching actual topic and data]
-Deep-dive quantitative findings (minimum 120 words). ALL numbers in markdown tables. Explain what the data shows, why the leaders are ahead, what the numbers mean in context. Insert [CHART_n] immediately after the paragraph whose data it visualises. No bracket citation markers.
+Deep-dive quantitative findings (minimum 220 words). ALL numbers in markdown tables. Explain what the data shows, why the leaders are ahead, what the numbers mean in context. Insert [CHART_n] immediately after the paragraph whose data it visualises. No bracket citation markers.
 
 ### 3.2 [Second dimension of analysis]
-Comparisons, breakdowns, benchmarks (minimum 120 words). Tables + [CHART_n] where valid distinct data exists. Explain trends and what differentiates top performers.
+Comparisons, breakdowns, benchmarks (minimum 220 words). Tables + [CHART_n] where valid distinct data exists. Explain trends and what differentiates top performers.
 
 ### 3.3 [Trends or forward-looking data — only if sources have it]
-Only include if sources have trend/time-series data with ≥4 distinct time points. Minimum 100 words if included.
+Only include if sources have trend/time-series data with ≥4 distinct time points. Minimum 180 words if included.
+
+### 3.4 [A fourth distinct angle — peer/sector context, valuation, ownership, regulatory backdrop, etc. — only if sources genuinely support it]
+Optional but encouraged when the sources have material left over after 3.1-3.3. Minimum 180 words if included. Skip entirely (don't stub it) if there's nothing left to say with real data.
 
 ## 4. Key Findings
-8-10 numbered findings, each with a specific number/stat from sources AND a 1-2 sentence explanation of what it means. No bracket citation markers — if attribution matters, name the publication in the sentence itself.
+8-12 numbered findings, each with a specific number/stat from sources AND a 2-3 sentence explanation of what it means and why it matters to a reader. No bracket citation markers — if attribution matters, name the publication in the sentence itself.
 
-## 5. Conclusion
-2-3 paragraphs (minimum 120 words): synthesise findings, explain implications for different types of investors/stakeholders, and give forward outlook from sources only.
+## 5. Risks & Considerations
+3-5 distinct risk factors or open questions relevant to the topic (minimum 200 words total), grounded in what the sources actually flag — regulatory risk, competitive pressure, valuation concerns, macro sensitivity, data gaps, etc. If the sources don't surface explicit risks, reason from the data patterns themselves (e.g. a metric trending the wrong way, a concentration in one segment) rather than inventing unrelated risks. Do not skip this section — every topic has SOME risk angle worth a paragraph.
 
-## 6. Sources
+## 6. Conclusion
+3-4 paragraphs (minimum 220 words): synthesise findings, explain implications for different types of investors/stakeholders, and give forward outlook from sources only.
+
+## 7. Sources
 A plain bulleted list of the publications actually used, one per line: "- Publication Name — URL". Do NOT number this list and do NOT reference these numbers anywhere else in the report — it exists purely as a reading list, not a citation index. This list must match section 2's source table exactly — same publications, same count, same URLs.
 
 GLOBAL RULES:
@@ -212,9 +244,11 @@ GLOBAL RULES:
   skip that table entirely rather than including a table with all empty cells.
 - NEVER use bracket citation markers such as [1], [2], [1, 2], [n] anywhere in the report body. This is a hard rule — the report reads as polished analyst prose, not an academic paper with footnote numbers. If a claim needs attribution, name the source in the sentence (e.g. "Screener.in data shows...").
 - NEVER cite "Tavily" as a publication or source — Tavily is an internal search tool, not a publisher. If a fact's only origin is an internal search summary rather than a named publication, state the fact without attribution rather than inventing a citation.
-- At least 3 markdown data tables
+- At least 4 markdown data tables
+- 2-4 relevant images selected from the candidate list (0 acceptable only if none are genuinely relevant)
 - keyStats: 6-8 real metrics with values and change indicators
-- Target 1000-1400 words total — every section must be substantive; never stub a section with a single sentence
+- Target 2600-3400 words total — every section must be substantive; never stub a section with a single sentence.
+  Reach this length through depth (context, mechanism, comparison, implications), never through invented data.
 - CRITICAL: NEVER write raw JSON inside the "report" string. Charts go ONLY in the "charts" array.
   Use [CHART_1], [CHART_2] placeholders in the report text — never paste the chart JSON object itself.
 """
@@ -263,6 +297,110 @@ def _remap_chart_placeholders(report_text: str, original_charts: list, valid_mas
         # If the whole line was just a (now-removed) placeholder, drop the
         # line rather than leaving a blank gap.
         if line.strip().startswith("[CHART_") and not replaced.strip():
+            continue
+        out_lines.append(replaced)
+    return "\n".join(out_lines)
+
+
+# --- Web-search image support (mirrors the [CHART_n] pattern above) -------
+
+# Filename/URL fragments that almost always mean "logo / icon / ad / avatar"
+# rather than an actual illustrative photo — Tavily's image search returns a
+# lot of these for any finance query (publication mastheads, social icons,
+# tracking pixels) and they make a report look amateurish if embedded.
+_JUNK_IMAGE_HINTS = (
+    "logo", "icon", "favicon", "sprite", "avatar", "placeholder", "blank.gif",
+    "pixel.gif", "tracking", "1x1", "badge", "button", "social", "share-",
+    ".svg",
+)
+
+
+def _filter_image_candidates(raw_images: list[dict], limit: int = 10) -> list[dict]:
+    """Dedupe by URL and drop obvious logos/icons/tracking pixels before these
+    ever reach the LLM prompt — cheaper and safer than trusting the model to
+    catch all of them, though the prompt also tells it to skip junk-looking
+    candidates as a second line of defense."""
+    seen: set[str] = set()
+    out: list[dict] = []
+    for img in raw_images:
+        url = (img.get("url") or "").strip()
+        if not url or url in seen:
+            continue
+        low = url.lower()
+        if any(hint in low for hint in _JUNK_IMAGE_HINTS):
+            continue
+        seen.add(url)
+        out.append({"url": url, "description": (img.get("description") or "").strip()[:200]})
+        if len(out) >= limit:
+            break
+    return out
+
+
+def _build_image_candidates_block(candidates: list[dict]) -> str:
+    """Render the numbered candidate-image list inserted into the user prompt."""
+    if not candidates:
+        return "\n\nCANDIDATE IMAGES: none available for this query — return \"images\": [].\n"
+    lines = ["\n\nCANDIDATE IMAGES (reference ONLY by index — never invent or alter a URL):"]
+    for i, img in enumerate(candidates, start=1):
+        desc = img["description"] or "(no description)"
+        lines.append(f"  [{i}] {desc}")
+    return "\n".join(lines) + "\n"
+
+
+def _validate_image_selections(parsed_images: list, candidates: list[dict]) -> tuple[list[dict], list[bool]]:
+    """Cross-check the model's `images` array against the candidate list it
+    was actually given. Anything with a missing/out-of-range/non-numeric
+    candidateIndex is dropped rather than trusted — this is the only thing
+    standing between "the model echoed back a real Tavily image URL" and
+    "the model hallucinated a URL that 404s in the PDF". Returns the final
+    {"url","caption"} list plus a keep-mask aligned to parsed_images' original
+    order, for _remap_web_image_placeholders to use."""
+    final: list[dict] = []
+    mask: list[bool] = []
+    for entry in parsed_images or []:
+        if not isinstance(entry, dict):
+            mask.append(False)
+            continue
+        idx = entry.get("candidateIndex")
+        try:
+            idx = int(idx)
+        except (TypeError, ValueError):
+            mask.append(False)
+            continue
+        if idx < 1 or idx > len(candidates):
+            mask.append(False)
+            continue
+        caption = str(entry.get("caption") or "").strip()[:160]
+        candidate = candidates[idx - 1]
+        final.append({"url": candidate["url"], "caption": caption or candidate["description"] or ""})
+        mask.append(True)
+    return final, mask
+
+
+_WEB_IMG_PLACEHOLDER_RE = re.compile(r"\[WEB_IMG_(\d+)\]")
+
+
+def _remap_web_image_placeholders(report_text: str, valid_mask: list[bool]) -> str:
+    """Twin of _remap_chart_placeholders for [WEB_IMG_n] — renumbers against
+    the filtered images list, dropping placeholder lines for any image that
+    failed validation in _validate_image_selections."""
+    remap: dict[int, int | None] = {}
+    new_pos = 0
+    for old_idx, keep in enumerate(valid_mask, start=1):
+        if keep:
+            new_pos += 1
+            remap[old_idx] = new_pos
+        else:
+            remap[old_idx] = None
+
+    def _sub(m: re.Match) -> str:
+        new_n = remap.get(int(m.group(1)))
+        return f"[WEB_IMG_{new_n}]" if new_n is not None else ""
+
+    out_lines = []
+    for line in report_text.split("\n"):
+        replaced = _WEB_IMG_PLACEHOLDER_RE.sub(_sub, line)
+        if line.strip().startswith("[WEB_IMG_") and not replaced.strip():
             continue
         out_lines.append(replaced)
     return "\n".join(out_lines)
@@ -513,28 +651,12 @@ def _extract_markdown_tables(report_text: str, existing_charts: list) -> tuple[s
     return "\n".join(out), charts
 
 
-# Groq context limit: ~6K tokens input. Trim prompt to avoid 413.
-GROQ_MAX_PROMPT_CHARS = 40_000  # Groq supports large contexts — only trim if truly enormous
-
-def _trim_for_groq(prompt: str) -> str:
-    """Only trim if prompt is genuinely huge (>40K chars)."""
-    if len(prompt) <= GROQ_MAX_PROMPT_CHARS:
-        return prompt
-    # Keep header + as much source content as fits
-    header_end = prompt.find("Scraped content")
-    if header_end == -1:
-        return prompt[:GROQ_MAX_PROMPT_CHARS]
-    header = prompt[:header_end + 100]
-    body   = prompt[header_end + 100:]
-    allowed = GROQ_MAX_PROMPT_CHARS - len(header) - 200
-    trimmed_body = body[:allowed]
-    last_sep = trimmed_body.rfind("\n---\n")
-    if last_sep > allowed * 0.5:
-        trimmed_body = trimmed_body[:last_sep]
-    footer = "\n\nINSTRUCTIONS:\n1. Extract ALL numbers, tables, percentages verbatim.\n2. Follow CHART RULES exactly.\n3. Respond ONLY with the JSON object."
-    result = header + trimmed_body + footer
-    log.info("Groq: trimmed prompt %d→%d chars", len(prompt), len(result))
-    return result
+# Groq context limit: ~6K tokens input. Skip Groq (go straight to Gemini)
+# if the combined payload is over this. This is the TOTAL budget (system +
+# user), not just the user prompt — SYSTEM_PROMPT alone runs ~16K chars, so
+# checking only the user prompt against 40K let combined payloads reach
+# ~56K chars and 413 unpredictably depending on content density.
+GROQ_MAX_PROMPT_CHARS = 40_000  # total system+user budget Groq will reliably accept
 
 
 async def call_groq(user_prompt: str) -> str:
@@ -543,8 +665,22 @@ async def call_groq(user_prompt: str) -> str:
         log.warning("Groq: no keys configured for report generation")
         return ""
 
-    trimmed_prompt = _trim_for_groq(user_prompt)
-    log.info("Groq: calling for report generation with %d key(s)  prompt=%d chars", len(keys), len(trimmed_prompt))
+    # Pre-flight size check — measure the REAL combined payload (system + user,
+    # untrimmed) against the budget. If it's already over, don't even attempt
+    # Groq: trimming a 57K-char prompt down to fit guts most of the source
+    # content anyway, and the previous "try anyway, 413, retry with harder
+    # trim" dance just burned every key with 2 doomed requests each (8 wasted
+    # round-trips, ~2s, before ever reaching Gemini). Skip straight there.
+    combined = len(SYSTEM_PROMPT) + len(user_prompt)
+    if combined > GROQ_MAX_PROMPT_CHARS:
+        log.info(
+            "Groq: skipping — combined payload %d chars (system %d + user %d) "
+            "exceeds %d char budget; going straight to Gemini",
+            combined, len(SYSTEM_PROMPT), len(user_prompt), GROQ_MAX_PROMPT_CHARS,
+        )
+        return ""
+
+    log.info("Groq: calling for report generation with %d key(s)  prompt=%d chars", len(keys), len(user_prompt))
 
     for key in round_robin(keys):
         if is_rate_limited(key):
@@ -561,47 +697,26 @@ async def call_groq(user_prompt: str) -> str:
                         "model": "llama-3.3-70b-versatile",
                         "messages": [
                             {"role": "system", "content": SYSTEM_PROMPT},
-                            {"role": "user", "content": trimmed_prompt},
+                            {"role": "user", "content": user_prompt},
                         ],
-                        "max_tokens": 16000,
+                        "max_tokens": 20000,
                         "temperature": 0.2,
                         "response_format": {"type": "json_object"},
                     },
                 )
             if res.status_code == 413:
-                log.warning("Groq 413 on key ...%s — retrying with harder trim", key[-4:])
-                # Try once more at half the current limit before giving up
-                harder_trim = len(trimmed_prompt) // 2
-                trimmed_prompt = trimmed_prompt[:harder_trim]
-                try:
-                    async with httpx.AsyncClient(timeout=90) as client2:
-                        res2 = await client2.post(
-                            "https://api.groq.com/openai/v1/chat/completions",
-                            headers={"Content-Type": "application/json", "Authorization": f"Bearer {key}"},
-                            json={
-                                "model": "llama-3.3-70b-versatile",
-                                "messages": [
-                                    {"role": "system", "content": SYSTEM_PROMPT},
-                                    {"role": "user", "content": trimmed_prompt},
-                                ],
-                                "max_tokens": 16000,
-                                "temperature": 0.2,
-                                "response_format": {"type": "json_object"},
-                            },
-                        )
-                    if res2.is_success:
-                        text2 = res2.json().get("choices", [{}])[0].get("message", {}).get("content", "")
-                        if text2:
-                            log.info("Groq: report generated on retry (%d chars)", len(text2))
-                            return text2
-                except Exception:
-                    pass
-                # 413 means the payload is too large for this key's context window.
-                # It says nothing about other keys, so only mark this one key
-                # as unavailable briefly and let the loop try the next key.
-                # (Blanket-marking every key poisons the shared chat endpoint too.)
+                # We already checked the size upfront, so a 413 here means our
+                # estimate was wrong (denser tokenization, Groq-side quirk,
+                # etc.) — not something the next key will fix. Bail out to
+                # Gemini immediately instead of repeating the same oversized
+                # request against every remaining key.
+                log.warning(
+                    "Groq 413 on key ...%s despite passing the %d-char pre-check "
+                    "— aborting Groq for this request, going straight to Gemini",
+                    key[-4:], GROQ_MAX_PROMPT_CHARS,
+                )
                 mark_rate_limited(key, 120_000)
-                continue
+                return ""
             if res.status_code == 429:
                 log.warning("Groq 429 on key ...%s", key[-4:])
                 mark_rate_limited(key, 60_000)
@@ -897,6 +1012,13 @@ async def generate_report(request: Request):
     log.info("Report request: question=%r  sources=%d  fileImages=%d  fileContext=%d chars  rag=%s",
              question[:80], len(sources), len(file_images), len(file_context), has_rag)
 
+    # Images Tavily turns up across whichever search call(s) below actually
+    # run — shared across the file-first/self-search branches and the later
+    # retry attempt, since they're all candidates for the SAME report and
+    # there's no harm in a slightly larger pool. Filtered + capped just before
+    # being put in front of the LLM.
+    image_candidates_raw: list = []
+
     # ── RAG-grounded report: if files were indexed, use RAG full-coverage retrieval ──
     if has_rag and session_id:
         log.info("Report: RAG mode — full-coverage retrieval for session %s", session_id[:8])
@@ -932,7 +1054,7 @@ async def generate_report(request: Request):
             # market context, comparisons, recent news) — supplement with web data.
             log.info("Report: file-first mode — supplementing with web search")
             search_query = _build_followup_search_query(question, conversation_context)
-            searched = await _tavily_search(search_query, max_results=20, min_results=10)
+            searched = await _tavily_search(search_query, max_results=20, min_results=10, images_out=image_candidates_raw)
             sources = [
                 {"title": r["title"], "url": r["url"],
                  "snippet": r["snippet"], "fullContent": r.get("fullContent", "")}
@@ -950,7 +1072,7 @@ async def generate_report(request: Request):
         if search_query != question:
             log.info("Report: search query enriched with prior context (%d → %d chars)",
                       len(question), len(search_query))
-        searched = await _tavily_search(search_query, max_results=20)
+        searched = await _tavily_search(search_query, max_results=20, images_out=image_candidates_raw)
         sources = [
             {"title": r["title"], "url": r["url"],
              "snippet": r["snippet"], "fullContent": r.get("fullContent", "")}
@@ -1022,19 +1144,29 @@ async def generate_report(request: Request):
             f"{conversation_context[:2000]}\n"
         )
 
+    # Curate the images Tavily found during the search(es) above into a
+    # numbered candidate list the model can pick from (never URLs it invents
+    # itself — see _validate_image_selections below).
+    image_candidates = _filter_image_candidates(image_candidates_raw)
+    image_candidates_block = _build_image_candidates_block(image_candidates)
+    if image_candidates:
+        log.info("Report: %d image candidates available for selection", len(image_candidates))
+
     user_prompt = (
         f"Research Question / Topic (this — and ONLY this — defines the report's title and subject): {question}\n"
         + (f"\nPRIMARY SOURCE — ANALYSE THIS FIRST (uploaded file data takes highest priority):{file_section}" if file_section else "")
         + conversation_section
         + (img_placement_instruction if img_placement_instruction else "")
         + f"\n\nSupplementary web sources ({len(enriched)} results):\n\n{src_text}\n\n"
-        "INSTRUCTIONS:\n"
+        + image_candidates_block
+        + "INSTRUCTIONS:\n"
         "1. The uploaded file content (if provided) is your PRIMARY source — extract ALL numbers, tables, charts, and statistics from it first.\n"
         "2. Use web sources to supplement and validate the file data.\n"
         "3. Follow CHART RULES exactly — reproduce actual data from the file as charts where it exists.\n"
-        "4. Write the full 6-section report. Insert [CHART_n] inline where valid chart data exists.\n"
-        + ("5. Insert [PAGE_IMG_n] references inline where you reference data visible in that page image.\n" if file_images else "")
-        + "6. Respond ONLY with the JSON object — no markdown fences, no text outside JSON."
+        "4. Write the full 7-section, long-form report (target 2600-3400 words). Insert [CHART_n] inline where valid chart data exists.\n"
+        "5. Follow IMAGE RULES — select 2-4 genuinely relevant candidates by index and insert [WEB_IMG_n] inline.\n"
+        + ("6. Insert [PAGE_IMG_n] references inline where you reference data visible in that page image.\n" if file_images else "")
+        + "7. Respond ONLY with the JSON object — no markdown fences, no text outside JSON."
     )
 
     raw = await call_groq(user_prompt)
@@ -1139,16 +1271,19 @@ async def generate_report(request: Request):
         if len(charts) < len(original_charts_list):
             log.info("Chart validation: kept %d / %d charts", len(charts), len(original_charts_list))
 
-        elapsed = (time.perf_counter() - t0) * 1000
-        log.info("Report complete in %.0fms — title=%r  charts=%d  keyStats=%d",
-                 elapsed, parsed.get("title", "")[:60], len(charts), len(parsed.get("keyStats", [])))
-
         report_text = parsed.get("report", "")
         # Renumber/strip [CHART_n] placeholders so they still point at the
         # right chart now that some may have been dropped above — otherwise
         # every placeholder after a rejected chart points one slot too far
         # into the now-shorter array (see _remap_chart_placeholders docstring).
         report_text = _remap_chart_placeholders(report_text, original_charts_list, valid_mask)
+
+        original_images_list = parsed.get("images") or []
+        images, images_valid_mask = _validate_image_selections(original_images_list, image_candidates)
+        if len(images) < len(original_images_list):
+            log.info("Image validation: kept %d / %d selections", len(images), len(original_images_list))
+        report_text = _remap_web_image_placeholders(report_text, images_valid_mask)
+
         if "\\n" in report_text:
             report_text = report_text.replace("\\n", "\n")
         report_text = re.sub(r"^```(?:json|markdown)?\s*", "", report_text.strip())
@@ -1187,10 +1322,14 @@ async def generate_report(request: Request):
         charts = await attach_datawrapper_charts(charts)
         report_text = _strip_citation_markers(report_text)
         clean_title = _sanitize_title(parsed.get("title", ""), question)
+        elapsed = (time.perf_counter() - t0) * 1000
+        log.info("Report complete in %.0fms — title=%r  charts=%d  images=%d  keyStats=%d",
+                 elapsed, clean_title[:60], len(charts), len(images), len(parsed.get("keyStats", [])))
         return JSONResponse({
             "title":      clean_title,
             "report":     report_text,
             "charts":     charts,
+            "images":     images,  # validated {url, caption} pairs for PDF/UI embedding
             "keyStats":   parsed.get("keyStats", []),
             "summary":    parsed.get("summary", ""),
             "fileImages": file_images,  # pass back so PDF can embed them
@@ -1234,6 +1373,7 @@ async def generate_report(request: Request):
                 "title":      _sanitize_title(salvaged.get("title", ""), question),
                 "report":     _strip_citation_markers(salvaged.get("report", "")),
                 "charts":     salvaged.get("charts", []),
+                "images":     [],  # not salvageable from truncated/malformed JSON — safer to drop than guess
                 "keyStats":   salvaged.get("keyStats", []),
                 "summary":    salvaged.get("summary", ""),
                 "fileImages": file_images,
@@ -1253,6 +1393,7 @@ async def generate_report(request: Request):
                 "title":      _sanitize_title(repaired_parsed.get("title", ""), question),
                 "report":     _strip_citation_markers((repaired_parsed.get("report", "") or "").replace("\\n", "\n")),
                 "charts":     repaired_charts,
+                "images":     [],  # unvalidated against candidates in this repair path — safer to drop
                 "keyStats":   repaired_parsed.get("keyStats", []),
                 "summary":    repaired_parsed.get("summary", ""),
                 "fileImages": file_images,
@@ -1264,7 +1405,7 @@ async def generate_report(request: Request):
         return JSONResponse({
             "title": _sanitize_title("", question),
             "report": "## Report Generation Error\n\nThe AI response could not be parsed. Please try a more specific question.",
-            "charts": [], "keyStats": [], "summary": "", "fileImages": file_images,
+            "charts": [], "images": [], "keyStats": [], "summary": "", "fileImages": file_images,
         })
 
     question: str = body.get("question", "")
@@ -1276,7 +1417,7 @@ async def generate_report(request: Request):
     if not sources:
         log.info("Report: no sources from client — running own Tavily search for %r", question[:60])
         from routes.chat import tavily_search as _tavily_search, _looks_like_ai_overview
-        searched = await _tavily_search(question, max_results=20)
+        searched = await _tavily_search(question, max_results=20, images_out=image_candidates_raw)
         sources = [
             {"title": r["title"], "url": r["url"],
              "snippet": r["snippet"], "fullContent": r.get("fullContent", "")}
@@ -1316,14 +1457,19 @@ async def generate_report(request: Request):
         for s in enriched
     )
 
+    image_candidates = _filter_image_candidates(image_candidates_raw)
+    image_candidates_block = _build_image_candidates_block(image_candidates)
+
     user_prompt = (
         f"Research Question / Topic: {question}\n\n"
         f"Scraped content from the top {len(enriched)} web sources:\n\n{src_text}\n\n"
-        "INSTRUCTIONS:\n"
+        + image_candidates_block
+        + "INSTRUCTIONS:\n"
         "1. Extract ALL numbers, tables, percentages, and statistics verbatim from the sources above.\n"
         "2. Follow the CHART RULES in the system prompt exactly — only produce charts for real distinct data.\n"
-        "3. Write the full 6-section report. Insert [CHART_n] placeholders inline only where valid chart data exists.\n"
-        "4. Respond ONLY with the JSON object — no markdown fences, no text outside JSON."
+        "3. Write the full 7-section, long-form report (target 2600-3400 words). Insert [CHART_n] placeholders inline only where valid chart data exists.\n"
+        "4. Follow IMAGE RULES — select 2-4 genuinely relevant candidates by index and insert [WEB_IMG_n] inline.\n"
+        "5. Respond ONLY with the JSON object — no markdown fences, no text outside JSON."
     )
 
     raw = await call_groq(user_prompt)
@@ -1393,15 +1539,16 @@ async def generate_report(request: Request):
         charts = [c for c, keep in zip(original_charts_list, valid_mask) if keep]
         if len(charts) < len(original_charts_list):
             log.info("Chart validation: kept %d / %d charts", len(charts), len(original_charts_list))
-        elapsed = (time.perf_counter() - t0) * 1000
-        log.info(
-            "Report complete in %.0fms — title=%r  charts=%d  keyStats=%d",
-            elapsed, parsed.get("title", "")[:60], len(charts), len(parsed.get("keyStats", [])),
-        )
         report_text = parsed.get("report", "")
         # Renumber/strip [CHART_n] placeholders to match the filtered list —
         # see _remap_chart_placeholders docstring for why this matters.
         report_text = _remap_chart_placeholders(report_text, original_charts_list, valid_mask)
+
+        original_images_list = parsed.get("images") or []
+        images, images_valid_mask = _validate_image_selections(original_images_list, image_candidates)
+        if len(images) < len(original_images_list):
+            log.info("Image validation: kept %d / %d selections", len(images), len(original_images_list))
+        report_text = _remap_web_image_placeholders(report_text, images_valid_mask)
 
         # Safety pass 1: unescape literal \n that some models emit
         if "\\n" in report_text:
@@ -1449,10 +1596,16 @@ async def generate_report(request: Request):
                 log.warning("Report: regex-extracted report field from raw JSON (pass 4)")
 
         charts = await attach_datawrapper_charts(charts)
+        elapsed = (time.perf_counter() - t0) * 1000
+        log.info(
+            "Report complete in %.0fms — title=%r  charts=%d  images=%d  keyStats=%d",
+            elapsed, parsed.get("title", "")[:60], len(charts), len(images), len(parsed.get("keyStats", [])),
+        )
         return JSONResponse({
             "title":    parsed.get("title", question[:80]),
             "report":   report_text,
             "charts":   charts,
+            "images":   images,
             "keyStats": parsed.get("keyStats", []),
             "summary":  parsed.get("summary", ""),
         })
@@ -1515,6 +1668,7 @@ async def generate_report(request: Request):
                 "title":    salvaged.get("title", question[:80]),
                 "report":   salvaged.get("report", ""),
                 "charts":   salvaged.get("charts", []),
+                "images":   [],
                 "keyStats": salvaged.get("keyStats", []),
                 "summary":  salvaged.get("summary", ""),
             })
@@ -1538,6 +1692,7 @@ async def generate_report(request: Request):
                 "title":    repaired_parsed.get("title", question[:80]),
                 "report":   (repaired_parsed.get("report", "") or "").replace("\\n", "\n"),
                 "charts":   repaired_charts,
+                "images":   [],
                 "keyStats": repaired_parsed.get("keyStats", []),
                 "summary":  repaired_parsed.get("summary", ""),
             })
@@ -1549,5 +1704,5 @@ async def generate_report(request: Request):
         return JSONResponse({
             "title": _sanitize_title("", question),
             "report": "## Report Generation Error\n\nThe AI response was too long and could not be parsed. Please try a more specific question.",
-            "charts": [], "keyStats": [], "summary": "",
+            "charts": [], "images": [], "keyStats": [], "summary": "",
         })

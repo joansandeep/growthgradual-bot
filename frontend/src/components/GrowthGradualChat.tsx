@@ -9,7 +9,8 @@ interface ChartDataPoint { label: string; value: number; }
 interface ChartSeries { name: string; data: ChartDataPoint[]; color?: string; }
 interface DatawrapperInfo { id: string; embedUrl: string; publicUrl: string; }
 interface ChartSpec { type: 'bar' | 'line' | 'pie' | 'table'; title: string; series?: ChartSeries[]; unit?: string; columns?: string[]; rows?: string[][]; datawrapper?: DatawrapperInfo; }
-interface ReportData { report: string; title?: string; charts: ChartSpec[]; keyStats: {label:string;value:string;change?:string}[]; summary: string; fileImages?: {name:string;mimeType:string;data:string}[]; }
+interface WebImage { url: string; caption?: string; }
+interface ReportData { report: string; title?: string; charts: ChartSpec[]; images?: WebImage[]; keyStats: {label:string;value:string;change?:string}[]; summary: string; fileImages?: {name:string;mimeType:string;data:string}[]; }
 interface Message {
   id: string; role: 'user' | 'assistant'; text: string; ts: number;
   sources?: Source[]; searchPerformed?: boolean; queryType?: string;
@@ -664,7 +665,7 @@ function ReportPanel({ msg, question, hasPriorContext, onGenerate }: { msg: Mess
       const res = await fetch('/api/chat/report/pdf', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ report: rd.report, title: rd.title, charts: rd.charts, question, keyStats: rd.keyStats, summary: rd.summary, fileImages: rd.fileImages ?? [] }),
+        body: JSON.stringify({ report: rd.report, title: rd.title, charts: rd.charts, images: rd.images ?? [], question, keyStats: rd.keyStats, summary: rd.summary, fileImages: rd.fileImages ?? [] }),
       });
       const contentType = res.headers.get('Content-Type') ?? '';
       if (contentType.includes('application/pdf')) {
@@ -804,43 +805,55 @@ function ReportPanel({ msg, question, hasPriorContext, onGenerate }: { msg: Mess
                   ))}
                 </div>
               )}
-              {/* Render report text with charts interleaved at [CHART_n] placeholders */}
-              {rd.charts.length > 0
+              {/* Render report text with charts + web images interleaved at [CHART_n] / [WEB_IMG_n] placeholders */}
+              {(rd.charts.length > 0 || (rd.images?.length ?? 0) > 0)
                 ? (() => {
-                    // Split report on [CHART_1], [CHART_2], … placeholders
-                    const parts = rd.report.split(/\[CHART_(\d+)\]/gi);
-                    // parts alternates: text, chartIndex, text, chartIndex, …
-                    return (
-                      <>
-                        {parts.map((part, idx) => {
-                          if (idx % 2 === 0) {
-                            // Text segment — render as markdown (skip if empty)
-                            return part.trim()
-                              ? <div key={idx} dangerouslySetInnerHTML={{ __html: renderMd(part) }}/>
-                              : null;
-                          } else {
-                            // Chart placeholder — part is the captured digit(s)
-                            const chartIdx = parseInt(part, 10) - 1; // [CHART_1] → index 0
-                            const spec = rd.charts[chartIdx];
-                            return spec
-                              ? <div key={idx} className="inline-report-chart"><ChartBlock spec={spec}/></div>
-                              : null;
-                          }
-                        })}
-                        {/* Fallback: any charts not referenced by a placeholder */}
-                        {rd.charts
-                          .filter((_, ci) => {
-                            const placeholderRe = new RegExp(`\\[CHART_${ci + 1}\\]`, 'i');
-                            return !placeholderRe.test(rd.report);
-                          })
-                          .map((c, i) => (
-                            <div key={`fallback-${i}`} className="inline-report-chart">
-                              <ChartBlock spec={c}/>
-                            </div>
-                          ))
+                    // Split on both placeholder kinds in one pass — with 2 capture
+                    // groups, String.split yields [text, kind, num, text, kind, num, …]
+                    const parts = rd.report.split(/\[(CHART|WEB_IMG)_(\d+)\]/gi);
+                    const elements: React.ReactNode[] = [];
+                    for (let i = 0; i < parts.length; i += 3) {
+                      const text = parts[i];
+                      if (text && text.trim()) {
+                        elements.push(<div key={`t-${i}`} dangerouslySetInnerHTML={{ __html: renderMd(text) }}/>);
+                      }
+                      const kind = parts[i + 1];
+                      const num = parts[i + 2];
+                      if (kind && num !== undefined) {
+                        const n = parseInt(num, 10) - 1;
+                        if (kind.toUpperCase() === 'CHART') {
+                          const spec = rd.charts[n];
+                          if (spec) elements.push(<div key={`c-${i}`} className="inline-report-chart"><ChartBlock spec={spec}/></div>);
+                        } else {
+                          const img = rd.images?.[n];
+                          if (img) elements.push(
+                            <figure key={`img-${i}`} className="inline-report-image">
+                              <img src={img.url} alt={img.caption ?? ''} loading="lazy" />
+                              {img.caption ? <figcaption>{img.caption}</figcaption> : null}
+                            </figure>
+                          );
                         }
-                      </>
-                    );
+                      }
+                    }
+                    // Fallback: any charts/images the model didn't place a placeholder for
+                    rd.charts.forEach((c, ci) => {
+                      const placeholderRe = new RegExp(`\\[CHART_${ci + 1}\\]`, 'i');
+                      if (!placeholderRe.test(rd.report)) {
+                        elements.push(<div key={`fb-c-${ci}`} className="inline-report-chart"><ChartBlock spec={c}/></div>);
+                      }
+                    });
+                    (rd.images ?? []).forEach((img, ii) => {
+                      const placeholderRe = new RegExp(`\\[WEB_IMG_${ii + 1}\\]`, 'i');
+                      if (!placeholderRe.test(rd.report)) {
+                        elements.push(
+                          <figure key={`fb-img-${ii}`} className="inline-report-image">
+                            <img src={img.url} alt={img.caption ?? ''} loading="lazy" />
+                            {img.caption ? <figcaption>{img.caption}</figcaption> : null}
+                          </figure>
+                        );
+                      }
+                    });
+                    return <>{elements}</>;
                   })()
                 : <div dangerouslySetInnerHTML={{ __html: renderMd(rd.report) }}/>
               }
@@ -1645,6 +1658,7 @@ export default function GrowthGradualChat() {
             report:     data.report     ?? '',
             title:      data.title      ?? '',
             charts:     data.charts     ?? [],
+            images:     data.images     ?? [],
             keyStats:   data.keyStats   ?? [],
             summary:    data.summary    ?? '',
             fileImages: data.fileImages ?? [],
@@ -1942,6 +1956,9 @@ export default function GrowthGradualChat() {
         .inline-chart-wrap { margin: 10px 0; background: #f8f9fc; border-radius: 10px; border: 1px solid #e2e6f0; padding: 4px 6px 6px; overflow: hidden; }
         .inline-chart-wrap .chart-wrap { margin: 0; background: transparent; border: none; box-shadow: none; padding: 4px 0 0; }
         .inline-report-chart { margin: 18px 0; }
+        .inline-report-image { margin: 18px 0; text-align: center; }
+        .inline-report-image img { max-width: 100%; max-height: 360px; border-radius: 10px; border: 1px solid #e2e6f0; box-shadow: 0 1px 4px rgba(26,31,78,.06); }
+        .inline-report-image figcaption { margin-top: 6px; font-size: 11px; color: #8b93b5; font-style: italic; font-family: 'DM Sans',sans-serif; }
         .inline-charts-section { margin-bottom: 10px; border: 1px solid #e2e6f0; border-radius: 12px; overflow: hidden; background: #f8f9fc; }
         .inline-charts-label { padding: 7px 12px 4px; font-size: 10px; font-weight: 700; color: #8b93b5; text-transform: uppercase; letter-spacing: .06em; font-family: 'DM Sans',sans-serif; }
         .inline-charts-section .charts-grid { padding: 0 6px 8px; gap: 8px; }

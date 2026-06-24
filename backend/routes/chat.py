@@ -583,18 +583,23 @@ def _clean_result_content(r: dict) -> dict:
 
 async def _tavily_one_call(
     key: str, query: str, domains: list[str] | None, max_results: int, qtype: str,
-    country: str | None = "india",
+    country: str | None = "india", images_out: list | None = None,
 ) -> list[dict]:
     """
     One Tavily SDK call on a single key. domains=None means no include_domains
     restriction (used for the 2 general/fallback keys). country=None means no
     geographic boost (used for "globally"/"world" style queries). Returns []
     on any failure — caller decides what to do with a thin/empty result.
+
+    images_out: if provided, any images Tavily returns for this query are
+    appended to it in-place as {"url": ..., "description": ...} dicts. Safe
+    to share one list across several concurrent calls (asyncio is single-
+    threaded, so list.append from each coroutine can't interleave/corrupt).
     """
     try:
         from tavily import AsyncTavilyClient
     except ImportError:
-        return await _tavily_search_httpx_fallback(query, max_results, domains or GENERAL_DOMAINS, qtype)
+        return await _tavily_search_httpx_fallback(query, max_results, domains or GENERAL_DOMAINS, qtype, images_out)
 
     if is_rate_limited(key):
         return []
@@ -608,8 +613,8 @@ async def _tavily_one_call(
             "chunks_per_source": 3,
             "include_answer": "advanced",
             "include_raw_content": True,
-            "include_images": False,
-            "include_image_descriptions": False,
+            "include_images": images_out is not None,
+            "include_image_descriptions": images_out is not None,
             "include_favicon": False,
         }
         if country:
@@ -621,6 +626,15 @@ async def _tavily_one_call(
 
         data = await client.search(**search_kwargs)
         raw_results = data.get("results") or []
+
+        if images_out is not None:
+            for img in (data.get("images") or []):
+                if isinstance(img, dict):
+                    url, desc = img.get("url", ""), img.get("description", "")
+                else:
+                    url, desc = str(img), ""
+                if url:
+                    images_out.append({"url": url, "description": desc})
 
         results: list[dict] = []
         for r in raw_results:
@@ -668,7 +682,9 @@ async def _enrich_thin_results(results: list[dict]) -> list[dict]:
     return results
 
 
-async def tavily_search(query: str, max_results: int = 20, min_results: int = 10) -> list[dict]:
+async def tavily_search(
+    query: str, max_results: int = 20, min_results: int = 10, images_out: list | None = None,
+) -> list[dict]:
     """
     5-key fan-out search.
 
@@ -683,6 +699,11 @@ async def tavily_search(query: str, max_results: int = 20, min_results: int = 10
     Falls back to the old single-key round-robin behaviour (one call, one
     domain list) if fewer than 5 keys are configured, or for non-finance
     queries where the curated finance source list doesn't apply.
+
+    images_out: if provided, images Tavily found for this query (deduped by
+    the caller) are appended to it as {"url", "description"} dicts. Only the
+    callers that actually want images (report generation) need to pass this —
+    everyone else gets the exact same behaviour as before.
     """
     keys = get_tavily_keys()
     if not keys:
@@ -705,7 +726,7 @@ async def tavily_search(query: str, max_results: int = 20, min_results: int = 10
         domain_keys, general_keys = keys[:3], keys[3:5]
 
         domain_lists = await asyncio.gather(*[
-            _tavily_one_call(domain_keys[i], query, TAVILY_CURATED_DOMAIN_GROUPS[i], max_results, qtype, country)
+            _tavily_one_call(domain_keys[i], query, TAVILY_CURATED_DOMAIN_GROUPS[i], max_results, qtype, country, images_out)
             for i in range(3)
         ])
 
@@ -723,7 +744,7 @@ async def tavily_search(query: str, max_results: int = 20, min_results: int = 10
             log.info("Tavily curated groups returned %d (< min %d) — adding general fallback keys",
                       len(trusted), min_results)
             general_lists = await asyncio.gather(*[
-                _tavily_one_call(k, query, None, max_results, qtype, country) for k in general_keys
+                _tavily_one_call(k, query, None, max_results, qtype, country, images_out) for k in general_keys
             ])
             for res in general_lists:
                 for r in res:
@@ -744,7 +765,7 @@ async def tavily_search(query: str, max_results: int = 20, min_results: int = 10
               query[:60], qtype, max_results)
 
     for key in round_robin(keys):
-        results = await _tavily_one_call(key, query, domains, max_results, qtype, country)
+        results = await _tavily_one_call(key, query, domains, max_results, qtype, country, images_out)
         if results:
             results = await _enrich_thin_results(results)
             elapsed = (time.perf_counter() - t0) * 1000
@@ -752,11 +773,11 @@ async def tavily_search(query: str, max_results: int = 20, min_results: int = 10
             return results
 
     log.error("Tavily: all keys exhausted or failed — trying httpx fallback")
-    return await _tavily_search_httpx_fallback(query, max_results, domains, qtype)
+    return await _tavily_search_httpx_fallback(query, max_results, domains, qtype, images_out)
 
 
 async def _tavily_search_httpx_fallback(
-    query: str, max_results: int, domains: list[str], qtype: str
+    query: str, max_results: int, domains: list[str], qtype: str, images_out: list | None = None,
 ) -> list[dict]:
     """Raw httpx fallback if tavily-python SDK is unavailable."""
     keys = get_tavily_keys()
@@ -774,6 +795,8 @@ async def _tavily_search_httpx_fallback(
                     "include_answer": False,
                     "include_raw_content": True,
                     "include_domains": domains,
+                    "include_images": images_out is not None,
+                    "include_image_descriptions": images_out is not None,
                     "country": "india",
                 }
                 if qtype == "finance":
@@ -788,6 +811,14 @@ async def _tavily_search_httpx_fallback(
                 if not res.is_success:
                     continue
                 data = res.json()
+                if images_out is not None:
+                    for img in (data.get("images") or []):
+                        if isinstance(img, dict):
+                            url, desc = img.get("url", ""), img.get("description", "")
+                        else:
+                            url, desc = str(img), ""
+                        if url:
+                            images_out.append({"url": url, "description": desc})
                 results = [
                     {
                         "title": r.get("title", ""),
