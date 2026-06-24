@@ -1089,8 +1089,13 @@ def build_pdf(report: str, title: str, question: str, summary: str,
             if ci < len(charts) and _is_valid_chart(charts[ci]):
                 ch = charts[ci]
                 CHART_H = 195
-                CARD_HEADER = 30   # space for title bar inside the card
                 GAP_ABOVE = 14     # breathing room between previous content and this card
+
+                # When a Datawrapper PNG is available the title is already baked
+                # into the image — don't add a redundant ReportLab title bar.
+                has_dw_png = bool((ch.get("datawrapper") or {}).get("pngBytes"))
+                CARD_HEADER = 0 if has_dw_png else 30  # 0 = no title bar, PNG fills card
+
                 CARD_TOTAL = CHART_H + CARD_HEADER + 10 + GAP_ABOVE
                 need(CARD_TOTAL, current_section[0])
                 nl(GAP_ABOVE)
@@ -1104,17 +1109,22 @@ def build_pdf(report: str, title: str, question: str, summary: str,
                 c.setStrokeColorRGB(0.87, 0.9, 0.95)
                 c.roundRect(MARGIN, card_bottom, CW, card_top - card_bottom, 5, fill=0, stroke=1)
 
-                # Title bar — sits inside the card, near its top
-                title_y = card_top - 18
-                c.setFillColorRGB(*accent())
-                c.rect(MARGIN, title_y - 2, 4, 14, fill=1, stroke=0)
-                c.setFillColorRGB(*NAVY); c.setFont("Helvetica-Bold", 9)
-                c.drawString(MARGIN + 10, title_y, ch.get("title", "")[:80])
-                c.setStrokeColorRGB(0.9, 0.92, 0.96); c.setLineWidth(0.6)
-                c.line(MARGIN + 8, title_y - 6, MARGIN + CW - 8, title_y - 6)
+                if has_dw_png:
+                    # Datawrapper PNG already contains the chart title — fill the
+                    # entire card with the image, no separate title bar needed.
+                    chart_top = card_top - 4
+                else:
+                    # Title bar — sits inside the card, near its top
+                    title_y = card_top - 18
+                    c.setFillColorRGB(*accent())
+                    c.rect(MARGIN, title_y - 2, 4, 14, fill=1, stroke=0)
+                    c.setFillColorRGB(*NAVY); c.setFont("Helvetica-Bold", 9)
+                    c.drawString(MARGIN + 10, title_y, ch.get("title", "")[:80])
+                    c.setStrokeColorRGB(0.9, 0.92, 0.96); c.setLineWidth(0.6)
+                    c.line(MARGIN + 8, title_y - 6, MARGIN + CW - 8, title_y - 6)
+                    chart_top = title_y - 10
 
                 # Chart body — fills remaining card area below the title bar
-                chart_top = title_y - 10
                 _draw_chart(c, ch, MARGIN + 8, chart_top - CHART_H, CW - 16, CHART_H)
                 y[0] = card_bottom - 14   # gap below the card before next content
                 rendered_charts.add(ci)
@@ -1407,7 +1417,7 @@ async def generate_pdf(request: Request):
         if needs_publish:
             await attach_datawrapper_charts(needs_publish, fetch_png_bytes=False)
 
-        async with httpx.AsyncClient(timeout=60.0) as client:
+        async with httpx.AsyncClient(timeout=120.0) as client:
             async def _one(ch):
                 dw = ch.get("datawrapper")
                 if not dw or dw.get("pngBytes"):

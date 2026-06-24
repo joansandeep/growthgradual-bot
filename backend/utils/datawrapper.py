@@ -236,7 +236,7 @@ async def publish_chart(client: httpx.AsyncClient, spec: dict) -> dict | None:
             "id": chart_id,
             "embedUrl": embed_url,
             "publicUrl": public_url,
-            "pngUrl": f"{API_BASE}/charts/{chart_id}/export/png?unit=px&width=900&plain=false",
+            "pngUrl": f"{API_BASE}/charts/{chart_id}/export/png?unit=px&width=900&plain=true&scale=2",
         }
     except Exception as exc:
         log.warning("Datawrapper publish failed for chart %r: %s", spec.get("title", "?"), exc)
@@ -246,42 +246,63 @@ async def publish_chart(client: httpx.AsyncClient, spec: dict) -> dict | None:
 async def fetch_png(client: httpx.AsyncClient, chart_id: str, png_url: str) -> bytes | None:
     """Download the static PNG export of an already-published chart (for the PDF).
 
-    Datawrapper's export pipeline is asynchronous — after publish, the PNG may
-    take a few seconds to render. We retry with increasing delays and validate
-    that the response body is actually PNG bytes (magic bytes \\x89PNG), not a
-    JSON status object or HTML error page that Datawrapper sometimes returns
-    while the render is still in progress.
+    Datawrapper v3 export pipeline:
+      1. POST /v3/charts/{id}/export/png  — triggers the async render job
+      2. Poll GET on the export URL until the response body starts with PNG magic bytes.
+
+    We POST first (triggering the job), then retry with increasing delays.
+    We validate that the response body is actually PNG bytes, not a JSON status
+    object or HTML error page that Datawrapper returns while still rendering.
     """
     if not TOKEN:
         return None
+
     PNG_MAGIC = b"\x89PNG"
-    # Delays: 2s, 3s, 4s, 5s — give Datawrapper time to finish rendering
-    delays = [2.0, 3.0, 4.0, 5.0]
+
+    # Build a clean export URL — width=900, plain=true (no title/desc frame,
+    # since we draw our own title bar in the PDF card). scale=2 for retina quality.
+    export_url = f"{API_BASE}/charts/{chart_id}/export/png?unit=px&width=900&plain=true&scale=2"
+
     try:
+        # Step 1: POST to trigger the async export job (Datawrapper v3 requirement).
+        # The POST sometimes returns the PNG directly for fast renders.
+        try:
+            trigger = await client.post(
+                f"{API_BASE}/charts/{chart_id}/export/png",
+                headers=_headers({"Content-Type": "application/json"}),
+                json={"unit": "px", "width": 900, "plain": True, "scale": 2},
+                timeout=20.0,
+            )
+            if trigger.status_code == 200 and trigger.content[:4] == PNG_MAGIC and len(trigger.content) > 1024:
+                log.info("Datawrapper PNG ready immediately from POST for chart %s (%d bytes)",
+                         chart_id, len(trigger.content))
+                return trigger.content
+        except Exception as trigger_exc:
+            log.debug("Datawrapper export POST failed for %s (will still poll GET): %s", chart_id, trigger_exc)
+
+        # Step 2: Poll the GET export URL with increasing delays.
+        delays = [2.0, 3.0, 4.0, 5.0, 6.0]
         for attempt, delay in enumerate(delays):
             await asyncio.sleep(delay)
-            resp = await client.get(png_url, headers=_headers())
+            resp = await client.get(export_url, headers=_headers(), timeout=30.0)
             if resp.status_code == 200 and resp.content:
-                # Validate it's actually a PNG — Datawrapper returns HTTP 200
-                # with JSON {"status":"processing"} while the render is pending.
                 if resp.content[:4] == PNG_MAGIC and len(resp.content) > 1024:
                     log.info("Datawrapper PNG ready for chart %s on attempt %d (%d bytes)",
                              chart_id, attempt + 1, len(resp.content))
                     return resp.content
                 else:
-                    content_preview = resp.content[:80]
                     log.info("Datawrapper PNG not ready yet for chart %s (attempt %d) — got: %r",
-                             chart_id, attempt + 1, content_preview)
+                             chart_id, attempt + 1, resp.content[:80])
             else:
                 log.info("Datawrapper PNG HTTP %s for chart %s (attempt %d)",
                          resp.status_code, chart_id, attempt + 1)
+
         log.warning("Datawrapper PNG export never became ready for chart %s after %d attempts",
                     chart_id, len(delays))
         return None
     except Exception as exc:
         log.warning("Datawrapper PNG fetch failed for chart %s: %s", chart_id, exc)
         return None
-
 
 async def attach_datawrapper_charts(charts: list[dict], fetch_png_bytes: bool = False) -> list[dict]:
     """

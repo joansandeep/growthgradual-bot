@@ -7,6 +7,13 @@ import Image from 'next/image';
 interface Source { title: string; url: string; snippet: string; }
 interface ChartDataPoint { label: string; value: number; }
 interface ChartSeries { name: string; data: ChartDataPoint[]; color?: string; }
+/** Route a Tavily/third-party image URL through our server-side proxy to bypass hotlink protection. */
+function proxyImg(url: string): string {
+  if (!url) return url;
+  if (url.startsWith('/') || url.startsWith('data:')) return url;
+  return `/api/image-proxy?url=${encodeURIComponent(url)}`;
+}
+
 interface DatawrapperInfo { id: string; embedUrl: string; publicUrl: string; }
 interface ChartSpec { type: 'bar' | 'line' | 'pie' | 'table'; title: string; series?: ChartSeries[]; unit?: string; columns?: string[]; rows?: string[][]; datawrapper?: DatawrapperInfo; }
 interface WebImage { url: string; caption?: string; }
@@ -508,13 +515,27 @@ function TableChart({ spec }: { spec: ChartSpec }) {
 function ChartBlock({ spec }: { spec: ChartSpec }) {
   // Hard gate: never render a chart that has bad/useless data
   if (!isValidChart(spec)) return null;
-  // Prefer the published Datawrapper chart; fall back to the lightweight
-  // inline renderer if Datawrapper publishing failed or isn't configured.
-  if (spec.datawrapper?.embedUrl) return <DatawrapperChart spec={spec}/>;
-  if (spec.type === 'table') return <TableChart spec={spec}/>;
-  if (spec.type === 'pie') return <PieChart spec={spec}/>;
-  if (spec.type === 'line') return <LineChart spec={spec}/>;
-  return <BarChart spec={spec}/>;
+  // Datawrapper embed iframes are blocked on the free/starter plan (returns 403
+  // for the public CDN URL). Use the inline SVG renderers for the UI — the
+  // Datawrapper integration is still used for the PDF export (PNG via API token).
+  // Show an "Open in Datawrapper" link if we have the publicUrl.
+  const dwLink = spec.datawrapper?.publicUrl;
+  const inner = spec.type === 'table' ? <TableChart spec={spec}/>
+              : spec.type === 'pie'   ? <PieChart spec={spec}/>
+              : spec.type === 'line'  ? <LineChart spec={spec}/>
+              : <BarChart spec={spec}/>;
+  if (!dwLink) return inner;
+  return (
+    <div>
+      {inner}
+      <div style={{ textAlign: 'right', marginTop: 4 }}>
+        <a href={dwLink} target="_blank" rel="noopener noreferrer"
+          style={{ fontSize: 10, color: '#3b82f6', fontFamily: 'DM Sans,sans-serif', textDecoration: 'none' }}>
+          Open in Datawrapper ↗
+        </a>
+      </div>
+    </div>
+  );
 }
 
 // ─── Report Panel ─────────────────────────────────────────────────────────────
@@ -828,7 +849,7 @@ function ReportPanel({ msg, question, hasPriorContext, onGenerate }: { msg: Mess
                           const img = rd.images?.[n];
                           if (img) elements.push(
                             <figure key={`img-${i}`} className="inline-report-image">
-                              <img src={img.url} alt={img.caption ?? ''} loading="lazy" />
+                              <img src={proxyImg(img.url)} alt={img.caption ?? ''} loading="lazy" />
                               {img.caption ? <figcaption>{img.caption}</figcaption> : null}
                             </figure>
                           );
@@ -847,7 +868,7 @@ function ReportPanel({ msg, question, hasPriorContext, onGenerate }: { msg: Mess
                       if (!placeholderRe.test(rd.report)) {
                         elements.push(
                           <figure key={`fb-img-${ii}`} className="inline-report-image">
-                            <img src={img.url} alt={img.caption ?? ''} loading="lazy" />
+                              <img src={proxyImg(img.url)} alt={img.caption ?? ''} loading="lazy" />
                             {img.caption ? <figcaption>{img.caption}</figcaption> : null}
                           </figure>
                         );
