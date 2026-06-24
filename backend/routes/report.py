@@ -32,7 +32,7 @@ You MUST respond with valid JSON only — no markdown fences, no preamble, no te
 Respond with EXACTLY this shape:
 {
   "title": "<concise NOUN-PHRASE report title, max 12 words. Examples: 'Top Banking Stocks India 2026', 'Indian Mutual Fund SIP Returns Analysis', 'HDFC vs ICICI Bank Comparison', 'Nifty 50 Market Outlook — June 2026'. STRICT RULES: NEVER start with 'So', 'You', 'I', 'Let's', 'Here', 'Based', 'Looking', 'Understanding', 'A look at', 'An analysis of', or any verb/pronoun. NEVER start with 'The' followed by a verb — e.g. BAD: 'The Nifty outlook today is mixed, with some analysts predicting...' (full sentence starting with The) → GOOD: 'Nifty 50 Outlook — Mixed Signals Amid Volatility'. NEVER write a full sentence — this includes sentences that don't start with one of those words too, e.g. BAD: 'The Minimum Investment Amounts For These Top-Performing SIPs Are As Follows' → GOOD: 'Top-Performing SIP Funds — Minimum Investment Requirements'. Never end a title with a colon, 'as follows', or '...' — those signal an incomplete sentence, not a heading. ALWAYS write a noun phrase — topic first, qualifiers after.>",
-  "report": "<full markdown report — target 2600-3400 words, structured and data-rich. This is a LONG-FORM report (aim for ~10-12 printed pages once charts/tables/images are laid in) — see REPORT STRUCTURE below for the section list that gets you there. Add DEPTH, not invented data: more context, more explanation of mechanisms and causes, more comparison and discussion of what the numbers mean — never pad with filler sentences or numbers not in the sources.>",
+  "report": "<full markdown report — target 2800-3500 words (MINIMUM 18000 characters — shorter responses will be rejected and retried), structured and data-rich. This is a LONG-FORM report (aim for ~10-12 printed pages once charts/tables/images are laid in) — see REPORT STRUCTURE below for the section list that gets you there. Add DEPTH, not invented data: more context, more explanation of mechanisms and causes, more comparison and discussion of what the numbers mean — never pad with filler sentences or numbers not in the sources.>",
   "charts": [...],
   "images": [...],
   "keyStats": [{ "label": "<short label>", "value": "<value string>", "change": "<+/- % or empty string>" }],
@@ -247,8 +247,13 @@ GLOBAL RULES:
 - At least 4 markdown data tables
 - 2-4 relevant images selected from the candidate list (0 acceptable only if none are genuinely relevant)
 - keyStats: 6-8 real metrics with values and change indicators
-- Target 2600-3400 words total — every section must be substantive; never stub a section with a single sentence.
-  Reach this length through depth (context, mechanism, comparison, implications), never through invented data.
+- MINIMUM LENGTH — HARD REQUIREMENT: The "report" field MUST be at least 2800 words (≈18,000 characters).
+  This is a strict floor enforced server-side — responses shorter than 15,000 characters will be REJECTED
+  and regenerated. Every section listed above has its own minimum word count; meet them ALL.
+  Write deeply: explain the mechanism behind every data point, give historical context, compare to peers,
+  discuss implications for different investor types. Never stub any section. Length comes from depth and
+  analysis, not repetition or invented facts.
+  Target 2800-3500 words total across all sections.
 - CRITICAL: NEVER write raw JSON inside the "report" string. Charts go ONLY in the "charts" array.
   Use [CHART_1], [CHART_2] placeholders in the report text — never paste the chart JSON object itself.
 """
@@ -742,6 +747,12 @@ async def call_groq(user_prompt: str) -> str:
             if text:
                 elapsed = (time.perf_counter() - t0) * 1000
                 log.info("Groq: report generated in %.0fms (%d chars)", elapsed, len(text))
+                if len(text) < 8_000:
+                    log.warning(
+                        "Groq: report too short (%d chars < 8000) — skipping, falling through to Gemini",
+                        len(text),
+                    )
+                    continue
                 return text
         except Exception as exc:
             log.warning("Groq exception on key ...%s: %s", key[-4:], exc)
@@ -754,17 +765,18 @@ async def call_groq(user_prompt: str) -> str:
 # Gemini model priority: try best model first, fall back on 503/429/404
 GEMINI_MODELS = [
     # Ordered by RPD on the free tier so the highest-quota model is tried first.
-    # gemini-3.1-flash-lite: 15 RPM / 500 RPD  ← workhorse; try this first
-    # gemini-2.5-flash-lite: 10 RPM / 20 RPD
-    # gemini-2.5-flash:       5 RPM / 20 RPD
-    # gemini-3-flash-preview: 5 RPM / 20 RPD   (API string; shown as "Gemini 3 Flash" in console)
-    # gemini-3.5-flash:       5 RPM / 20 RPD
-    # Removed: gemini-2.0-flash / gemini-2.0-flash-lite (retiring June 2026, 0/0/0 quota)
-    "gemini-3.1-flash-lite",   # 15 RPM / 500 RPD — highest free quota by far
-    "gemini-2.5-flash-lite",   # 10 RPM / 20 RPD
-    "gemini-2.5-flash",        #  5 RPM / 20 RPD
-    "gemini-3-flash-preview",  #  5 RPM / 20 RPD
-    "gemini-3.5-flash",        #  5 RPM / 20 RPD
+    # Source: Google AI Studio rate limits dashboard (verified 2026-06-24)
+    # gemini-3.1-flash-lite:  15 RPM / 250K TPM / 500 RPD  ← workhorse; try this first
+    # gemini-2.5-flash-lite:  10 RPM / 250K TPM /  20 RPD
+    # gemini-2.5-flash:        5 RPM / 250K TPM /  20 RPD
+    # gemini-3-flash-preview:  5 RPM / 250K TPM /  20 RPD  (API string; shown as "Gemini 3 Flash" in console)
+    # gemini-3.5-flash:        5 RPM / 250K TPM /  20 RPD
+    # Removed: gemini-2.0-flash / gemini-2.0-flash-lite (0/0/0 quota, retired June 2026)
+    "gemini-3.1-flash-lite",   # 15 RPM / 250K TPM / 500 RPD — highest free quota by far
+    "gemini-2.5-flash-lite",   # 10 RPM / 250K TPM /  20 RPD
+    "gemini-2.5-flash",        #  5 RPM / 250K TPM /  20 RPD
+    "gemini-3-flash-preview",  #  5 RPM / 250K TPM /  20 RPD
+    "gemini-3.5-flash",        #  5 RPM / 250K TPM /  20 RPD
 ]
 
 
@@ -849,6 +861,14 @@ async def call_gemini(user_prompt: str) -> str:
                 elapsed = (time.perf_counter() - t0) * 1000
                 log.info("Gemini: report generated in %.0fms (%d chars) model=%s key=...%s",
                          elapsed, len(text), model, key[-4:])
+                # Reject under-length reports — the system prompt mandates ≥15K chars.
+                # Treat short output as a soft failure and try the next model/key.
+                if len(text) < 8_000:
+                    log.warning(
+                        "Gemini: report too short (%d chars < 8000) — model=%s key=...%s — retrying next slot",
+                        len(text), model, key[-4:],
+                    )
+                    continue
                 return text
             log.warning("Gemini: empty response from model=%s key=...%s", model, key[-4:])
         except Exception as exc:
@@ -1163,7 +1183,7 @@ async def generate_report(request: Request):
         "1. The uploaded file content (if provided) is your PRIMARY source — extract ALL numbers, tables, charts, and statistics from it first.\n"
         "2. Use web sources to supplement and validate the file data.\n"
         "3. Follow CHART RULES exactly — reproduce actual data from the file as charts where it exists.\n"
-        "4. Write the full 7-section, long-form report (target 2600-3400 words). Insert [CHART_n] inline where valid chart data exists.\n"
+        "4. Write the full 7-section, long-form report (target 2800-3500 words (MINIMUM 18000 characters — shorter responses will be rejected and retried)). Insert [CHART_n] inline where valid chart data exists.\n"
         "5. Follow IMAGE RULES — select 2-4 genuinely relevant candidates by index and insert [WEB_IMG_n] inline.\n"
         + ("6. Insert [PAGE_IMG_n] references inline where you reference data visible in that page image.\n" if file_images else "")
         + "7. Respond ONLY with the JSON object — no markdown fences, no text outside JSON."
@@ -1467,7 +1487,7 @@ async def generate_report(request: Request):
         + "INSTRUCTIONS:\n"
         "1. Extract ALL numbers, tables, percentages, and statistics verbatim from the sources above.\n"
         "2. Follow the CHART RULES in the system prompt exactly — only produce charts for real distinct data.\n"
-        "3. Write the full 7-section, long-form report (target 2600-3400 words). Insert [CHART_n] placeholders inline only where valid chart data exists.\n"
+        "3. Write the full 7-section, long-form report (target 2800-3500 words (MINIMUM 18000 characters — shorter responses will be rejected and retried)). Insert [CHART_n] placeholders inline only where valid chart data exists.\n"
         "4. Follow IMAGE RULES — select 2-4 genuinely relevant candidates by index and insert [WEB_IMG_n] inline.\n"
         "5. Respond ONLY with the JSON object — no markdown fences, no text outside JSON."
     )

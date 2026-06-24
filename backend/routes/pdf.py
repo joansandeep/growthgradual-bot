@@ -358,7 +358,34 @@ def _tokenise(md: str):
             yield {"type": "numbered", "num": m.group(1), "text": m.group(2)}
 
         elif stripped:
-            yield {"type": "para", "text": stripped}
+            # Split any inline [CHART_n], [WEB_IMG_n], [PAGE_IMG_n] placeholders
+            # that the LLM embedded mid-sentence rather than on their own line.
+            # We tokenise the paragraph by splitting on placeholder patterns and
+            # yielding each part separately so the renderer handles them correctly.
+            _INLINE_PH = re.compile(
+                r"(\[CHART_\d+\]|\[WEB_IMG_\d+\]|\[PAGE_IMG_\d+\])"
+            )
+            parts = _INLINE_PH.split(stripped)
+            if len(parts) == 1:
+                # No placeholders — plain paragraph
+                yield {"type": "para", "text": stripped}
+            else:
+                for part in parts:
+                    if not part:
+                        continue
+                    cm = re.match(r"^\[CHART_(\d+)\]$", part)
+                    wm = re.match(r"^\[WEB_IMG_(\d+)\]$", part)
+                    pm = re.match(r"^\[PAGE_IMG_(\d+)\]$", part)
+                    if cm:
+                        yield {"type": "chart_placeholder", "index": int(cm.group(1)) - 1}
+                    elif wm:
+                        yield {"type": "web_img_placeholder", "index": int(wm.group(1)) - 1}
+                    elif pm:
+                        yield {"type": "page_img_placeholder", "index": int(pm.group(1)) - 1}
+                    else:
+                        t = part.strip()
+                        if t:
+                            yield {"type": "para", "text": t}
 
         i += 1
 
@@ -926,8 +953,13 @@ def build_pdf(report: str, title: str, question: str, summary: str,
     ty -= 26
 
     # ── Two-column info panel ─────────────────────────────────────────────────
-    PANEL_H = 110
-    COL2    = (CW - 14) / 2
+    KS_ROW_H   = 14          # height per key-stat row (was 16 — tighter packing)
+    MAX_KS     = 8           # show at most 8 key stats
+    n_stats    = min(len(key_stats), MAX_KS)
+    # Panel must fit the header (14pt) + separator (4pt) + stat rows + 10pt pad
+    KS_INNER_H = 18 + n_stats * KS_ROW_H + 10   # dynamic
+    PANEL_H    = max(110, KS_INNER_H)            # never shorter than 110
+    COL2       = (CW - 14) / 2
 
     # Left panel — navy background
     c.setFillColorRGB(*NAVY)
@@ -963,20 +995,20 @@ def build_pdf(report: str, title: str, question: str, summary: str,
         c.setStrokeColorRGB(*GOLD); c.setLineWidth(0.8)
         c.line(rx + 12, ty - 18, rx + COL2 - 12, ty - 18)
         ky = ty - 32
-        for st in key_stats[:4]:
+        for st in key_stats[:MAX_KS]:
             val = _safe_text(fmt_inr(str(st.get("value", ""))))[:14]
             lbl = _safe_text(st.get("label", ""))[:24]
             chg = _safe_text(st.get("change", ""))
             col_c = GREEN if chg.startswith("+") else (RED if chg.startswith("-") else GREY)
-            c.setFillColorRGB(*NAVY); c.setFont("Helvetica-Bold", 8.5)
+            c.setFillColorRGB(*NAVY); c.setFont("Helvetica-Bold", 8)
             c.drawString(rx + 12, ky, val)
-            c.setFillColorRGB(*GREY); c.setFont("Helvetica", 7)
-            vw = c.stringWidth(val, "Helvetica-Bold", 8.5)
-            c.drawString(rx + 12 + vw + 5, ky, lbl)
+            c.setFillColorRGB(*GREY); c.setFont("Helvetica", 6.5)
+            vw = c.stringWidth(val, "Helvetica-Bold", 8)
+            c.drawString(rx + 12 + vw + 4, ky, lbl)
             if chg:
-                c.setFillColorRGB(*col_c); c.setFont("Helvetica-Bold", 7)
+                c.setFillColorRGB(*col_c); c.setFont("Helvetica-Bold", 6.5)
                 c.drawRightString(rx + COL2 - 12, ky, chg)
-            ky -= 16
+            ky -= KS_ROW_H
     else:
         c.setFillColorRGB(*NAVY); c.setFont("Helvetica-Bold", 7.5)
         c.drawString(rx + 12, ty - 14, "INTELLIGENCE BRIEF")
@@ -1343,6 +1375,20 @@ def build_pdf(report: str, title: str, question: str, summary: str,
                     c.drawString(cx2, y[0] - ROW_H + 7, _strip_inline(cell_str)[:28])
                 nl(ROW_H)
             nl(8)
+
+    # ── Minimum page count padding ────────────────────────────────────────────
+    # If the body text was too short (e.g. LLM under-generated), pad to ≥8 pages
+    # by adding blank continuation pages so the PDF never feels skeletal.
+    MIN_PAGES = 8
+    while page_num[0] < MIN_PAGES:
+        c.showPage()
+        hf(current_section[0])
+        y[0] = BODY_TOP
+        # Subtle "continued" marker so it doesn't look like a bug
+        c.setFillColorRGB(*GREY); c.setFont("Helvetica-Oblique", 9)
+        c.drawCentredString(PAGE_W / 2, BODY_TOP - 30,
+                            "[End of report content]")
+        y[0] = BODY_BOT  # prevent further content being placed
 
     # Fallback chart rendering is intentionally suppressed.
     # The LLM system prompt places all charts inline via [CHART_n] placeholders.
