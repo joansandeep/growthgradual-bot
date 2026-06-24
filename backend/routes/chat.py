@@ -1068,19 +1068,26 @@ async def stream_groq(system_prompt: str, messages: list[dict]) -> AsyncGenerato
 
 _GEMINI_CHAT_MODELS = [
     # Ordered by free-tier RPD so the highest-quota model is tried first.
-    # gemini-3.1-flash-lite: 15 RPM / 500 RPD  ← workhorse
-    # gemini-2.5-flash-lite: 10 RPM / 20 RPD
-    # gemini-2.5-flash:       5 RPM / 20 RPD
-    # gemini-3-flash-preview: 5 RPM / 20 RPD   (API string for "Gemini 3 Flash" in console)
-    # gemini-3.5-flash:       5 RPM / 20 RPD
+    # Source: Google AI Studio rate limits dashboard (verified 2026-06-24)
+    # gemini-3.1-flash-lite:  15 RPM / 250K TPM / 500 RPD  ← workhorse; highest quota
+    # gemini-2.5-flash-lite:  10 RPM / 250K TPM /  20 RPD
+    # gemini-2.5-flash:        5 RPM / 250K TPM /  20 RPD
+    # gemini-3-flash-preview:  5 RPM / 250K TPM /  20 RPD  (API string for "Gemini 3 Flash" in console)
+    # gemini-3.5-flash:        5 RPM / 250K TPM /  20 RPD
     # Removed: gemini-1.5-flash / gemini-1.5-flash-8b (404, retired)
-    #          gemini-2.0-flash / gemini-2.0-flash-lite (retiring June 2026, 0/0/0 quota)
-    "gemini-3.1-flash-lite",   # 15 RPM / 500 RPD
-    "gemini-2.5-flash-lite",   # 10 RPM / 20 RPD
-    "gemini-2.5-flash",        #  5 RPM / 20 RPD
-    "gemini-3-flash-preview",  #  5 RPM / 20 RPD
-    "gemini-3.5-flash",        #  5 RPM / 20 RPD
+    #          gemini-2.0-flash / gemini-2.0-flash-lite (0/0/0 quota, retired June 2026)
+    "gemini-3.1-flash-lite",   # 15 RPM / 250K TPM / 500 RPD — highest free quota
+    "gemini-2.5-flash-lite",   # 10 RPM / 250K TPM /  20 RPD
+    "gemini-2.5-flash",        #  5 RPM / 250K TPM /  20 RPD
+    "gemini-3-flash-preview",  #  5 RPM / 250K TPM /  20 RPD
+    "gemini-3.5-flash",        #  5 RPM / 250K TPM /  20 RPD
 ]
+
+# Models that need explicit thinking suppression to avoid wasting output tokens.
+# gemini-3.1-flash-lite defaults to minimal thinking — no param needed.
+# Mixing thinkingBudget (2.5) and thinkingLevel (3.x) in one request → HTTP 400.
+_GEMINI_THINKING_BUDGET_MODELS = {"gemini-2.5-flash", "gemini-2.5-flash-lite"}
+_GEMINI_THINKING_LEVEL_MODELS  = {"gemini-3-flash-preview", "gemini-3.5-flash"}
 
 
 async def gemini_sse(system_prompt: str, messages: list[dict]) -> AsyncGenerator[str, None]:
@@ -1104,13 +1111,21 @@ async def gemini_sse(system_prompt: str, messages: list[dict]) -> AsyncGenerator
             continue
         try:
             log.debug("Gemini chat: model=%s key=...%s", model, key[-4:])
+            gen_cfg: dict = {"maxOutputTokens": 2048, "temperature": 0.5}
+            # Suppress thinking tokens — wastes the 2048-token output budget.
+            # Gemini 2.5 uses thinkingBudget; Gemini 3.x uses thinkingLevel.
+            # Mixing both params in one request → HTTP 400.
+            if model in _GEMINI_THINKING_BUDGET_MODELS:
+                gen_cfg["thinkingConfig"] = {"thinkingBudget": 0}
+            elif model in _GEMINI_THINKING_LEVEL_MODELS:
+                gen_cfg["thinkingConfig"] = {"thinkingLevel": "minimal"}
             async with httpx.AsyncClient(timeout=45) as client:
                 res = await client.post(
                     f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={key}",
                     json={
                         "system_instruction": {"parts": [{"text": system_prompt}]},
                         "contents": [{"role": "user", "parts": [{"text": user_msg}]}],
-                        "generationConfig": {"maxOutputTokens": 2048, "temperature": 0.5},
+                        "generationConfig": gen_cfg,
                     },
                 )
 

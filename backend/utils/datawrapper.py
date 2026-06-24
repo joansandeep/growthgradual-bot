@@ -112,8 +112,14 @@ def _dw_type(spec: dict) -> str:
             return "stacked-column-chart" if temporal else "d3-bars-stacked"
         # Grouped comparison (e.g. revenue vs. profit per company/quarter)
         return "grouped-column-chart"
-    # Single series
-    return "column-chart" if temporal else "d3-bars"
+    # Single series — prefer vertical columns for up to 8 items (reads better in PDF);
+    # only use horizontal bars (d3-bars) for longer label lists (>8 items) where
+    # rotated x-axis labels would be unreadable.
+    all_labels_first_series = [(pt.get("label") or "") for pt in ((series[0].get("data") or []) if series else [])]
+    n_items = len(all_labels_first_series)
+    if temporal or n_items <= 8:
+        return "column-chart"
+    return "d3-bars"
 
 
 def _spec_to_csv(spec: dict) -> str:
@@ -190,23 +196,29 @@ async def publish_chart(client: httpx.AsyncClient, spec: dict) -> dict | None:
         data_resp.raise_for_status()
 
         unit = spec.get("unit") or ""
+        # Build color palette — Growth Gradual brand colors
+        series_list = spec.get("series") or []
+        brand_colors = ["#1a1f4e", "#3b82f6", "#22c55e", "#f59e0b", "#ef4444", "#8b5cf6", "#06b6d4", "#ec4899"]
+        custom_colors: dict = {}
+        for i, s in enumerate(series_list):
+            s_name = s.get("name", f"Series {i+1}")
+            custom_colors[s_name] = brand_colors[i % len(brand_colors)]
+        # Also index-based fallback
+        for i in range(8):
+            custom_colors[str(i)] = brand_colors[i % len(brand_colors)]
+
         metadata: dict = {
             "describe": {
                 "source-name": "Growth Gradual",
+                "source-url": "https://growth-gradual.com",
                 "intro": "",
             },
-            "annotate": {
-                "notes": "",
-            },
+            "annotate": {"notes": ""},
             "visualize": {
-                "custom-colors": {
-                    "0": "#1a1f4e",
-                    "1": "#3b82f6",
-                    "2": "#22c55e",
-                    "3": "#f59e0b",
-                    "4": "#ef4444",
-                    "5": "#8b5cf6",
-                },
+                "custom-colors": custom_colors,
+                "base-color": "#1a1f4e",
+                "label-colors": True,
+                "value-labels": True,
             },
         }
         if dw_type in ("d3-bars", "d3-bars-stacked", "column-chart", "grouped-column-chart",
@@ -215,6 +227,10 @@ async def publish_chart(client: httpx.AsyncClient, spec: dict) -> dict | None:
                 "y-grid": "on",
                 "tooltip-number-format": f"0,0.0{('a ' + unit) if unit else ''}".strip(),
             })
+        if unit == "%":
+            metadata["visualize"]["value-label-format"] = "0.0%"
+        elif unit in ("Cr", "₹", "Rs"):
+            metadata["visualize"]["value-label-format"] = "0,0"
         await client.patch(
             f"{API_BASE}/charts/{chart_id}",
             headers=_headers({"Content-Type": "application/json"}),
@@ -236,7 +252,12 @@ async def publish_chart(client: httpx.AsyncClient, spec: dict) -> dict | None:
             "id": chart_id,
             "embedUrl": embed_url,
             "publicUrl": public_url,
-            "pngUrl": f"{API_BASE}/charts/{chart_id}/export/png?unit=px&width=900&plain=true&scale=2",
+            # width=900, height=500 — explicit height prevents Datawrapper from
+            # producing a tall empty canvas for charts with few data points.
+            # plain=false keeps the title/subtitle frame baked into the PNG so the
+            # PDF card shows a complete labelled chart without needing a separate
+            # ReportLab title bar above it.
+            "pngUrl": f"{API_BASE}/charts/{chart_id}/export/png?unit=px&width=900&height=500&scale=2",
         }
     except Exception as exc:
         log.warning("Datawrapper publish failed for chart %r: %s", spec.get("title", "?"), exc)
@@ -259,9 +280,10 @@ async def fetch_png(client: httpx.AsyncClient, chart_id: str, png_url: str) -> b
 
     PNG_MAGIC = b"\x89PNG"
 
-    # Build a clean export URL — width=900, plain=true (no title/desc frame,
-    # since we draw our own title bar in the PDF card). scale=2 for retina quality.
-    export_url = f"{API_BASE}/charts/{chart_id}/export/png?unit=px&width=900&plain=true&scale=2"
+    # Build a clean export URL — width=900, height=500 explicit so small datasets
+    # don't produce a huge empty canvas. plain=false keeps the title/subtitle in the
+    # PNG image itself so the PDF card shows a complete labelled chart.
+    export_url = f"{API_BASE}/charts/{chart_id}/export/png?unit=px&width=900&height=500&scale=2"
 
     try:
         # Step 1: POST to trigger the async export job (Datawrapper v3 requirement).
@@ -270,7 +292,7 @@ async def fetch_png(client: httpx.AsyncClient, chart_id: str, png_url: str) -> b
             trigger = await client.post(
                 f"{API_BASE}/charts/{chart_id}/export/png",
                 headers=_headers({"Content-Type": "application/json"}),
-                json={"unit": "px", "width": 900, "plain": True, "scale": 2},
+                json={"unit": "px", "width": 900, "height": 500, "scale": 2},
                 timeout=20.0,
             )
             if trigger.status_code == 200 and trigger.content[:4] == PNG_MAGIC and len(trigger.content) > 1024:
