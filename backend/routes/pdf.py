@@ -816,7 +816,6 @@ def build_pdf(report: str, title: str, question: str, summary: str,
     from reportlab.lib.pagesizes import A4
     from reportlab.pdfgen import canvas as rl_canvas
     from reportlab.lib.utils import ImageReader
-    from reportlab.platypus import Image as RLImage
     from PIL import Image as PILImage
 
     PAGE_W, PAGE_H = A4          # 595 x 842 pt
@@ -1233,8 +1232,8 @@ def build_pdf(report: str, title: str, question: str, summary: str,
                     img_buf = _io.BytesIO()
                     pil_img.save(img_buf, format="JPEG", quality=85)
                     img_buf.seek(0)
-                    rl_img = RLImage(img_buf, width=iw, height=ih)
-                    rl_img.drawOn(c, cx, y[0] - ih - 22)
+                    img_reader = ImageReader(img_buf)
+                    c.drawImage(img_reader, cx, y[0] - ih - 22, width=iw, height=ih, mask="auto")
                     y[0] = y[0] - ih - 36
                 except Exception as exc:
                     log.warning("PAGE_IMG_%d render failed: %s", pi + 1, exc)
@@ -1269,8 +1268,8 @@ def build_pdf(report: str, title: str, question: str, summary: str,
                     img_buf = _io.BytesIO()
                     pil_img.save(img_buf, format="JPEG", quality=85)
                     img_buf.seek(0)
-                    rl_img = RLImage(img_buf, width=iw, height=ih)
-                    rl_img.drawOn(c, cx, y[0] - ih - 10)
+                    img_reader = ImageReader(img_buf)
+                    c.drawImage(img_reader, cx, y[0] - ih - 10, width=iw, height=ih, mask="auto")
                     if cap:
                         c.setFillColorRGB(0.4, 0.42, 0.46); c.setFont("Helvetica-Oblique", 7.5)
                         c.drawCentredString(MARGIN + CW / 2, y[0] - ih - 10 - cap_h + 5, cap)
@@ -1540,18 +1539,6 @@ async def generate_pdf(request: Request):
         out: list[dict | None] = [None] * min(len(imgs), max_count)
 
         async def _one(i: int, info: dict):
-            # Fast path: report route already pre-fetched the bytes as base64
-            if info.get("data"):
-                try:
-                    raw = base64.b64decode(info["data"])
-                    if len(raw) >= 500:
-                        out[i] = {"data": info["data"], "caption": (info.get("caption") or "")[:120]}
-                        log.info("WEB_IMG[%d] using pre-fetched bytes (%d bytes)", i + 1, len(raw))
-                        return
-                except Exception:
-                    pass  # fall through to URL fetch
-
-            # Slow path: fetch from URL (fallback when pre-fetch wasn't done)
             url = (info.get("url") or "").strip()
             if not url:
                 return
@@ -1566,24 +1553,29 @@ async def generate_pdf(request: Request):
                         })
                     ctype = resp.headers.get("content-type", "")
                     if not resp.is_success:
-                        log.warning("WEB_IMG[%d] HTTP %d for %s", i + 1, resp.status_code, url[:80])
+                        log.debug("WEB_IMG HTTP %d for %s", resp.status_code, url[:80])
                         return
-                    content = resp.content
-                    is_image = ctype.startswith("image/") or (
-                        content[:4] == b"\x89PNG" or
-                        content[:3] == b"\xff\xd8\xff" or
-                        content[:6] in (b"GIF87a", b"GIF89a") or
-                        content[:4] == b"RIFF"
-                    )
-                    if not is_image:
-                        log.warning("WEB_IMG[%d] non-image content-type %r for %s", i + 1, ctype[:40], url[:80])
+                    if not ctype.startswith("image/"):
+                        # Some CDNs return image bytes with generic content-type — check magic bytes
+                        content = resp.content
+                        img_magic = (
+                            content[:4] == b"\x89PNG" or
+                            content[:3] == b"\xff\xd8\xff" or  # JPEG
+                            content[:6] in (b"GIF87a", b"GIF89a") or
+                            content[:4] == b"RIFF"  # WebP
+                        )
+                        if not img_magic:
+                            log.debug("WEB_IMG non-image content-type %r for %s", ctype[:40], url[:80])
+                            return
+                        content_bytes = content
+                    else:
+                        content_bytes = resp.content
+                    if len(content_bytes) > max_bytes or len(content_bytes) < 500:
+                        log.debug("WEB_IMG size %d out of range for %s", len(content_bytes), url[:80])
                         return
-                    if len(content) > max_bytes or len(content) < 500:
-                        log.warning("WEB_IMG[%d] size %d out of range for %s", i + 1, len(content), url[:80])
-                        return
-                    out[i] = {"data": base64.b64encode(content).decode("ascii"),
+                    out[i] = {"data": base64.b64encode(content_bytes).decode("ascii"),
                               "caption": (info.get("caption") or "")[:120]}
-                    log.info("WEB_IMG[%d] URL-fetched %d bytes from %s", i + 1, len(content), url[:60])
+                    log.info("WEB_IMG[%d] fetched %d bytes from %s", i + 1, len(content_bytes), url[:60])
                 except Exception as exc:
                     log.warning("WEB_IMG[%d] fetch failed for %s: %s", i + 1, url[:80], exc)
 
