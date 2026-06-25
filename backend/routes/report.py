@@ -813,8 +813,17 @@ async def call_gemini(user_prompt: str) -> str:
         try:
             log.debug("Gemini: trying model=%s key=...%s", model, key[-4:])
             t0 = time.perf_counter()
+            # Per-model output token limits (verified against Gemini docs, June 2026):
+            # gemini-2.5-flash-lite: 64K output tokens
+            # gemini-2.5-flash:      65K output tokens
+            # gemini-2.5-pro:        65K output tokens
+            # gemini-3-flash-preview: 65K output tokens
+            # gemini-3.5-flash:       65K output tokens
+            # Use 65000 for all — well within every model's limit and gives the
+            # long-form JSON report (18K+ chars = ~5K tokens) plenty of headroom.
+            MAX_OUTPUT_TOKENS = 65000
             generation_config = {
-                "maxOutputTokens": 32000,
+                "maxOutputTokens": MAX_OUTPUT_TOKENS,
                 "temperature": 0.1,
                 # NOTE: responseMimeType:"application/json" is intentionally NOT set.
                 # When set, Gemini hard-truncates output mid-JSON at the token limit,
