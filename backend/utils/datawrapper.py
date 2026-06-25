@@ -170,6 +170,43 @@ def _spec_to_csv(spec: dict) -> str:
     return buf.getvalue()
 
 
+def _export_dims(dw_type: str) -> tuple[str, str]:
+    """Pick a PNG export width/height suited to the chart's actual shape,
+    instead of forcing every Datawrapper visualization into the same fixed
+    900x500 box.
+
+    - Tables grow with row count. A fixed height of 500px crops off any
+      rows that don't fit in that height — the table chart silently loses
+      data in the exported PNG. Requesting height="auto" (a documented
+      value for the export endpoint's height param) lets Datawrapper size
+      the export to the actual number of rows instead.
+    - Pie/donut charts are circular and read poorly in a wide 900x500
+      frame — most of the canvas ends up as side-margin instead of chart.
+      A near-square frame uses the space properly.
+    - Column/bar/line/area charts already work well at 900x500 (the shape
+      this constant was originally tuned for) — leave them as-is.
+    """
+    if dw_type == "tables":
+        return "900", "auto"
+    if dw_type in ("d3-pies", "d3-donuts"):
+        return "700", "650"
+    return "900", "500"
+
+
+def _export_query(dw_type: str) -> str:
+    """Build the export query string for `dw_type`, used for both the
+    pngUrl handed to the frontend/PDF route and the actual fetch below —
+    keeping both in sync so a chart's stored pngUrl always matches what
+    fetch_png actually requests."""
+    width, height = _export_dims(dw_type)
+    # plain=false keeps the title/subtitle/notes frame baked into the PNG so
+    # the PDF card shows a complete labelled chart without a separate
+    # ReportLab title bar. scale + zoom both request 2x pixel density —
+    # Datawrapper's docs list both as valid, independent export params, so
+    # setting both is the safest way to guarantee a retina-quality export.
+    return f"unit=px&width={width}&height={height}&plain=false&scale=2&zoom=2"
+
+
 async def publish_chart(client: httpx.AsyncClient, spec: dict) -> dict | None:
     """Create, fill, and publish a single Datawrapper chart from a chart-spec dict."""
     if not TOKEN:
@@ -252,12 +289,10 @@ async def publish_chart(client: httpx.AsyncClient, spec: dict) -> dict | None:
             "id": chart_id,
             "embedUrl": embed_url,
             "publicUrl": public_url,
-            # width=900, height=500 — explicit height prevents Datawrapper from
-            # producing a tall empty canvas for charts with few data points.
-            # plain=false keeps the title/subtitle frame baked into the PNG so the
-            # PDF card shows a complete labelled chart without needing a separate
-            # ReportLab title bar above it.
-            "pngUrl": f"{API_BASE}/charts/{chart_id}/export/png?unit=px&width=900&height=500&scale=2",
+            # Dimensions are chosen per chart type by _export_dims — see its
+            # docstring (fixed 900x500 cropped table rows and squeezed
+            # pies/donuts into a too-wide frame).
+            "pngUrl": f"{API_BASE}/charts/{chart_id}/export/png?{_export_query(dw_type)}",
         }
     except Exception as exc:
         log.warning("Datawrapper publish failed for chart %r: %s", spec.get("title", "?"), exc)
@@ -267,46 +302,30 @@ async def publish_chart(client: httpx.AsyncClient, spec: dict) -> dict | None:
 async def fetch_png(client: httpx.AsyncClient, chart_id: str, png_url: str) -> bytes | None:
     """Download the static PNG export of an already-published chart (for the PDF).
 
-    Datawrapper v3 export pipeline:
-      1. POST /v3/charts/{id}/export/png  — triggers the async render job
-      2. Poll GET on the export URL until the response body starts with PNG magic bytes.
+    Datawrapper's documented export endpoint is `GET /v3/charts/{id}/export/{format}`,
+    which normally renders and returns the image synchronously. (There is a
+    separate `POST .../export/{format}/async` endpoint for very large/slow
+    exports that returns a job to poll — we don't need it for chart-sized PNGs.)
+    We still retry with increasing delays to absorb the brief propagation lag
+    right after `publish_chart` publishes a new chart version, and we validate
+    that the response body is actually PNG bytes rather than a transient JSON
+    error Datawrapper can return while the new version is still propagating.
 
-    We POST first (triggering the job), then retry with increasing delays.
-    We validate that the response body is actually PNG bytes, not a JSON status
-    object or HTML error page that Datawrapper returns while still rendering.
+    `png_url` is the per-chart-type URL `publish_chart` already built (see
+    `_export_query`/`_export_dims`) — reusing it here (instead of rebuilding a
+    separate hardcoded URL) keeps the dimensions actually requested in sync
+    with the dimensions recorded on the chart's `datawrapper` info.
     """
-    if not TOKEN:
+    if not TOKEN or not png_url:
         return None
 
     PNG_MAGIC = b"\x89PNG"
 
-    # Build a clean export URL — width=900, height=500 explicit so small datasets
-    # don't produce a huge empty canvas. plain=false keeps the title/subtitle in the
-    # PNG image itself so the PDF card shows a complete labelled chart.
-    export_url = f"{API_BASE}/charts/{chart_id}/export/png?unit=px&width=900&height=500&scale=2"
-
     try:
-        # Step 1: POST to trigger the async export job (Datawrapper v3 requirement).
-        # The POST sometimes returns the PNG directly for fast renders.
-        try:
-            trigger = await client.post(
-                f"{API_BASE}/charts/{chart_id}/export/png",
-                headers=_headers({"Content-Type": "application/json"}),
-                json={"unit": "px", "width": 900, "height": 500, "scale": 2},
-                timeout=20.0,
-            )
-            if trigger.status_code == 200 and trigger.content[:4] == PNG_MAGIC and len(trigger.content) > 1024:
-                log.info("Datawrapper PNG ready immediately from POST for chart %s (%d bytes)",
-                         chart_id, len(trigger.content))
-                return trigger.content
-        except Exception as trigger_exc:
-            log.debug("Datawrapper export POST failed for %s (will still poll GET): %s", chart_id, trigger_exc)
-
-        # Step 2: Poll the GET export URL with increasing delays.
-        delays = [2.0, 3.0, 4.0, 5.0, 6.0]
+        delays = [1.0, 2.0, 3.0, 4.0, 5.0, 5.0]
         for attempt, delay in enumerate(delays):
             await asyncio.sleep(delay)
-            resp = await client.get(export_url, headers=_headers(), timeout=30.0)
+            resp = await client.get(png_url, headers=_headers(), timeout=30.0)
             if resp.status_code == 200 and resp.content:
                 if resp.content[:4] == PNG_MAGIC and len(resp.content) > 1024:
                     log.info("Datawrapper PNG ready for chart %s on attempt %d (%d bytes)",

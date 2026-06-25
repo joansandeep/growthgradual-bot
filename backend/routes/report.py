@@ -194,36 +194,36 @@ write as much genuinely substantive analysis as the sources support):
 ## 1. Introduction
 4-5 paragraphs (minimum 250 words): Provide rich context — explain the sector/topic, why it matters now, who the key stakeholders are, what macro or market forces are driving interest, the history/background that led here, and what this report covers. Write in plain prose — do NOT insert bracket citation markers like [1] or [n] anywhere; name the publication inline instead if attribution is needed (e.g. "according to Screener.in data..."). No filler, every sentence must add context or data. If a relevant image candidate exists (e.g. company HQ, product, logo of the sector), place [WEB_IMG_n] near the end of this section.
 
-## 2. Data Sources & Methodology
+## 2. Data Analysis
+
+### 2.1 [Heading matching actual topic and data]
+Deep-dive quantitative findings (minimum 220 words). ALL numbers in markdown tables. Explain what the data shows, why the leaders are ahead, what the numbers mean in context. Insert [CHART_n] immediately after the paragraph whose data it visualises. No bracket citation markers.
+
+### 2.2 [Second dimension of analysis]
+Comparisons, breakdowns, benchmarks (minimum 220 words). Tables + [CHART_n] where valid distinct data exists. Explain trends and what differentiates top performers.
+
+### 2.3 [Trends or forward-looking data — only if sources have it]
+Only include if sources have trend/time-series data with ≥4 distinct time points. Minimum 180 words if included.
+
+### 2.4 [A fourth distinct angle — peer/sector context, valuation, ownership, regulatory backdrop, etc. — only if sources genuinely support it]
+Optional but encouraged when the sources have material left over after 2.1-2.3. Minimum 180 words if included. Skip entirely (don't stub it) if there's nothing left to say with real data.
+
+## 3. Key Findings
+8-12 numbered findings, each with a specific number/stat from sources AND a 2-3 sentence explanation of what it means and why it matters to a reader. No bracket citation markers — if attribution matters, name the publication in the sentence itself.
+
+## 4. Risks & Considerations
+3-5 distinct risk factors or open questions relevant to the topic (minimum 200 words total), grounded in what the sources actually flag — regulatory risk, competitive pressure, valuation concerns, macro sensitivity, data gaps, etc. If the sources don't surface explicit risks, reason from the data patterns themselves (e.g. a metric trending the wrong way, a concentration in one segment) rather than inventing unrelated risks. Do not skip this section — every topic has SOME risk angle worth a paragraph.
+
+## 5. Conclusion
+3-4 paragraphs (minimum 220 words): synthesise findings, explain implications for different types of investors/stakeholders, and give forward outlook from sources only.
+
+## 6. Data Sources & Methodology
 One markdown table of sources (Publication | URL | Data type). 2-3 paragraphs (minimum 150 words): describe what sources were used, what metrics were collected, how comparisons were made, and any caveats in the data.
 SOURCE BREADTH: list EVERY distinct publication below that contributed any real fact, figure, or context — not only whichever source happened to have the most granular numbers. If five sources were provided and three had usable content (numbers, context, definitions, market commentary), the table and the Sources section should show three rows, not one. Only cite a single source if every other source genuinely had nothing usable (e.g. paywalled, off-topic, or duplicate of another result) — and if so, do not claim more sources were used than actually were. Never list a publication that contributed nothing to the report.
 URL COLUMN: the URL column must contain the EXACT "Source: <url>" value given for that publication in the supplementary sources below — never a description, a paraphrase, or any placeholder text standing in for a missing link. If a publication's URL truly is not in the source list, omit that row entirely from the table rather than writing anything else in its place.
 
-## 3. Data Analysis
-
-### 3.1 [Heading matching actual topic and data]
-Deep-dive quantitative findings (minimum 220 words). ALL numbers in markdown tables. Explain what the data shows, why the leaders are ahead, what the numbers mean in context. Insert [CHART_n] immediately after the paragraph whose data it visualises. No bracket citation markers.
-
-### 3.2 [Second dimension of analysis]
-Comparisons, breakdowns, benchmarks (minimum 220 words). Tables + [CHART_n] where valid distinct data exists. Explain trends and what differentiates top performers.
-
-### 3.3 [Trends or forward-looking data — only if sources have it]
-Only include if sources have trend/time-series data with ≥4 distinct time points. Minimum 180 words if included.
-
-### 3.4 [A fourth distinct angle — peer/sector context, valuation, ownership, regulatory backdrop, etc. — only if sources genuinely support it]
-Optional but encouraged when the sources have material left over after 3.1-3.3. Minimum 180 words if included. Skip entirely (don't stub it) if there's nothing left to say with real data.
-
-## 4. Key Findings
-8-12 numbered findings, each with a specific number/stat from sources AND a 2-3 sentence explanation of what it means and why it matters to a reader. No bracket citation markers — if attribution matters, name the publication in the sentence itself.
-
-## 5. Risks & Considerations
-3-5 distinct risk factors or open questions relevant to the topic (minimum 200 words total), grounded in what the sources actually flag — regulatory risk, competitive pressure, valuation concerns, macro sensitivity, data gaps, etc. If the sources don't surface explicit risks, reason from the data patterns themselves (e.g. a metric trending the wrong way, a concentration in one segment) rather than inventing unrelated risks. Do not skip this section — every topic has SOME risk angle worth a paragraph.
-
-## 6. Conclusion
-3-4 paragraphs (minimum 220 words): synthesise findings, explain implications for different types of investors/stakeholders, and give forward outlook from sources only.
-
 ## 7. Sources
-A plain bulleted list of the publications actually used, one per line: "- Publication Name — URL". Do NOT number this list and do NOT reference these numbers anywhere else in the report — it exists purely as a reading list, not a citation index. This list must match section 2's source table exactly — same publications, same count, same URLs.
+A plain bulleted list of the publications actually used, one per line: "- Publication Name — URL". Do NOT number this list and do NOT reference these numbers anywhere else in the report — it exists purely as a reading list, not a citation index. This list must match section 6's source table exactly — same publications, same count, same URLs.
 
 GLOBAL RULES:
 - NEVER invent any number, date, name, or statistic

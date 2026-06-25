@@ -242,6 +242,35 @@ def _draw_logo(c, logo_bytes, x, y, width, height):
         return False
 
 
+def _flatten_to_rgb(pil_img):
+    """Safely convert any PIL image mode to opaque RGB for JPEG encoding.
+
+    Two distinct bugs this fixes:
+    1. Images with an alpha channel (RGBA/LA, or palette images carrying a
+       "transparency" entry) raise `OSError: cannot write mode RGBA as JPEG`
+       if saved as-is — JPEG has no alpha channel. Any uploaded screenshot
+       or web-sourced PNG with transparency would silently fail to render
+       (the caller's try/except swallows it) — the image placeholder would
+       just vanish from the PDF with nothing in its place.
+    2. Naively calling `.convert("RGB")` on an RGBA image *drops* the alpha
+       channel without compositing — whatever RGB values were stored under
+       the transparent pixels (commonly black) show through as solid black
+       regions where the image should have been transparent/white.
+
+    Compositing onto a white background first avoids both: the image
+    always saves cleanly as JPEG, and transparent areas render as white
+    instead of black.
+    """
+    from PIL import Image as _PILImage
+    if pil_img.mode in ("RGBA", "LA") or (pil_img.mode == "P" and "transparency" in pil_img.info):
+        rgba = pil_img.convert("RGBA")
+        bg = _PILImage.new("RGB", rgba.size, (255, 255, 255))
+        bg.paste(rgba, mask=rgba.split()[-1])
+        return bg
+    if pil_img.mode != "RGB":
+        return pil_img.convert("RGB")
+    return pil_img
+
 
 def detect_domain(question: str) -> str:
     q = question.lower()
@@ -1174,6 +1203,7 @@ def build_pdf(report: str, title: str, question: str, summary: str,
                     import io as _io
                     img_data = _b64.b64decode(img_info["data"])
                     pil_img = PILImage.open(_io.BytesIO(img_data))
+                    pil_img = _flatten_to_rgb(pil_img)
                     # Scale to fit content width, max height 340pt
                     MAX_IMG_W = CW
                     MAX_IMG_H = 340
@@ -1213,8 +1243,7 @@ def build_pdf(report: str, title: str, question: str, summary: str,
                     import io as _io
                     img_data = _b64.b64decode(img_info["data"])
                     pil_img = PILImage.open(_io.BytesIO(img_data))
-                    if pil_img.mode not in ("RGB", "L"):
-                        pil_img = pil_img.convert("RGB")
+                    pil_img = _flatten_to_rgb(pil_img)
                     MAX_IMG_W = CW
                     MAX_IMG_H = 300
                     ow, oh = pil_img.size
