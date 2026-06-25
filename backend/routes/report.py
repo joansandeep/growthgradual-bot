@@ -1001,6 +1001,61 @@ def _build_followup_search_query(question: str, conversation_context: str) -> st
     return f"{question} — context: {last_assistant[:300]}"
 
 
+async def _prefetch_image_bytes(images: list[dict], max_bytes: int = 4_000_000) -> list[dict]:
+    """Fetch each image URL and attach base64-encoded bytes under the 'data' key.
+
+    This runs in the report route (before the JSON response is sent) so that
+    the PDF route receives pre-fetched bytes and never needs to make outbound
+    HTTP calls — which often fail on restricted hosting environments or get
+    blocked by image CDNs that reject server-to-server requests.
+
+    Images that fail to fetch are returned as-is (with no 'data' key) so the
+    PDF route can still try a URL fetch as a last-resort fallback.
+    """
+    import base64 as _b64
+    if not images:
+        return images
+
+    sem = asyncio.Semaphore(3)
+
+    async def _one(img: dict):
+        url = (img.get("url") or "").strip()
+        if not url or img.get("data"):
+            return  # already has bytes or no URL
+        async with sem:
+            try:
+                async with httpx.AsyncClient(timeout=12.0, follow_redirects=True) as client:
+                    resp = await client.get(url, headers={
+                        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+                        "Accept": "image/webp,image/apng,image/*,*/*;q=0.8",
+                        "Accept-Language": "en-US,en;q=0.9",
+                    })
+                if not resp.is_success:
+                    log.debug("Image prefetch HTTP %d for %s", resp.status_code, url[:80])
+                    return
+                content = resp.content
+                # Validate it's an actual image (magic bytes or content-type)
+                ctype = resp.headers.get("content-type", "")
+                is_image = ctype.startswith("image/") or (
+                    content[:4] == b"\x89PNG" or
+                    content[:3] == b"\xff\xd8\xff" or
+                    content[:6] in (b"GIF87a", b"GIF89a") or
+                    content[:4] == b"RIFF"
+                )
+                if not is_image or len(content) < 500 or len(content) > max_bytes:
+                    log.debug("Image prefetch skipped (ctype=%r, size=%d) for %s", ctype[:30], len(content), url[:60])
+                    return
+                img["data"] = _b64.b64encode(content).decode("ascii")
+                log.info("Image prefetch OK: %d bytes for %s", len(content), url[:60])
+            except Exception as exc:
+                log.debug("Image prefetch failed for %s: %s", url[:80], exc)
+
+    await asyncio.gather(*[_one(img) for img in images])
+    n_ok = sum(1 for img in images if img.get("data"))
+    log.info("Image prefetch: %d/%d images fetched successfully", n_ok, len(images))
+    return images
+
+
 @router.post("")
 async def generate_report(request: Request):
     t0 = time.perf_counter()
@@ -1340,6 +1395,27 @@ async def generate_report(request: Request):
         charts = await attach_datawrapper_charts(charts)
         report_text = _strip_citation_markers(report_text)
         clean_title = _sanitize_title(parsed.get("title", ""), question)
+
+        # Pre-fetch image bytes here in the report route so the PDF route
+        # doesn't need to make outbound HTTP calls (which often fail on
+        # restricted hosting environments or get blocked by image CDNs).
+        # Each image gets a base64 "data" field added; the PDF route uses
+        # that directly, falling back to URL fetch only if data is absent.
+        images = await _prefetch_image_bytes(images)
+
+        # Guarantee every selected image has a [WEB_IMG_n] placeholder in the
+        # report text. Gemini sometimes selects images in the JSON but forgets
+        # to place the placeholder inline. Detect missing ones and append them
+        # after the last section so they always render in the PDF.
+        for img_idx in range(1, len(images) + 1):
+            ph = f"[WEB_IMG_{img_idx}]"
+            if ph not in report_text:
+                log.warning("Report: %s missing from report text — appending at end", ph)
+                report_text = report_text.rstrip() + f"\n\n{ph}\n"
+
+        n_placeholders = len(re.findall(r"\[WEB_IMG_\d+\]", report_text))
+        log.info("Report: %d WEB_IMG placeholders in report text, %d images selected", n_placeholders, len(images))
+
         elapsed = (time.perf_counter() - t0) * 1000
         log.info("Report complete in %.0fms — title=%r  charts=%d  images=%d  keyStats=%d",
                  elapsed, clean_title[:60], len(charts), len(images), len(parsed.get("keyStats", [])))
@@ -1398,11 +1474,17 @@ async def generate_report(request: Request):
         if salvaged:
             log.info("Report: salvaged %d fields from truncated JSON (images=%d)", len(salvaged), len(salvaged.get("images", [])))
             salvaged["charts"] = await attach_datawrapper_charts(salvaged.get("charts", []))
+            salvaged_images = await _prefetch_image_bytes(salvaged.get("images", []))
+            salvaged_report = _strip_citation_markers(salvaged.get("report", ""))
+            for img_idx in range(1, len(salvaged_images) + 1):
+                ph = f"[WEB_IMG_{img_idx}]"
+                if ph not in salvaged_report:
+                    salvaged_report = salvaged_report.rstrip() + f"\n\n{ph}\n"
             return JSONResponse({
                 "title":      _sanitize_title(salvaged.get("title", ""), question),
-                "report":     _strip_citation_markers(salvaged.get("report", "")),
+                "report":     salvaged_report,
                 "charts":     salvaged.get("charts", []),
-                "images":     salvaged.get("images", []),
+                "images":     salvaged_images,
                 "keyStats":   salvaged.get("keyStats", []),
                 "summary":    salvaged.get("summary", ""),
                 "fileImages": file_images,
@@ -1424,11 +1506,17 @@ async def generate_report(request: Request):
                 raw_imgs = repaired_parsed.get("images") or []
                 if image_candidates and raw_imgs:
                     repaired_imgs, _ = _validate_image_selections(raw_imgs, image_candidates)
+                    repaired_imgs = await _prefetch_image_bytes(repaired_imgs)
             except Exception:
                 pass
+            repaired_report = _strip_citation_markers((repaired_parsed.get("report", "") or "").replace("\\n", "\n"))
+            for img_idx in range(1, len(repaired_imgs) + 1):
+                ph = f"[WEB_IMG_{img_idx}]"
+                if ph not in repaired_report:
+                    repaired_report = repaired_report.rstrip() + f"\n\n{ph}\n"
             return JSONResponse({
                 "title":      _sanitize_title(repaired_parsed.get("title", ""), question),
-                "report":     _strip_citation_markers((repaired_parsed.get("report", "") or "").replace("\\n", "\n")),
+                "report":     repaired_report,
                 "charts":     repaired_charts,
                 "images":     repaired_imgs,
                 "keyStats":   repaired_parsed.get("keyStats", []),

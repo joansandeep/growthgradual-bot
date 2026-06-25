@@ -1540,6 +1540,18 @@ async def generate_pdf(request: Request):
         out: list[dict | None] = [None] * min(len(imgs), max_count)
 
         async def _one(i: int, info: dict):
+            # Fast path: report route already pre-fetched the bytes as base64
+            if info.get("data"):
+                try:
+                    raw = base64.b64decode(info["data"])
+                    if len(raw) >= 500:
+                        out[i] = {"data": info["data"], "caption": (info.get("caption") or "")[:120]}
+                        log.info("WEB_IMG[%d] using pre-fetched bytes (%d bytes)", i + 1, len(raw))
+                        return
+                except Exception:
+                    pass  # fall through to URL fetch
+
+            # Slow path: fetch from URL (fallback when pre-fetch wasn't done)
             url = (info.get("url") or "").strip()
             if not url:
                 return
@@ -1554,29 +1566,24 @@ async def generate_pdf(request: Request):
                         })
                     ctype = resp.headers.get("content-type", "")
                     if not resp.is_success:
-                        log.debug("WEB_IMG HTTP %d for %s", resp.status_code, url[:80])
+                        log.warning("WEB_IMG[%d] HTTP %d for %s", i + 1, resp.status_code, url[:80])
                         return
-                    if not ctype.startswith("image/"):
-                        # Some CDNs return image bytes with generic content-type — check magic bytes
-                        content = resp.content
-                        img_magic = (
-                            content[:4] == b"\x89PNG" or
-                            content[:3] == b"\xff\xd8\xff" or  # JPEG
-                            content[:6] in (b"GIF87a", b"GIF89a") or
-                            content[:4] == b"RIFF"  # WebP
-                        )
-                        if not img_magic:
-                            log.debug("WEB_IMG non-image content-type %r for %s", ctype[:40], url[:80])
-                            return
-                        content_bytes = content
-                    else:
-                        content_bytes = resp.content
-                    if len(content_bytes) > max_bytes or len(content_bytes) < 500:
-                        log.debug("WEB_IMG size %d out of range for %s", len(content_bytes), url[:80])
+                    content = resp.content
+                    is_image = ctype.startswith("image/") or (
+                        content[:4] == b"\x89PNG" or
+                        content[:3] == b"\xff\xd8\xff" or
+                        content[:6] in (b"GIF87a", b"GIF89a") or
+                        content[:4] == b"RIFF"
+                    )
+                    if not is_image:
+                        log.warning("WEB_IMG[%d] non-image content-type %r for %s", i + 1, ctype[:40], url[:80])
                         return
-                    out[i] = {"data": base64.b64encode(content_bytes).decode("ascii"),
+                    if len(content) > max_bytes or len(content) < 500:
+                        log.warning("WEB_IMG[%d] size %d out of range for %s", i + 1, len(content), url[:80])
+                        return
+                    out[i] = {"data": base64.b64encode(content).decode("ascii"),
                               "caption": (info.get("caption") or "")[:120]}
-                    log.info("WEB_IMG[%d] fetched %d bytes from %s", i + 1, len(content_bytes), url[:60])
+                    log.info("WEB_IMG[%d] URL-fetched %d bytes from %s", i + 1, len(content), url[:60])
                 except Exception as exc:
                     log.warning("WEB_IMG[%d] fetch failed for %s: %s", i + 1, url[:80], exc)
 
