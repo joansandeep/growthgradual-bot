@@ -699,9 +699,17 @@ def _datawrapper_image(c, spec, x0, y0, w, h):
     rendering the export).
     """
     from reportlab.lib.utils import ImageReader
+    import base64 as _b64
     png_bytes = (spec.get("datawrapper") or {}).get("pngBytes")
     if not png_bytes:
         return False
+    # Decode base64 string — pngBytes may be a b64 string after JSON serialization
+    if isinstance(png_bytes, str):
+        try:
+            png_bytes = _b64.b64decode(png_bytes)
+        except Exception:
+            log.warning("Datawrapper pngBytes for chart %r is not valid base64 — using native renderer", spec.get("title", "?"))
+            return False
     # Reject non-PNG payloads (JSON status objects, HTML error pages, etc.)
     if not isinstance(png_bytes, (bytes, bytearray)) or png_bytes[:4] != b"\x89PNG":
         log.warning(
@@ -1482,12 +1490,37 @@ async def generate_pdf(request: Request):
         async with httpx.AsyncClient(timeout=120.0) as client:
             async def _one(ch):
                 dw = ch.get("datawrapper")
-                if not dw or dw.get("pngBytes"):
+                if not dw:
                     return
+                # pngBytes may arrive as a base64 string (survived JSON serialization
+                # round-trip through the frontend) — decode it back to bytes.
+                existing = dw.get("pngBytes")
+                if existing:
+                    if isinstance(existing, str):
+                        try:
+                            import base64 as _b64
+                            decoded = _b64.b64decode(existing)
+                            if decoded[:4] == b"\x89PNG":
+                                dw["pngBytes"] = decoded
+                                return  # valid PNG bytes decoded from base64 — done
+                        except Exception:
+                            pass
+                        dw["pngBytes"] = None  # invalid base64 — re-fetch below
+                    elif isinstance(existing, (bytes, bytearray)) and existing[:4] == b"\x89PNG":
+                        return  # already valid raw bytes — skip re-fetch
+                    else:
+                        dw["pngBytes"] = None
+
                 png = await fetch_png(client, dw.get("id", ""), dw.get("pngUrl", ""))
                 if png:
                     dw["pngBytes"] = png
+                    log.info("PDF: fetched DW PNG for %r (%d bytes)", ch.get("title", "?"), len(png))
+                else:
+                    log.warning("PDF: DW PNG unavailable for %r — native renderer will be used", ch.get("title", "?"))
             await asyncio.gather(*[_one(ch) for ch in chs])
+
+        n_png = sum(1 for ch in chs if isinstance((ch.get("datawrapper") or {}).get("pngBytes"), (bytes, bytearray)))
+        log.info("PDF: %d/%d charts have DW PNG; %d use native renderer", n_png, len(chs), len(chs) - n_png)
         return chs
 
     try:
@@ -1512,17 +1545,40 @@ async def generate_pdf(request: Request):
                 return
             async with sem:
                 try:
-                    async with httpx.AsyncClient(timeout=10.0, follow_redirects=True) as client:
-                        resp = await client.get(url, headers={"User-Agent": "Mozilla/5.0"})
+                    async with httpx.AsyncClient(timeout=15.0, follow_redirects=True) as client:
+                        resp = await client.get(url, headers={
+                            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+                            "Accept": "image/webp,image/apng,image/*,*/*;q=0.8",
+                            "Accept-Language": "en-US,en;q=0.9",
+                            "Referer": "https://growth-gradual.com/",
+                        })
                     ctype = resp.headers.get("content-type", "")
-                    if not resp.is_success or not ctype.startswith("image/"):
+                    if not resp.is_success:
+                        log.debug("WEB_IMG HTTP %d for %s", resp.status_code, url[:80])
                         return
-                    if len(resp.content) > max_bytes or len(resp.content) < 500:
+                    if not ctype.startswith("image/"):
+                        # Some CDNs return image bytes with generic content-type — check magic bytes
+                        content = resp.content
+                        img_magic = (
+                            content[:4] == b"\x89PNG" or
+                            content[:3] == b"\xff\xd8\xff" or  # JPEG
+                            content[:6] in (b"GIF87a", b"GIF89a") or
+                            content[:4] == b"RIFF"  # WebP
+                        )
+                        if not img_magic:
+                            log.debug("WEB_IMG non-image content-type %r for %s", ctype[:40], url[:80])
+                            return
+                        content_bytes = content
+                    else:
+                        content_bytes = resp.content
+                    if len(content_bytes) > max_bytes or len(content_bytes) < 500:
+                        log.debug("WEB_IMG size %d out of range for %s", len(content_bytes), url[:80])
                         return
-                    out[i] = {"data": base64.b64encode(resp.content).decode("ascii"),
+                    out[i] = {"data": base64.b64encode(content_bytes).decode("ascii"),
                               "caption": (info.get("caption") or "")[:120]}
+                    log.info("WEB_IMG[%d] fetched %d bytes from %s", i + 1, len(content_bytes), url[:60])
                 except Exception as exc:
-                    log.debug("WEB_IMG fetch failed for %s: %s", url[:80], exc)
+                    log.warning("WEB_IMG[%d] fetch failed for %s: %s", i + 1, url[:80], exc)
 
         await asyncio.gather(*[_one(i, info) for i, info in enumerate(imgs[:max_count])])
         # IMPORTANT: don't compact `out` by dropping the None gaps left by failed

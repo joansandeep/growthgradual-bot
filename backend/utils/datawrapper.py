@@ -322,7 +322,9 @@ async def fetch_png(client: httpx.AsyncClient, chart_id: str, png_url: str) -> b
     PNG_MAGIC = b"\x89PNG"
 
     try:
-        delays = [1.0, 2.0, 3.0, 4.0, 5.0, 5.0]
+        # Charts were already published during report generation — the PNG should
+        # be ready immediately. Use short initial delays, then back off.
+        delays = [0.5, 1.0, 2.0, 3.0, 4.0, 5.0]
         for attempt, delay in enumerate(delays):
             await asyncio.sleep(delay)
             resp = await client.get(png_url, headers=_headers(), timeout=30.0)

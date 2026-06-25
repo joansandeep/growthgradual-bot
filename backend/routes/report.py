@@ -704,7 +704,7 @@ async def call_groq(user_prompt: str) -> str:
                             {"role": "system", "content": SYSTEM_PROMPT},
                             {"role": "user", "content": user_prompt},
                         ],
-                        "max_tokens": 20000,
+                        "max_tokens": 32000,
                         "temperature": 0.2,
                         "response_format": {"type": "json_object"},
                     },
@@ -1190,10 +1190,7 @@ async def generate_report(request: Request):
         + "7. Respond ONLY with the JSON object — no markdown fences, no text outside JSON."
     )
 
-    raw = await call_groq(user_prompt)
-    if not raw:
-        log.info("Report: Groq failed — trying Gemini fallback")
-        raw = await call_gemini(user_prompt)
+    raw = await call_gemini(user_prompt)
     if not raw:
         log.error("Report: all LLM providers exhausted")
         return JSONResponse({
@@ -1384,17 +1381,28 @@ async def generate_report(request: Request):
                     arr_text = m.group(1).rstrip(",}").strip()
                     result["charts"] = json.loads(arr_text)
                 except Exception: pass
+            # Also try to salvage images array from truncated JSON
+            m = re.search(r'"images"\s*:\s*(\[[\s\S]*?\]\s*[,}])', text)
+            if m:
+                try:
+                    arr_text = m.group(1).rstrip(",}").strip()
+                    raw_imgs = json.loads(arr_text)
+                    if image_candidates and raw_imgs:
+                        validated, _ = _validate_image_selections(raw_imgs, image_candidates)
+                        result["images"] = validated
+                except Exception:
+                    pass
             return result if result.get("report") else None
 
         salvaged = _try_extract_fields(clean)
         if salvaged:
-            log.info("Report: salvaged %d fields from truncated JSON", len(salvaged))
+            log.info("Report: salvaged %d fields from truncated JSON (images=%d)", len(salvaged), len(salvaged.get("images", [])))
             salvaged["charts"] = await attach_datawrapper_charts(salvaged.get("charts", []))
             return JSONResponse({
                 "title":      _sanitize_title(salvaged.get("title", ""), question),
                 "report":     _strip_citation_markers(salvaged.get("report", "")),
                 "charts":     salvaged.get("charts", []),
-                "images":     [],  # not salvageable from truncated/malformed JSON — safer to drop than guess
+                "images":     salvaged.get("images", []),
                 "keyStats":   salvaged.get("keyStats", []),
                 "summary":    salvaged.get("summary", ""),
                 "fileImages": file_images,
@@ -1410,11 +1418,19 @@ async def generate_report(request: Request):
             repaired_parsed = json.loads(repaired)
             log.info("Report: repaired truncated JSON successfully")
             repaired_charts = await attach_datawrapper_charts(repaired_parsed.get("charts", []))
+            # Try to recover images in the repaired path too
+            repaired_imgs = []
+            try:
+                raw_imgs = repaired_parsed.get("images") or []
+                if image_candidates and raw_imgs:
+                    repaired_imgs, _ = _validate_image_selections(raw_imgs, image_candidates)
+            except Exception:
+                pass
             return JSONResponse({
                 "title":      _sanitize_title(repaired_parsed.get("title", ""), question),
                 "report":     _strip_citation_markers((repaired_parsed.get("report", "") or "").replace("\\n", "\n")),
                 "charts":     repaired_charts,
-                "images":     [],  # unvalidated against candidates in this repair path — safer to drop
+                "images":     repaired_imgs,
                 "keyStats":   repaired_parsed.get("keyStats", []),
                 "summary":    repaired_parsed.get("summary", ""),
                 "fileImages": file_images,
