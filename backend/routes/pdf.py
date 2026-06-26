@@ -1652,6 +1652,24 @@ async def generate_pdf(request: Request):
         log.warning("PDF: web image fetch failed entirely, continuing without images: %s", exc)
         web_images = []
 
+    # Fallback: if no [WEB_IMG_n] placeholders in report but we have fetched images, inject them
+    existing_ph = re.findall(r"\[WEB_IMG_\d+\]", report)
+    fetched_imgs = [img for img in web_images if img]
+    if fetched_imgs and not existing_ph:
+        log.info("PDF: no [WEB_IMG_n] placeholders — injecting fallback for %d image(s)", len(fetched_imgs))
+        paragraphs = report.split("\n\n")
+        n_para = len(paragraphs)
+        if len(fetched_imgs) == 1:
+            insertion_points = [max(1, n_para // 4)]
+        else:
+            step = max(1, n_para // (len(fetched_imgs) + 1))
+            insertion_points = [step * (k + 1) for k in range(len(fetched_imgs))]
+        for img_idx, para_idx in reversed(list(enumerate(insertion_points))):
+            if img_idx < len(web_images) and web_images[img_idx]:
+                paragraphs.insert(min(para_idx, n_para - 1), f"\n\n[WEB_IMG_{img_idx + 1}]\n")
+        report = "\n\n".join(paragraphs)
+        log.info("PDF: injected fallback [WEB_IMG_n] placeholders")
+
     try:
         pdf_bytes = build_pdf(report, title, question, summary, key_stats, charts, logo_b64, file_images, web_images)
     except Exception as e:

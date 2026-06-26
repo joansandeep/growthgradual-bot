@@ -1448,6 +1448,32 @@ async def generate_report(request: Request):
         import re as _re_dbg2
         _wimg_ph = _re_dbg2.findall(r"\[WEB_IMG_\d+\]", report_text)
         log.info("Report: final [WEB_IMG] placeholders in text: %s  images list len: %d", _wimg_ph or "none", len(images))
+
+        # ── Fallback: if the LLM selected images but placed no [WEB_IMG_n]
+        # placeholders in the report body, inject them at sensible positions so
+        # they actually render (both in the UI and in the PDF).  We spread them
+        # across the report rather than dumping them all at the end: image 1
+        # goes after the first section break (~25 % of the way through) and
+        # image 2 after the second break (~60 %).  Any extras are appended.
+        if images and not _wimg_ph:
+            log.info("Report: no [WEB_IMG_n] placeholders found — injecting fallback positions for %d image(s)", len(images))
+            paragraphs = report_text.split("\n\n")
+            n_para = len(paragraphs)
+            # Compute insertion indices spread across the body paragraphs
+            insertion_points: list[int] = []
+            if len(images) == 1:
+                insertion_points = [max(1, n_para // 4)]
+            else:
+                step = max(1, n_para // (len(images) + 1))
+                insertion_points = [step * (k + 1) for k in range(len(images))]
+
+            # Insert placeholders from the back so earlier indices stay valid
+            for img_idx, para_idx in reversed(list(enumerate(insertion_points))):
+                placeholder = f"\n\n[WEB_IMG_{img_idx + 1}]\n"
+                insert_at = min(para_idx, n_para - 1)
+                paragraphs.insert(insert_at, placeholder)
+            report_text = "\n\n".join(paragraphs)
+            log.info("Report: injected %d fallback [WEB_IMG_n] placeholder(s)", len(images))
         clean_title = _sanitize_title(parsed.get("title", ""), question)
         elapsed = (time.perf_counter() - t0) * 1000
         log.info("Report complete in %.0fms — title=%r  charts=%d  images=%d  keyStats=%d",
