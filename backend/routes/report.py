@@ -789,22 +789,38 @@ async def call_groq(user_prompt: str) -> str:
     return ""
 
 
-# Gemini model priority: try best model first, fall back on 503/429/404
+# ---------------------------------------------------------------------------
+# Gemini model table — ordered BEST FIRST (quality + output token limit).
+# We try the highest-capability model first and fall back only on 503/429/404.
+# Output token limits matter most for long reports (target 18K+ chars ≈ 9K tokens).
+#
+#  Model                  | Max output tokens | Notes
+#  -----------------------|-------------------|-------------------------------
+#  gemini-2.5-pro         |        65 536     | Largest context, best quality
+#  gemini-2.5-flash       |        65 536     | Fast + high quality
+#  gemini-3.5-flash       |        65 536     | Next-gen flash
+#  gemini-3-flash-preview |        65 536     | Preview of Gemini 3
+#  gemini-2.5-flash-lite  |        32 768     | Smallest output window — last resort
+#
+# Removed: gemini-2.0-flash / gemini-2.0-flash-lite (retired June 2026)
+# ---------------------------------------------------------------------------
 GEMINI_MODELS = [
-    # Ordered by availability/quota on the free tier (verified 2026-06-24).
-    # gemini-3.1-flash-lite does NOT exist on the REST API — removed.
-    # gemini-2.5-flash-lite:  10 RPM / 250K TPM /  20 RPD  ← most reliable workhorse
-    # gemini-2.5-flash:        5 RPM / 250K TPM /  20 RPD
-    # gemini-2.5-pro:          5 RPM / 250K TPM /  25 RPD  (largest context, best quality)
-    # gemini-3-flash-preview:  5 RPM / 250K TPM /  20 RPD  (API string for "Gemini 3 Flash")
-    # gemini-3.5-flash:        5 RPM / 250K TPM /  20 RPD
-    # Removed: gemini-2.0-flash / gemini-2.0-flash-lite (retired June 2026)
-    "gemini-2.5-flash-lite",   # 10 RPM / 250K TPM / 20 RPD — highest free quota
-    "gemini-2.5-flash",        #  5 RPM / 250K TPM / 20 RPD
-    "gemini-2.5-pro",          #  5 RPM / 250K TPM / 25 RPD — best quality, largest context
-    "gemini-3-flash-preview",  #  5 RPM / 250K TPM / 20 RPD
-    "gemini-3.5-flash",        #  5 RPM / 250K TPM / 20 RPD
+    "gemini-2.5-pro",          # 65 536 output tokens — best quality, largest window
+    "gemini-2.5-flash",        # 65 536 output tokens — fast + high quality
+    "gemini-3.5-flash",        # 65 536 output tokens — next-gen flash
+    "gemini-3-flash-preview",  # 65 536 output tokens — Gemini 3 preview
+    "gemini-2.5-flash-lite",   # 32 768 output tokens — last resort (smallest window)
 ]
+
+# Per-model max output tokens — used to set the right ceiling per attempt.
+# Setting this too high on flash-lite causes it to hang; match the actual model limit.
+_GEMINI_MAX_OUTPUT = {
+    "gemini-2.5-pro":          65_536,
+    "gemini-2.5-flash":        65_536,
+    "gemini-3.5-flash":        65_536,
+    "gemini-3-flash-preview":  65_536,
+    "gemini-2.5-flash-lite":   32_768,
+}
 
 
 async def call_gemini(user_prompt: str) -> str:
@@ -822,16 +838,17 @@ async def call_gemini(user_prompt: str) -> str:
 
     log.info("Gemini: attempting report generation with %d key(s), %d models", len(rest_keys), len(GEMINI_MODELS))
 
-    # Build a flat attempt list: (key, model) — cycle through all key×model combos
-    # Priority: try each model with the least-used key first, then next model, etc.
-    available_keys = [k for k in round_robin(rest_keys) if not is_rate_limited(k)]
-    if not available_keys:
-        available_keys = rest_keys  # all rate-limited — try anyway as last resort
+    # Build attempt queue: model varies slowest (best model tried across ALL keys
+    # before falling back to next model). Within each model, prefer non-rate-limited
+    # keys first, then rate-limited keys as a last resort.
+    def _key_order(model: str) -> list:
+        ok  = [k for k in round_robin(rest_keys) if not is_rate_limited(k) and not is_rate_limited(f"{k}:{model}")]
+        rl  = [k for k in rest_keys if is_rate_limited(k) or is_rate_limited(f"{k}:{model}")]
+        return ok + rl  # non-RL keys first
 
-    # Build attempt queue: [(key, model), ...] — model varies slowest
     attempts = []
     for model in GEMINI_MODELS:
-        for key in available_keys:
+        for key in _key_order(model):
             attempts.append((key, model))
 
     for key, model in attempts:
@@ -840,8 +857,9 @@ async def call_gemini(user_prompt: str) -> str:
         try:
             log.debug("Gemini: trying model=%s key=...%s", model, key[-4:])
             t0 = time.perf_counter()
+            max_out = _GEMINI_MAX_OUTPUT.get(model, 65_536)
             generation_config = {
-                "maxOutputTokens": 65536,
+                "maxOutputTokens": max_out,
                 "temperature": 0.1,
                 # NOTE: responseMimeType:"application/json" is intentionally NOT set.
                 # When set, Gemini hard-truncates output mid-JSON at the token limit,
@@ -850,10 +868,13 @@ async def call_gemini(user_prompt: str) -> str:
                 # stray ``` Gemini might add around the output.
             }
             # Suppress thinking tokens — keep full token budget for report JSON.
-            # Gemini 2.5 uses thinkingBudget:0; Gemini 3.x uses thinkingLevel; mixing → 400.
-            if model in ("gemini-2.5-flash", "gemini-2.5-flash-lite", "gemini-2.5-pro"):
+            # Gemini 2.5 family uses thinkingBudget:0; Gemini 3.x uses thinkingLevel.
+            # Mixing these across families causes a 400 error.
+            _GEMINI_25 = {"gemini-2.5-flash", "gemini-2.5-flash-lite", "gemini-2.5-pro"}
+            _GEMINI_3X = {"gemini-3-flash-preview", "gemini-3.5-flash"}
+            if model in _GEMINI_25:
                 generation_config["thinkingConfig"] = {"thinkingBudget": 0}
-            elif model in ("gemini-3-flash-preview", "gemini-3.5-flash"):
+            elif model in _GEMINI_3X:
                 generation_config["thinkingConfig"] = {"thinkingLevel": "minimal"}
             async with httpx.AsyncClient(timeout=120) as client:
                 res = await client.post(
