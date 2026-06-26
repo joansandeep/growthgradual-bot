@@ -322,6 +322,30 @@ def _strip_inline(text: str) -> str:
     text = re.sub(r"\s*\*+$", "", text)
     return _safe_text(text.strip())
 
+def _parse_inline_bold(text: str) -> list:
+    """Split text into [(is_bold, segment), ...] for inline bold rendering."""
+    parts = re.split(r"(\*\*[^*]+\*\*)", text)
+    result = []
+    for p in parts:
+        if p.startswith("**") and p.endswith("**") and len(p) > 4:
+            result.append((True, _safe_text(p[2:-2])))
+        elif p:
+            result.append((False, _safe_text(p)))
+    return result
+
+
+def _draw_rich_line(c, x, y, text, regular_font, bold_font, size, color, max_w):
+    """Draw a line with inline **bold** support. Returns width drawn."""
+    segments = _parse_inline_bold(text)
+    cx = x
+    for is_bold, seg in segments:
+        font = bold_font if is_bold else regular_font
+        c.setFont(font, size)
+        c.setFillColorRGB(*color)
+        c.drawString(cx, y, seg)
+        cx += c.stringWidth(seg, font, size)
+    return cx - x
+
 
 # ─── Markdown tokeniser ───────────────────────────────────────────────────────
 def _tokenise(md: str):
@@ -367,14 +391,20 @@ def _tokenise(md: str):
                 rows.append(cells)
                 i += 1
             if rows:
-                # Filter out data rows where ALL non-first cells are empty/dash
+                # Filter out data rows where ALL non-first cells are empty/placeholder
+                _EMPTY_CELL = {
+                    "", "-", "—", "n/a", "na",
+                    "not available", "data not available",
+                    "not extractable", "data not extractable",
+                    "no data", "tbd", "pending", "unknown",
+                }
                 header = rows[0] if rows else []
                 filtered = [header] if header else []
                 for row in rows[1:]:
                     data_cells = row[1:] if len(row) > 1 else row
-                    if any(cell.strip() not in ("", "-", "—", "N/A", "n/a") for cell in data_cells):
+                    if any(cell.strip().lower() not in _EMPTY_CELL for cell in data_cells):
                         filtered.append(row)
-                # Only yield if header + at least 1 data row
+                # Only yield if header + at least 1 real data row
                 if len(filtered) >= 2:
                     yield {"type": "table", "rows": filtered}
             continue
@@ -816,7 +846,6 @@ def build_pdf(report: str, title: str, question: str, summary: str,
     from reportlab.lib.pagesizes import A4
     from reportlab.pdfgen import canvas as rl_canvas
     from reportlab.lib.utils import ImageReader
-    from reportlab.platypus import Image as RLImage
     from PIL import Image as PILImage
 
     PAGE_W, PAGE_H = A4          # 595 x 842 pt
@@ -1157,14 +1186,14 @@ def build_pdf(report: str, title: str, question: str, summary: str,
             chart_idx[0] = ci + 1
             if ci < len(charts) and _is_valid_chart(charts[ci]):
                 ch = charts[ci]
-                GAP_ABOVE = 14     # breathing room between previous content and this card
+                GAP_ABOVE = 8      # breathing room between previous content and this card
 
                 # When a Datawrapper PNG is available the title and axes are baked
                 # into the image — no separate ReportLab title bar needed, and we
                 # give the card more height so the PNG fills it properly.
                 has_dw_png = bool((ch.get("datawrapper") or {}).get("pngBytes"))
-                CHART_H    = 240 if has_dw_png else 195   # DW PNG is taller (includes title)
-                CARD_HEADER = 0 if has_dw_png else 30     # 0 = no title bar, PNG fills card
+                CHART_H    = 220 if has_dw_png else 185   # DW PNG is taller (includes title)
+                CARD_HEADER = 0 if has_dw_png else 26     # 0 = no title bar, PNG fills card
 
                 CARD_TOTAL = CHART_H + CARD_HEADER + 10 + GAP_ABOVE
                 need(CARD_TOTAL, current_section[0])
@@ -1233,8 +1262,8 @@ def build_pdf(report: str, title: str, question: str, summary: str,
                     img_buf = _io.BytesIO()
                     pil_img.save(img_buf, format="JPEG", quality=85)
                     img_buf.seek(0)
-                    rl_img = RLImage(img_buf, width=iw, height=ih)
-                    rl_img.drawOn(c, cx, y[0] - ih - 22)
+                    img_reader = ImageReader(img_buf)
+                    c.drawImage(img_reader, cx, y[0] - ih - 22, width=iw, height=ih, mask="auto")
                     y[0] = y[0] - ih - 36
                 except Exception as exc:
                     log.warning("PAGE_IMG_%d render failed: %s", pi + 1, exc)
@@ -1269,8 +1298,8 @@ def build_pdf(report: str, title: str, question: str, summary: str,
                     img_buf = _io.BytesIO()
                     pil_img.save(img_buf, format="JPEG", quality=85)
                     img_buf.seek(0)
-                    rl_img = RLImage(img_buf, width=iw, height=ih)
-                    rl_img.drawOn(c, cx, y[0] - ih - 10)
+                    img_reader = ImageReader(img_buf)
+                    c.drawImage(img_reader, cx, y[0] - ih - 10, width=iw, height=ih, mask="auto")
                     if cap:
                         c.setFillColorRGB(0.4, 0.42, 0.46); c.setFont("Helvetica-Oblique", 7.5)
                         c.drawCentredString(MARGIN + CW / 2, y[0] - ih - 10 - cap_h + 5, cap)
@@ -1334,42 +1363,50 @@ def build_pdf(report: str, title: str, question: str, summary: str,
 
         # ── Bullet ───────────────────────────────────────────────────────────
         if tp == "bullet":
-            text = _strip_inline(tok["text"])
-            wlines = _wrap(c, text, "Helvetica", 10, CW - 16)
+            plain_text = _strip_inline(tok["text"])
+            wlines = _wrap(c, plain_text, "Helvetica", 10, CW - 16)
             for li, ln in enumerate(wlines):
                 need(15, current_section[0])
                 if li == 0:
                     c.setFillColorRGB(*accent())
                     c.circle(MARGIN + 5, y[0] + 3.5, 2.5, fill=1, stroke=0)
-                c.setFillColorRGB(*BODY_TXT); c.setFont("Helvetica", 10)
-                c.drawString(MARGIN + 15, y[0], ln)
+                _draw_rich_line(c, MARGIN + 15, y[0], ln, "Helvetica", "Helvetica-Bold", 10, BODY_TXT, CW - 15)
                 nl(15)
             continue
 
         # ── Numbered item ────────────────────────────────────────────────────
         if tp == "numbered":
-            text = _strip_inline(tok["text"])
+            plain_text = _strip_inline(tok["text"])
             num = tok.get("num", "•")
             indent = 18
-            wlines = _wrap(c, text, "Helvetica", 10, CW - indent)
+            wlines = _wrap(c, plain_text, "Helvetica", 10, CW - indent)
             for li, ln in enumerate(wlines):
                 need(15, current_section[0])
                 if li == 0:
                     c.setFillColorRGB(*accent()); c.setFont("Helvetica-Bold", 10)
                     c.drawString(MARGIN, y[0], f"{num}.")
-                c.setFillColorRGB(*BODY_TXT); c.setFont("Helvetica", 10)
-                c.drawString(MARGIN + indent, y[0], ln)
+                _draw_rich_line(c, MARGIN + indent, y[0], ln, "Helvetica", "Helvetica-Bold", 10, BODY_TXT, CW - indent)
                 nl(15)
             continue
 
         # ── Paragraph ────────────────────────────────────────────────────────
         if tp == "para":
-            text = _strip_inline(tok["text"])
-            wlines = _wrap(c, text, "Helvetica", 10, CW)
+            raw_text = tok["text"]
+            plain_text = _strip_inline(raw_text)
+            # Suppress LLM "Note:" disclaimers about missing/unavailable data —
+            # they become orphaned and misleading once the empty table is suppressed.
+            _tlow = plain_text.lower().strip()
+            _DATA_NOTE_HINTS = (
+                "note: specific numerical data", "note: the table above indicates",
+                "were not directly extractable", "data not available",
+                "not directly available in the provided snippets",
+            )
+            if any(h in _tlow for h in _DATA_NOTE_HINTS):
+                continue
+            wlines = _wrap(c, plain_text, "Helvetica", 10, CW)
             for ln in wlines:
                 need(15, current_section[0])
-                c.setFillColorRGB(*BODY_TXT); c.setFont("Helvetica", 10)
-                c.drawString(MARGIN, y[0], ln)
+                _draw_rich_line(c, MARGIN, y[0], ln, "Helvetica", "Helvetica-Bold", 10, BODY_TXT, CW)
                 nl(15)
             nl(6); continue
 
@@ -1540,18 +1577,6 @@ async def generate_pdf(request: Request):
         out: list[dict | None] = [None] * min(len(imgs), max_count)
 
         async def _one(i: int, info: dict):
-            # Fast path: report route already pre-fetched the bytes as base64
-            if info.get("data"):
-                try:
-                    raw = base64.b64decode(info["data"])
-                    if len(raw) >= 500:
-                        out[i] = {"data": info["data"], "caption": (info.get("caption") or "")[:120]}
-                        log.info("WEB_IMG[%d] using pre-fetched bytes (%d bytes)", i + 1, len(raw))
-                        return
-                except Exception:
-                    pass  # fall through to URL fetch
-
-            # Slow path: fetch from URL (fallback when pre-fetch wasn't done)
             url = (info.get("url") or "").strip()
             if not url:
                 return
@@ -1566,24 +1591,29 @@ async def generate_pdf(request: Request):
                         })
                     ctype = resp.headers.get("content-type", "")
                     if not resp.is_success:
-                        log.warning("WEB_IMG[%d] HTTP %d for %s", i + 1, resp.status_code, url[:80])
+                        log.debug("WEB_IMG HTTP %d for %s", resp.status_code, url[:80])
                         return
-                    content = resp.content
-                    is_image = ctype.startswith("image/") or (
-                        content[:4] == b"\x89PNG" or
-                        content[:3] == b"\xff\xd8\xff" or
-                        content[:6] in (b"GIF87a", b"GIF89a") or
-                        content[:4] == b"RIFF"
-                    )
-                    if not is_image:
-                        log.warning("WEB_IMG[%d] non-image content-type %r for %s", i + 1, ctype[:40], url[:80])
+                    if not ctype.startswith("image/"):
+                        # Some CDNs return image bytes with generic content-type — check magic bytes
+                        content = resp.content
+                        img_magic = (
+                            content[:4] == b"\x89PNG" or
+                            content[:3] == b"\xff\xd8\xff" or  # JPEG
+                            content[:6] in (b"GIF87a", b"GIF89a") or
+                            content[:4] == b"RIFF"  # WebP
+                        )
+                        if not img_magic:
+                            log.debug("WEB_IMG non-image content-type %r for %s", ctype[:40], url[:80])
+                            return
+                        content_bytes = content
+                    else:
+                        content_bytes = resp.content
+                    if len(content_bytes) > max_bytes or len(content_bytes) < 500:
+                        log.debug("WEB_IMG size %d out of range for %s", len(content_bytes), url[:80])
                         return
-                    if len(content) > max_bytes or len(content) < 500:
-                        log.warning("WEB_IMG[%d] size %d out of range for %s", i + 1, len(content), url[:80])
-                        return
-                    out[i] = {"data": base64.b64encode(content).decode("ascii"),
+                    out[i] = {"data": base64.b64encode(content_bytes).decode("ascii"),
                               "caption": (info.get("caption") or "")[:120]}
-                    log.info("WEB_IMG[%d] URL-fetched %d bytes from %s", i + 1, len(content), url[:60])
+                    log.info("WEB_IMG[%d] fetched %d bytes from %s", i + 1, len(content_bytes), url[:60])
                 except Exception as exc:
                     log.warning("WEB_IMG[%d] fetch failed for %s: %s", i + 1, url[:80], exc)
 

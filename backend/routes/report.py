@@ -129,8 +129,11 @@ STEP 2 — ONLY create a chart if ALL conditions are met:
     for banks WITH market cap data; Chart 2: P/E ratio bar chart for banks WITH P/E data;
     Chart 3: Net Profit bar chart. Each chart stands alone.
 
-STEP 3 — Place [CHART_n] inline in the report markdown right after the paragraph whose data it shows.
+STEP 3 — Place [CHART_n] inline in the report markdown right after the paragraph AND bullet list whose data it shows.
   charts[0] = [CHART_1], charts[1] = [CHART_2], etc.
+  IMPORTANT: Never place [CHART_n] immediately after just 1-2 sentences — always ensure at least one full
+  paragraph (3+ sentences) or a paragraph + bullet list precedes the chart. This prevents blank whitespace
+  gaps in the PDF.
 
 STEP 4 — Aim for 5-8 charts/tables per report when data supports it — this report runs long
   (10-12 pages), and visuals are what fill that length well rather than walls of text. Quality
@@ -192,31 +195,34 @@ write as much genuinely substantive analysis as the sources support):
 # [Report Title]
 
 ## 1. Introduction
-4-5 paragraphs (minimum 250 words): Provide rich context — explain the sector/topic, why it matters now, who the key stakeholders are, what macro or market forces are driving interest, the history/background that led here, and what this report covers. Write in plain prose — do NOT insert bracket citation markers like [1] or [n] anywhere; name the publication inline instead if attribution is needed (e.g. "according to Screener.in data..."). No filler, every sentence must add context or data. If a relevant image candidate exists (e.g. company HQ, product, logo of the sector), place [WEB_IMG_n] near the end of this section.
+3-4 paragraphs (minimum 200 words): Provide rich context — explain the sector/topic, why it matters now, who the key stakeholders are, what macro or market forces are driving interest, the history/background that led here, and what this report covers. Write in plain prose. No filler, every sentence must add context or data. If a relevant image candidate exists, place [WEB_IMG_n] near the end of this section.
+Then add a **"What This Report Covers"** bullet list (4-6 short items, one per line, starting with "-") summarising the key questions this report answers — e.g. "- Which sectors led/lagged and by how much", "- Key macro drivers behind outperformers". This gives the reader a quick scannable preview.
 
 ## 2. Data Analysis
 
 ### 2.1 [Heading matching actual topic and data]
-Deep-dive quantitative findings (minimum 220 words). ALL numbers in markdown tables. Explain what the data shows, why the leaders are ahead, what the numbers mean in context. Insert [CHART_n] immediately after the paragraph whose data it visualises. No bracket citation markers.
+Deep-dive quantitative findings (minimum 220 words). ALL numbers in markdown tables. Lead with 1-2 paragraphs of analysis, then use **bullet points** to highlight 3-5 standout data points or anomalies (e.g. "- IT sector returned 34% YTD, highest across all NIFTY sectors"). Explain what the data shows and why it matters. Insert [CHART_n] immediately after the paragraph whose data it visualises.
 
 ### 2.2 [Second dimension of analysis]
-Comparisons, breakdowns, benchmarks (minimum 220 words). Tables + [CHART_n] where valid distinct data exists. Explain trends and what differentiates top performers.
+Comparisons, breakdowns, benchmarks (minimum 220 words). Use a mix of formats: 1-2 paragraphs of context + a **bullet list of key differentiators or ranked highlights** + tables + [CHART_n]. Bullet lists work well here for listing top/bottom performers or distinguishing characteristics.
 
 ### 2.3 [Trends or forward-looking data — only if sources have it]
-Only include if sources have trend/time-series data with ≥4 distinct time points. Minimum 180 words if included.
+Only include if sources have trend/time-series data with ≥4 distinct time points. Minimum 180 words if included. Use prose for the overall trend narrative; use **bullet points** for discrete inflection points or catalysts (e.g. "- Q3 FY24: RBI rate pause triggered a rally in rate-sensitive sectors").
 
 ### 2.4 [A fourth distinct angle — peer/sector context, valuation, ownership, regulatory backdrop, etc. — only if sources genuinely support it]
 Optional but encouraged when the sources have material left over after 2.1-2.3. Minimum 180 words if included. Skip entirely (don't stub it) if there's nothing left to say with real data.
 
 ## 3. Key Findings
-8-12 numbered findings, each with a specific number/stat from sources AND a 2-3 sentence explanation of what it means and why it matters to a reader. No bracket citation markers — if attribution matters, name the publication in the sentence itself.
+8-12 findings. Each finding must follow this exact format — a **bold lead sentence** with a specific stat, then 1-2 sentences of plain explanation:
+**1. [Bold stat-driven headline — e.g. "IT sector surged 34% YTD, outpacing all peers"]** — explanation of what it means and why it matters to investors.
+No bracket citation markers — if attribution matters, name the publication in the sentence itself.
 
 ## 4. Risks & Considerations
-3-5 distinct risk factors or open questions relevant to the topic (minimum 200 words total), grounded in what the sources actually flag — regulatory risk, competitive pressure, valuation concerns, macro sensitivity, data gaps, etc. If the sources don't surface explicit risks, reason from the data patterns themselves (e.g. a metric trending the wrong way, a concentration in one segment) rather than inventing unrelated risks. Do not skip this section — every topic has SOME risk angle worth a paragraph.
+3-5 distinct risks. Each risk uses a **bold label** followed by 2-3 sentences of explanation (minimum 200 words total). Format:
+**[Risk Name — e.g. "Valuation Stretch"]:** explanation grounded in what the sources flag — regulatory risk, competitive pressure, valuation concerns, macro sensitivity, data gaps, etc. If sources don't surface explicit risks, reason from data patterns themselves. Do not skip this section.
 
 ## 5. Conclusion
-3-4 paragraphs (minimum 220 words): synthesise findings, explain implications for different types of investors/stakeholders, and give forward outlook from sources only.
-
+2-3 paragraphs of synthesis (minimum 160 words) followed by a **"Key Takeaways"** bullet list (4-6 items, one per line) summarising the most important points for investors/stakeholders. End with a short forward-looking paragraph on outlook grounded in sources only.
 ## 6. Data Sources & Methodology
 One markdown table of sources (Publication | URL | Data type). 2-3 paragraphs (minimum 150 words): describe what sources were used, what metrics were collected, how comparisons were made, and any caveats in the data.
 SOURCE BREADTH: list EVERY distinct publication below that contributed any real fact, figure, or context — not only whichever source happened to have the most granular numbers. If five sources were provided and three had usable content (numbers, context, definitions, market commentary), the table and the Sources section should show three rows, not one. Only cite a single source if every other source genuinely had nothing usable (e.g. paywalled, off-topic, or duplicate of another result) — and if so, do not claim more sources were used than actually were. Never list a publication that contributed nothing to the report.
@@ -256,6 +262,27 @@ GLOBAL RULES:
   Target 2800-3500 words total across all sections.
 - CRITICAL: NEVER write raw JSON inside the "report" string. Charts go ONLY in the "charts" array.
   Use [CHART_1], [CHART_2] placeholders in the report text — never paste the chart JSON object itself.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+JSON COMPLETION — CRITICAL: NEVER TRUNCATE THE OUTPUT
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+You MUST output a fully valid, complete JSON object. Truncated output causes total report failure.
+
+BEFORE you start writing: budget your tokens. The JSON wrapper (title, charts, images, keyStats,
+summary) takes ~2000 tokens. The report content needs ~6000-7000 tokens. Total: ~9000 tokens.
+You have 32000 output tokens available — more than enough. Do NOT rush or compress.
+
+Rules to prevent truncation:
+1. Write sections in order: Introduction → Data Analysis → Key Findings → Risks → Conclusion → Sources.
+   Do NOT skip or abbreviate any section to save tokens.
+2. Pace yourself: if you are past section 3 (Key Findings) and have written fewer than 10000 chars
+   of report content, you are on track — keep going, do NOT start compressing.
+3. The "charts" array must be COMPLETE before you close the JSON. If you run low on space, write
+   shorter chart titles but include ALL chart objects.
+4. Always end the JSON with: "summary": "...", "keyStats": [...]} — never leave it open.
+5. If a section runs shorter than its minimum, EXPAND it with more analysis rather than moving on.
+6. NEVER end the "report" string mid-sentence. Always close with a complete conclusion paragraph,
+   then close the JSON string with " and the remaining fields.
 """
 
 # Matches stray bracket-number citation markers like "[1]", "[1, 2]", "[8]" that
@@ -704,7 +731,7 @@ async def call_groq(user_prompt: str) -> str:
                             {"role": "system", "content": SYSTEM_PROMPT},
                             {"role": "user", "content": user_prompt},
                         ],
-                        "max_tokens": 32000,
+                        "max_tokens": 32768,
                         "temperature": 0.2,
                         "response_format": {"type": "json_object"},
                     },
@@ -747,9 +774,9 @@ async def call_groq(user_prompt: str) -> str:
             if text:
                 elapsed = (time.perf_counter() - t0) * 1000
                 log.info("Groq: report generated in %.0fms (%d chars)", elapsed, len(text))
-                if len(text) < 15_000:
+                if len(text) < 18_000:
                     log.warning(
-                        "Groq: report too short (%d chars < 15000) — skipping, falling through to Gemini",
+                        "Groq: report too short (%d chars < 18000) — skipping, falling through to Gemini",
                         len(text),
                     )
                     continue
@@ -814,7 +841,7 @@ async def call_gemini(user_prompt: str) -> str:
             log.debug("Gemini: trying model=%s key=...%s", model, key[-4:])
             t0 = time.perf_counter()
             generation_config = {
-                "maxOutputTokens": 32000,
+                "maxOutputTokens": 65536,
                 "temperature": 0.1,
                 # NOTE: responseMimeType:"application/json" is intentionally NOT set.
                 # When set, Gemini hard-truncates output mid-JSON at the token limit,
@@ -864,9 +891,21 @@ async def call_gemini(user_prompt: str) -> str:
                          elapsed, len(text), model, key[-4:])
                 # Reject under-length reports — the system prompt mandates ≥15K chars.
                 # Treat short output as a soft failure and try the next model/key.
-                if len(text) < 15_000:
+                # Check finish_reason — MAX_TOKENS means Gemini was cut off mid-output
+                finish_reason = (
+                    res.json()
+                    .get("candidates", [{}])[0]
+                    .get("finishReason", "")
+                )
+                if finish_reason == "MAX_TOKENS":
                     log.warning(
-                        "Gemini: report too short (%d chars < 15000) — model=%s key=...%s — retrying next slot",
+                        "Gemini: MAX_TOKENS — output was truncated mid-response model=%s key=...%s (%d chars) — retrying next slot",
+                        model, key[-4:], len(text),
+                    )
+                    continue
+                if len(text) < 18_000:
+                    log.warning(
+                        "Gemini: report too short (%d chars < 18000) — model=%s key=...%s — retrying next slot",
                         len(text), model, key[-4:],
                     )
                     continue
@@ -999,61 +1038,6 @@ def _build_followup_search_query(question: str, conversation_context: str) -> st
         return question
 
     return f"{question} — context: {last_assistant[:300]}"
-
-
-async def _prefetch_image_bytes(images: list[dict], max_bytes: int = 4_000_000) -> list[dict]:
-    """Fetch each image URL and attach base64-encoded bytes under the 'data' key.
-
-    This runs in the report route (before the JSON response is sent) so that
-    the PDF route receives pre-fetched bytes and never needs to make outbound
-    HTTP calls — which often fail on restricted hosting environments or get
-    blocked by image CDNs that reject server-to-server requests.
-
-    Images that fail to fetch are returned as-is (with no 'data' key) so the
-    PDF route can still try a URL fetch as a last-resort fallback.
-    """
-    import base64 as _b64
-    if not images:
-        return images
-
-    sem = asyncio.Semaphore(3)
-
-    async def _one(img: dict):
-        url = (img.get("url") or "").strip()
-        if not url or img.get("data"):
-            return  # already has bytes or no URL
-        async with sem:
-            try:
-                async with httpx.AsyncClient(timeout=12.0, follow_redirects=True) as client:
-                    resp = await client.get(url, headers={
-                        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-                        "Accept": "image/webp,image/apng,image/*,*/*;q=0.8",
-                        "Accept-Language": "en-US,en;q=0.9",
-                    })
-                if not resp.is_success:
-                    log.debug("Image prefetch HTTP %d for %s", resp.status_code, url[:80])
-                    return
-                content = resp.content
-                # Validate it's an actual image (magic bytes or content-type)
-                ctype = resp.headers.get("content-type", "")
-                is_image = ctype.startswith("image/") or (
-                    content[:4] == b"\x89PNG" or
-                    content[:3] == b"\xff\xd8\xff" or
-                    content[:6] in (b"GIF87a", b"GIF89a") or
-                    content[:4] == b"RIFF"
-                )
-                if not is_image or len(content) < 500 or len(content) > max_bytes:
-                    log.debug("Image prefetch skipped (ctype=%r, size=%d) for %s", ctype[:30], len(content), url[:60])
-                    return
-                img["data"] = _b64.b64encode(content).decode("ascii")
-                log.info("Image prefetch OK: %d bytes for %s", len(content), url[:60])
-            except Exception as exc:
-                log.debug("Image prefetch failed for %s: %s", url[:80], exc)
-
-    await asyncio.gather(*[_one(img) for img in images])
-    n_ok = sum(1 for img in images if img.get("data"))
-    log.info("Image prefetch: %d/%d images fetched successfully", n_ok, len(images))
-    return images
 
 
 @router.post("")
@@ -1395,27 +1379,6 @@ async def generate_report(request: Request):
         charts = await attach_datawrapper_charts(charts)
         report_text = _strip_citation_markers(report_text)
         clean_title = _sanitize_title(parsed.get("title", ""), question)
-
-        # Pre-fetch image bytes here in the report route so the PDF route
-        # doesn't need to make outbound HTTP calls (which often fail on
-        # restricted hosting environments or get blocked by image CDNs).
-        # Each image gets a base64 "data" field added; the PDF route uses
-        # that directly, falling back to URL fetch only if data is absent.
-        images = await _prefetch_image_bytes(images)
-
-        # Guarantee every selected image has a [WEB_IMG_n] placeholder in the
-        # report text. Gemini sometimes selects images in the JSON but forgets
-        # to place the placeholder inline. Detect missing ones and append them
-        # after the last section so they always render in the PDF.
-        for img_idx in range(1, len(images) + 1):
-            ph = f"[WEB_IMG_{img_idx}]"
-            if ph not in report_text:
-                log.warning("Report: %s missing from report text — appending at end", ph)
-                report_text = report_text.rstrip() + f"\n\n{ph}\n"
-
-        n_placeholders = len(re.findall(r"\[WEB_IMG_\d+\]", report_text))
-        log.info("Report: %d WEB_IMG placeholders in report text, %d images selected", n_placeholders, len(images))
-
         elapsed = (time.perf_counter() - t0) * 1000
         log.info("Report complete in %.0fms — title=%r  charts=%d  images=%d  keyStats=%d",
                  elapsed, clean_title[:60], len(charts), len(images), len(parsed.get("keyStats", [])))
@@ -1446,7 +1409,7 @@ async def generate_report(request: Request):
                         report_raw = report_raw[:last].strip()
                         break
                 if len(report_raw) > 200:
-                    result["report"] = report_raw + "\n\n*Note: Report was truncated due to response length limits.*"
+                    result["report"] = report_raw
             m = re.search(r'"keyStats"\s*:\s*(\[[\s\S]*?\])', text)
             if m:
                 try: result["keyStats"] = json.loads(m.group(1))
@@ -1474,17 +1437,11 @@ async def generate_report(request: Request):
         if salvaged:
             log.info("Report: salvaged %d fields from truncated JSON (images=%d)", len(salvaged), len(salvaged.get("images", [])))
             salvaged["charts"] = await attach_datawrapper_charts(salvaged.get("charts", []))
-            salvaged_images = await _prefetch_image_bytes(salvaged.get("images", []))
-            salvaged_report = _strip_citation_markers(salvaged.get("report", ""))
-            for img_idx in range(1, len(salvaged_images) + 1):
-                ph = f"[WEB_IMG_{img_idx}]"
-                if ph not in salvaged_report:
-                    salvaged_report = salvaged_report.rstrip() + f"\n\n{ph}\n"
             return JSONResponse({
                 "title":      _sanitize_title(salvaged.get("title", ""), question),
-                "report":     salvaged_report,
+                "report":     _strip_citation_markers(salvaged.get("report", "")),
                 "charts":     salvaged.get("charts", []),
-                "images":     salvaged_images,
+                "images":     salvaged.get("images", []),
                 "keyStats":   salvaged.get("keyStats", []),
                 "summary":    salvaged.get("summary", ""),
                 "fileImages": file_images,
@@ -1506,17 +1463,11 @@ async def generate_report(request: Request):
                 raw_imgs = repaired_parsed.get("images") or []
                 if image_candidates and raw_imgs:
                     repaired_imgs, _ = _validate_image_selections(raw_imgs, image_candidates)
-                    repaired_imgs = await _prefetch_image_bytes(repaired_imgs)
             except Exception:
                 pass
-            repaired_report = _strip_citation_markers((repaired_parsed.get("report", "") or "").replace("\\n", "\n"))
-            for img_idx in range(1, len(repaired_imgs) + 1):
-                ph = f"[WEB_IMG_{img_idx}]"
-                if ph not in repaired_report:
-                    repaired_report = repaired_report.rstrip() + f"\n\n{ph}\n"
             return JSONResponse({
                 "title":      _sanitize_title(repaired_parsed.get("title", ""), question),
-                "report":     repaired_report,
+                "report":     _strip_citation_markers((repaired_parsed.get("report", "") or "").replace("\\n", "\n")),
                 "charts":     repaired_charts,
                 "images":     repaired_imgs,
                 "keyStats":   repaired_parsed.get("keyStats", []),
