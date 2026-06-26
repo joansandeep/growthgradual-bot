@@ -262,6 +262,9 @@ GLOBAL RULES:
   Target 2800-3500 words total across all sections.
 - CRITICAL: NEVER write raw JSON inside the "report" string. Charts go ONLY in the "charts" array.
   Use [CHART_1], [CHART_2] placeholders in the report text — never paste the chart JSON object itself.
+- CRITICAL: NEVER use unescaped double-quote characters (") inside JSON string values. If you need to
+  quote something inside the report text, use single quotes (') instead, or escape as \". A bare "
+  inside the "report" value corrupts the entire JSON and causes total report failure.
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 JSON COMPLETION — CRITICAL: NEVER TRUNCATE THE OUTPUT
@@ -1268,6 +1271,48 @@ async def generate_report(request: Request):
         log.debug("Report: skipping %d chars of preamble before JSON", brace_idx)
         clean = clean[brace_idx:]
 
+    # ── Pre-parse JSON repair ──────────────────────────────────────────────────────────────
+    # The LLM occasionally emits unescaped double-quotes inside the "report"
+    # string value, causing json.loads to fail mid-way (e.g. at char 12334).
+    # We scan char-by-char through the value to find and fix them.
+    def _repair_string_value(text: str, field: str) -> str:
+        """Find "field": "<value>" and escape any bare internal double-quotes."""
+        key_pat = re.compile(r'"' + re.escape(field) + r'"\s*:\s*"')
+        m = key_pat.search(text)
+        if not m:
+            return text
+        val_start = m.end()        # index of first char after the opening quote
+        out = list(text[:val_start])
+        i = val_start
+        while i < len(text):
+            ch = text[i]
+            if ch == '\\':           # already-escaped sequence — copy verbatim
+                out.append(ch)
+                i += 1
+                if i < len(text):
+                    out.append(text[i])
+                    i += 1
+                continue
+            if ch == '"':             # unescaped quote — closing or internal?
+                rest = text[i + 1:i + 20].lstrip()
+                if rest and rest[0] in (',', '}', '\n', ']'):
+                    # Closing delimiter — emit and keep the rest verbatim
+                    out.append(ch)
+                    out.append(text[i + 1:])
+                    return ''.join(out)
+                # Internal bare quote — escape it
+                out.append('\\')
+                out.append(ch)
+                i += 1
+                continue
+            out.append(ch)
+            i += 1
+        return ''.join(out)
+
+    clean = _repair_string_value(clean, "report")
+    clean = _repair_string_value(clean, "summary")
+    # ─────────────────────────────────────────────────────────────────────────
+
     try:
         parsed = json.loads(clean)
 
@@ -1399,6 +1444,10 @@ async def generate_report(request: Request):
 
         charts = await attach_datawrapper_charts(charts)
         report_text = _strip_citation_markers(report_text)
+        # Debug: verify [WEB_IMG_n] placeholders are in final report_text
+        import re as _re_dbg2
+        _wimg_ph = _re_dbg2.findall(r"\[WEB_IMG_\d+\]", report_text)
+        log.info("Report: final [WEB_IMG] placeholders in text: %s  images list len: %d", _wimg_ph or "none", len(images))
         clean_title = _sanitize_title(parsed.get("title", ""), question)
         elapsed = (time.perf_counter() - t0) * 1000
         log.info("Report complete in %.0fms — title=%r  charts=%d  images=%d  keyStats=%d",

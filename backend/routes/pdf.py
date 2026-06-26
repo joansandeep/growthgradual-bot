@@ -1282,10 +1282,16 @@ def build_pdf(report: str, title: str, question: str, summary: str,
                     pil_img = PILImage.open(_io.BytesIO(img_data))
                     pil_img = _flatten_to_rgb(pil_img)
                     MAX_IMG_W = CW
-                    MAX_IMG_H = 300
+                    MAX_IMG_H = 260
                     ow, oh = pil_img.size
+                    if ow <= 0 or oh <= 0:
+                        log.warning("WEB_IMG_%d has zero dimension (%dx%d) — skipping", wi + 1, ow, oh)
+                        continue
                     scale = min(MAX_IMG_W / ow, MAX_IMG_H / oh, 1.0)
                     iw, ih = ow * scale, oh * scale
+                    if iw < 10 or ih < 10:
+                        log.warning("WEB_IMG_%d scaled too small (%.1fx%.1f) — skipping", wi + 1, iw, ih)
+                        continue
                     cap = (img_info.get("caption") or "")[:120]
                     cap_h = 18 if cap else 0
                     need(ih + 26 + cap_h, current_section[0])
@@ -1305,7 +1311,8 @@ def build_pdf(report: str, title: str, question: str, summary: str,
                         c.drawCentredString(MARGIN + CW / 2, y[0] - ih - 10 - cap_h + 5, cap)
                     y[0] = y[0] - ih - 22 - cap_h - 10
                 except Exception as exc:
-                    log.warning("WEB_IMG_%d render failed: %s", wi + 1, exc)
+                    import traceback as _tb
+                    log.warning("WEB_IMG_%d render failed: %s\n%s", wi + 1, exc, _tb.format_exc())
             continue
         if tp == "hr":
             need(12, current_section[0])
@@ -1484,6 +1491,14 @@ async def generate_pdf(request: Request):
     logo_b64: str   = body.get("logoB64", "")
     file_images: list = body.get("fileImages", [])  # [{name, mimeType, data}]
     images: list    = body.get("images", [])  # [{url, caption}] from report generation
+
+    # Debug: log images and whether report contains [WEB_IMG_n] placeholders
+    import re as _re_dbg
+    _web_img_in_report = _re_dbg.findall(r"\[WEB_IMG_\d+\]", report)
+    log.info("PDF: images received=%d  [WEB_IMG] placeholders in report=%s", len(images), _web_img_in_report or "none")
+    if images:
+        for _ii, _img in enumerate(images[:4]):
+            log.info("PDF: images[%d] url=%s caption=%r", _ii, str(_img.get("url",""))[:80] if isinstance(_img,dict) else type(_img), str(_img.get("caption",""))[:40] if isinstance(_img,dict) else "")
 
     # ── Safety: unwrap double-encoded report (LLM sometimes stuffs JSON into report field) ──
     stripped = report.strip()
