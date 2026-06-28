@@ -167,20 +167,28 @@ BAD chart examples — NEVER do this:
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 IMAGE RULES — the user prompt below the sources includes a CANDIDATE IMAGES list,
-each with a 1-based index, a short description, and the page it came from.
+each with a 1-based index, the source domain it came from, and a short description
+(the description is sometimes thin or missing — use the domain + topic context too).
 Use them to make the report visual, not just chart-heavy:
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
   ✓ Pick 2-4 of the candidates that are genuinely relevant and illustrative — a company's
     building/branch/product/leadership photo, a relevant chart screenshot from a source, a
     sector/market photo, etc.
+  ✓ A thin or missing description is NOT automatic grounds for rejection — judge primarily
+    by whether the source domain is plausibly about the report's topic (e.g. a stock-data
+    or market-news domain image for a markets report is usually fine to include even with
+    a sparse description). Reserve rejection for candidates that are clearly off-topic or
+    clearly decorative/structural, not merely under-described.
   ✗ SKIP any candidate that is obviously a logo, icon, banner ad, social-media share icon,
-    avatar, or generic stock photo unrelated to the topic — the description usually gives this
-    away (e.g. "logo", "icon", a person's name with no topical connection).
+    avatar, or generic stock photo unrelated to the topic — the description or domain
+    usually gives this away (e.g. "logo", "icon", a person's name with no topical connection).
   ✗ NEVER invent an image URL. You may ONLY reference an image by its candidateIndex exactly
     as given in the candidate list — never type out or alter a URL yourself.
-  ✗ If there are no genuinely relevant candidates, return "images": [] — 0 images is correct
-    for very abstract/numeric topics (e.g. "FII flows this week") where no photo adds value.
+  ✗ Returning "images": [] is only correct when EVERY candidate is genuinely junk/off-topic —
+    not as a default when you're merely uncertain. For most market/finance/company reports
+    with ≥3 candidates, at least 1-2 should be usable; treat 0 as the rare exception, not
+    the safe default.
   → Output shape: "images": [{ "candidateIndex": <int from the candidate list>, "caption": "<short caption, max 14 words, e.g. 'HDFC Bank's corporate headquarters in Mumbai'>" }]
   → Place [WEB_IMG_n] inline in the report markdown the same way as [CHART_n] — images[0] = [WEB_IMG_1],
     images[1] = [WEB_IMG_2], etc. — right after the paragraph it illustrates. Don't cluster all
@@ -201,13 +209,13 @@ Then add a **"What This Report Covers"** bullet list (4-6 short items, one per l
 ## 2. Data Analysis
 
 ### 2.1 [Heading matching actual topic and data]
-Deep-dive quantitative findings (minimum 220 words). ALL numbers in markdown tables. Lead with 1-2 paragraphs of analysis, then use **bullet points** to highlight 3-5 standout data points or anomalies (e.g. "- IT sector returned 34% YTD, highest across all NIFTY sectors"). Explain what the data shows and why it matters. Insert [CHART_n] immediately after the paragraph whose data it visualises.
+Deep-dive quantitative findings (minimum 220 words). ALL numbers in markdown tables. Lead with 1-2 paragraphs of analysis, then a **MANDATORY bullet list** (3-5 items, not optional) calling out the standout data points or anomalies (e.g. "- IT sector returned 34% YTD, highest across all NIFTY sectors"). Explain what the data shows and why it matters. Insert [CHART_n] immediately after the paragraph whose data it visualises. Do NOT submit this subsection as pure paragraph prose — the bullet list must be present.
 
 ### 2.2 [Second dimension of analysis]
-Comparisons, breakdowns, benchmarks (minimum 220 words). Use a mix of formats: 1-2 paragraphs of context + a **bullet list of key differentiators or ranked highlights** + tables + [CHART_n]. Bullet lists work well here for listing top/bottom performers or distinguishing characteristics.
+Comparisons, breakdowns, benchmarks (minimum 220 words). Use a mix of formats: 1-2 paragraphs of context + a **MANDATORY bullet list** of key differentiators or ranked highlights (not optional) + tables + [CHART_n]. List top/bottom performers or distinguishing characteristics as bullets, not buried in paragraph sentences.
 
 ### 2.3 [Trends or forward-looking data — only if sources have it]
-Only include if sources have trend/time-series data with ≥4 distinct time points. Minimum 180 words if included. Use prose for the overall trend narrative; use **bullet points** for discrete inflection points or catalysts (e.g. "- Q3 FY24: RBI rate pause triggered a rally in rate-sensitive sectors").
+Only include if sources have trend/time-series data with ≥4 distinct time points. Minimum 180 words if included. Use prose for the overall trend narrative; use a **MANDATORY bullet list** for discrete inflection points or catalysts (e.g. "- Q3 FY24: RBI rate pause triggered a rally in rate-sensitive sectors").
 
 ### 2.4 [A fourth distinct angle — peer/sector context, valuation, ownership, regulatory backdrop, etc. — only if sources genuinely support it]
 Optional but encouraged when the sources have material left over after 2.1-2.3. Minimum 180 words if included. Skip entirely (don't stub it) if there's nothing left to say with real data.
@@ -232,6 +240,19 @@ URL COLUMN: the URL column must contain the EXACT "Source: <url>" value given fo
 A plain bulleted list of the publications actually used, one per line: "- Publication Name — URL". Do NOT number this list and do NOT reference these numbers anywhere else in the report — it exists purely as a reading list, not a citation index. This list must match section 6's source table exactly — same publications, same count, same URLs.
 
 GLOBAL RULES:
+- FORMATTING DENSITY — MANDATORY: no section may run more than 2 consecutive paragraphs without
+  a structural break — a bullet list, a table, or a chart. Sections 2.1 and 2.2 EACH require their
+  own bullet list even if section 1 or 3 already had one; "the report has bullets somewhere" does
+  not satisfy a specific section's requirement. If you catch yourself writing a 4th paragraph in a
+  row with no bullets/table/chart between, stop and convert part of it into a bullet list instead —
+  break out specific numbers, named entities, or ranked items as list items rather than narrating
+  them inside a sentence.
+- ACCURACY MANDATE: every number, date, name, and statistic in the report must trace verbatim to a
+  specific value found in the sources — never invented, never estimated, never "rounded for
+  readability" away from the source's actual figure. If you are not certain a number appears in the
+  sources as written, omit that claim entirely rather than approximating it. Before closing the
+  report, mentally re-scan every figure you wrote and confirm each one matches a source value
+  exactly — this matters more than hitting the word-count target.
 - NEVER invent any number, date, name, or statistic
 - NUMERIC CONSISTENCY: when the same metric appears in more than one place (a chart, a table, keyStats, and/or the prose), it MUST use the exact same figure and precision everywhere — e.g. if a source gives 6.6%, write "6.6" in the chart, the table, and the text; never round it to "7" in one spot and "6.6" in another. Copy the figure once from the source, then reuse that exact string everywhere it recurs.
 - TABLE HYGIENE: every column must have real values for EVERY row. If a column would
@@ -355,6 +376,7 @@ def _filter_image_candidates(raw_images: list[dict], limit: int = 10) -> list[di
     ever reach the LLM prompt — cheaper and safer than trusting the model to
     catch all of them, though the prompt also tells it to skip junk-looking
     candidates as a second line of defense."""
+    import urllib.parse as _urlparse
     seen: set[str] = set()
     out: list[dict] = []
     for img in raw_images:
@@ -365,21 +387,35 @@ def _filter_image_candidates(raw_images: list[dict], limit: int = 10) -> list[di
         if any(hint in low for hint in _JUNK_IMAGE_HINTS):
             continue
         seen.add(url)
-        out.append({"url": url, "description": (img.get("description") or "").strip()[:200]})
+        try:
+            domain = _urlparse.urlparse(url).netloc.replace("www.", "")
+        except Exception:
+            domain = ""
+        out.append({
+            "url": url,
+            "description": (img.get("description") or "").strip()[:200],
+            "domain": domain,
+        })
         if len(out) >= limit:
             break
     return out
 
 
 def _build_image_candidates_block(candidates: list[dict]) -> str:
-    """Render the numbered candidate-image list inserted into the user prompt."""
+    """Render the numbered candidate-image list inserted into the user prompt.
+    Domain is real info derived straight from each image's own URL (not a
+    guess) — it's the only honest substitute for "what page this came from"
+    since Tavily's image list isn't tied back to a specific source result."""
     if not candidates:
         return "\n\nCANDIDATE IMAGES: none available for this query — return \"images\": [].\n"
     lines = ["\n\nCANDIDATE IMAGES (reference ONLY by index — never invent or alter a URL):"]
     for i, img in enumerate(candidates, start=1):
         desc = img["description"] or "(no description)"
-        lines.append(f"  [{i}] {desc}")
-    return "\n".join(lines) + "\n"
+        domain = img.get("domain") or "unknown source"
+        lines.append(f"  [{i}] ({domain}) {desc}")
+    block = "\n".join(lines) + "\n"
+    log.info("Report: image candidate block sent to LLM:\n%s", block)
+    return block
 
 
 def _validate_image_selections(parsed_images: list, candidates: list[dict]) -> tuple[list[dict], list[bool]]:
@@ -413,6 +449,60 @@ def _validate_image_selections(parsed_images: list, candidates: list[dict]) -> t
 
 
 _WEB_IMG_PLACEHOLDER_RE = re.compile(r"\[WEB_IMG_(\d+)\]")
+
+
+def _inject_fallback_image_placeholders(report_text: str, images: list[dict]) -> str:
+    """Spread [WEB_IMG_n] placeholders across the report body when images
+    were selected (or forced in by _force_fallback_images) but no [WEB_IMG_n]
+    marker exists anywhere in the text yet — otherwise a non-empty images
+    array renders nothing, since the UI/PDF both key off these markers, not
+    array position. Used by the main parse path and both JSON-salvage paths."""
+    if not images or _WEB_IMG_PLACEHOLDER_RE.search(report_text):
+        return report_text
+    paragraphs = report_text.split("\n\n")
+    n_para = len(paragraphs)
+    if len(images) == 1:
+        insertion_points = [max(1, n_para // 4)]
+    else:
+        step = max(1, n_para // (len(images) + 1))
+        insertion_points = [step * (k + 1) for k in range(len(images))]
+    for img_idx, para_idx in reversed(list(enumerate(insertion_points))):
+        placeholder = f"\n\n[WEB_IMG_{img_idx + 1}]\n"
+        insert_at = min(para_idx, n_para - 1)
+        paragraphs.insert(insert_at, placeholder)
+    return "\n\n".join(paragraphs)
+
+
+def _force_fallback_images(
+    images: list[dict], image_candidates: list[dict], model_used: str = "?"
+) -> tuple[list[dict], bool]:
+    """If image selection came back empty despite usable candidates being
+    offered, force the best 1-2 through rather than ship a report with zero
+    photos purely because the model played it safe — or because a JSON-salvage
+    path never recovered an images array at all on a truncated response.
+    Candidates here already survived the junk-domain/logo filter in
+    _filter_image_candidates, so a forced pick is never a raw, unfiltered URL.
+    Called identically from the main parse path and both JSON-salvage paths
+    below so the guarantee holds no matter which path produced the result.
+    Returns (images, was_forced) — was_forced tells the caller whether to
+    treat the mask as all-valid rather than reuse a stale validation mask."""
+    if images or not image_candidates:
+        return images, False
+    ranked = sorted(image_candidates, key=lambda c: len(c.get("description") or ""), reverse=True)
+    forced = ranked[:2]
+    forced_images = [
+        {
+            "url": c["url"],
+            "caption": (c.get("description") or f"Related image from {c.get('domain') or 'source'}")[:90],
+        }
+        for c in forced
+    ]
+    log.warning(
+        "Report: model=%s selected 0 images from %d candidates — forcing in %d fallback "
+        "image(s) (%s) so the report doesn't end up purely text/chart-only",
+        model_used, len(image_candidates), len(forced_images), [c.get("domain") for c in forced],
+    )
+    return forced_images, True
 
 
 def _remap_web_image_placeholders(report_text: str, valid_mask: list[bool]) -> str:
@@ -826,18 +916,18 @@ _GEMINI_MAX_OUTPUT = {
 }
 
 
-async def call_gemini(user_prompt: str) -> str:
+async def call_gemini(user_prompt: str) -> tuple[str, str]:
     keys = get_gemini_keys()
     if not keys:
         log.warning("Gemini: no keys configured for report generation")
-        return ""
+        return "", ""
 
     # Filter to AIzaSy* keys only — gen-lang-client-* are Vertex AI keys that
     # return 400 Bad Request on generativelanguage.googleapis.com REST API.
     rest_keys = [k for k in keys if k.startswith("AIzaSy")]
     if not rest_keys:
         log.warning("Gemini: no AIzaSy* keys available — all keys are gen-lang-client type")
-        return ""
+        return "", ""
 
     log.info("Gemini: attempting report generation with %d key(s), %d models", len(rest_keys), len(GEMINI_MODELS))
 
@@ -933,14 +1023,14 @@ async def call_gemini(user_prompt: str) -> str:
                         len(text), model, key[-4:],
                     )
                     continue
-                return text
+                return text, model
             log.warning("Gemini: empty response from model=%s key=...%s", model, key[-4:])
         except Exception as exc:
             log.warning("Gemini exception model=%s key=...%s: %s", model, key[-4:], exc)
             continue
 
     log.error("Gemini: all key×model combinations exhausted")
-    return ""
+    return "", ""
 
 
 async def extract_data_from_images(question: str, file_images: list[dict]) -> str:
@@ -1253,7 +1343,7 @@ async def generate_report(request: Request):
         + "7. Respond ONLY with the JSON object — no markdown fences, no text outside JSON."
     )
 
-    raw = await call_gemini(user_prompt)
+    raw, model_used = await call_gemini(user_prompt)
     if not raw:
         log.error("Report: all LLM providers exhausted")
         return JSONResponse({
@@ -1405,6 +1495,17 @@ async def generate_report(request: Request):
         images, images_valid_mask = _validate_image_selections(original_images_list, image_candidates)
         if len(images) < len(original_images_list):
             log.info("Image validation: kept %d / %d selections", len(images), len(original_images_list))
+
+        # ── Deterministic safety net ──────────────────────────────────────
+        # The model is asked to pick 2-4 relevant images (see IMAGE RULES),
+        # but after many rounds of it punting to [] even with decent
+        # candidates available, don't make "is there a photo in this report"
+        # depend entirely on the model feeling confident enough to comply.
+        images, was_forced = _force_fallback_images(images, image_candidates, model_used)
+        if was_forced:
+            images_valid_mask = [True] * len(images)
+        elif not image_candidates:
+            log.info("Report: no image candidates were available for this query — report will have 0 images")
         report_text = _remap_web_image_placeholders(report_text, images_valid_mask)
 
         if "\\n" in report_text:
@@ -1451,28 +1552,10 @@ async def generate_report(request: Request):
 
         # ── Fallback: if the LLM selected images but placed no [WEB_IMG_n]
         # placeholders in the report body, inject them at sensible positions so
-        # they actually render (both in the UI and in the PDF).  We spread them
-        # across the report rather than dumping them all at the end: image 1
-        # goes after the first section break (~25 % of the way through) and
-        # image 2 after the second break (~60 %).  Any extras are appended.
+        # they actually render (both in the UI and in the PDF).
         if images and not _wimg_ph:
             log.info("Report: no [WEB_IMG_n] placeholders found — injecting fallback positions for %d image(s)", len(images))
-            paragraphs = report_text.split("\n\n")
-            n_para = len(paragraphs)
-            # Compute insertion indices spread across the body paragraphs
-            insertion_points: list[int] = []
-            if len(images) == 1:
-                insertion_points = [max(1, n_para // 4)]
-            else:
-                step = max(1, n_para // (len(images) + 1))
-                insertion_points = [step * (k + 1) for k in range(len(images))]
-
-            # Insert placeholders from the back so earlier indices stay valid
-            for img_idx, para_idx in reversed(list(enumerate(insertion_points))):
-                placeholder = f"\n\n[WEB_IMG_{img_idx + 1}]\n"
-                insert_at = min(para_idx, n_para - 1)
-                paragraphs.insert(insert_at, placeholder)
-            report_text = "\n\n".join(paragraphs)
+            report_text = _inject_fallback_image_placeholders(report_text, images)
             log.info("Report: injected %d fallback [WEB_IMG_n] placeholder(s)", len(images))
         clean_title = _sanitize_title(parsed.get("title", ""), question)
         elapsed = (time.perf_counter() - t0) * 1000
@@ -1531,6 +1614,8 @@ async def generate_report(request: Request):
 
         salvaged = _try_extract_fields(clean)
         if salvaged:
+            salvaged["images"], _ = _force_fallback_images(salvaged.get("images") or [], image_candidates, model_used)
+            salvaged["report"] = _inject_fallback_image_placeholders(salvaged.get("report", ""), salvaged["images"])
             log.info("Report: salvaged %d fields from truncated JSON (images=%d)", len(salvaged), len(salvaged.get("images", [])))
             salvaged["charts"] = await attach_datawrapper_charts(salvaged.get("charts", []))
             return JSONResponse({
@@ -1561,9 +1646,12 @@ async def generate_report(request: Request):
                     repaired_imgs, _ = _validate_image_selections(raw_imgs, image_candidates)
             except Exception:
                 pass
+            repaired_imgs, _ = _force_fallback_images(repaired_imgs, image_candidates, model_used)
+            repaired_report = _strip_citation_markers((repaired_parsed.get("report", "") or "").replace("\\n", "\n"))
+            repaired_report = _inject_fallback_image_placeholders(repaired_report, repaired_imgs)
             return JSONResponse({
                 "title":      _sanitize_title(repaired_parsed.get("title", ""), question),
-                "report":     _strip_citation_markers((repaired_parsed.get("report", "") or "").replace("\\n", "\n")),
+                "report":     repaired_report,
                 "charts":     repaired_charts,
                 "images":     repaired_imgs,
                 "keyStats":   repaired_parsed.get("keyStats", []),
