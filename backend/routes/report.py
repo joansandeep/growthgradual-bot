@@ -233,11 +233,9 @@ No bracket citation markers — if attribution matters, name the publication in 
 2-3 paragraphs of synthesis (minimum 160 words) followed by a **"Key Takeaways"** bullet list (4-6 items, one per line) summarising the most important points for investors/stakeholders. End with a short forward-looking paragraph on outlook grounded in sources only.
 ## 6. Data Sources & Methodology
 One markdown table of sources (Publication | URL | Data type). 2-3 paragraphs (minimum 150 words): describe what sources were used, what metrics were collected, how comparisons were made, and any caveats in the data.
-SOURCE BREADTH: list EVERY distinct publication below that contributed any real fact, figure, or context — not only whichever source happened to have the most granular numbers. If five sources were provided and three had usable content (numbers, context, definitions, market commentary), the table and the Sources section should show three rows, not one. Only cite a single source if every other source genuinely had nothing usable (e.g. paywalled, off-topic, or duplicate of another result) — and if so, do not claim more sources were used than actually were. Never list a publication that contributed nothing to the report.
+SOURCE BREADTH: list EVERY distinct publication below that contributed any real fact, figure, or context — not only whichever source happened to have the most granular numbers. If five sources were provided and three had usable content (numbers, context, definitions, market commentary), the table should show three rows, not one. Only cite a single source if every other source genuinely had nothing usable (e.g. paywalled, off-topic, or duplicate of another result) — and if so, do not claim more sources were used than actually were. Never list a publication that contributed nothing to the report.
 URL COLUMN: the URL column must contain the EXACT "Source: <url>" value given for that publication in the supplementary sources below — never a description, a paraphrase, or any placeholder text standing in for a missing link. If a publication's URL truly is not in the source list, omit that row entirely from the table rather than writing anything else in its place.
-
-## 7. Sources
-A plain bulleted list of the publications actually used, one per line: "- Publication Name — URL". Do NOT number this list and do NOT reference these numbers anywhere else in the report — it exists purely as a reading list, not a citation index. This list must match section 6's source table exactly — same publications, same count, same URLs.
+This table is the ONLY place sources are listed. Do NOT add a separate "7. Sources" section, a second bulleted source list, or any other repeated listing of the same publications/URLs after this table — one table, once, is the complete methodology section. The report ends here, after this table and its surrounding paragraphs.
 
 GLOBAL RULES:
 - FORMATTING DENSITY — MANDATORY: no section may run more than 2 consecutive paragraphs without
@@ -452,22 +450,27 @@ _WEB_IMG_PLACEHOLDER_RE = re.compile(r"\[WEB_IMG_(\d+)\]")
 
 
 def _inject_fallback_image_placeholders(report_text: str, images: list[dict]) -> str:
-    """Spread [WEB_IMG_n] placeholders across the report body when images
-    were selected (or forced in by _force_fallback_images) but no [WEB_IMG_n]
-    marker exists anywhere in the text yet — otherwise a non-empty images
-    array renders nothing, since the UI/PDF both key off these markers, not
-    array position. Used by the main parse path and both JSON-salvage paths."""
-    if not images or _WEB_IMG_PLACEHOLDER_RE.search(report_text):
+    """Spread [WEB_IMG_n] placeholders across the report body for any image
+    that doesn't already have one — covers both the model placing none at all,
+    and the partial case where _top_up_images added image(s) beyond what the
+    model itself placed a marker for. Only fills gaps; never touches markers
+    that already exist. Used by the main parse path and both JSON-salvage paths."""
+    if not images:
+        return report_text
+    existing = {int(n) for n in _WEB_IMG_PLACEHOLDER_RE.findall(report_text)}
+    missing = [i for i in range(1, len(images) + 1) if i not in existing]
+    if not missing:
         return report_text
     paragraphs = report_text.split("\n\n")
     n_para = len(paragraphs)
-    if len(images) == 1:
+    if len(missing) == 1:
         insertion_points = [max(1, n_para // 4)]
     else:
-        step = max(1, n_para // (len(images) + 1))
-        insertion_points = [step * (k + 1) for k in range(len(images))]
-    for img_idx, para_idx in reversed(list(enumerate(insertion_points))):
-        placeholder = f"\n\n[WEB_IMG_{img_idx + 1}]\n"
+        step = max(1, n_para // (len(missing) + 1))
+        insertion_points = [step * (k + 1) for k in range(len(missing))]
+    for k, para_idx in reversed(list(enumerate(insertion_points))):
+        img_idx = missing[k]
+        placeholder = f"\n\n[WEB_IMG_{img_idx}]\n"
         insert_at = min(para_idx, n_para - 1)
         paragraphs.insert(insert_at, placeholder)
     return "\n\n".join(paragraphs)
@@ -503,6 +506,38 @@ def _force_fallback_images(
         model_used, len(image_candidates), len(forced_images), [c.get("domain") for c in forced],
     )
     return forced_images, True
+
+
+def _top_up_images(
+    images: list[dict], image_candidates: list[dict], model_used: str = "?", target: int = 2
+) -> tuple[list[dict], bool]:
+    """The model is asked to pick 2-4 relevant images (see IMAGE RULES) but has
+    sometimes selected just 1 even with more decent candidates left unused.
+    Top up to `target` from the remaining candidates rather than ship a report
+    thinner on photos than what was actually available. Never touches what the
+    model (or _force_fallback_images) already picked — only adds more, and
+    never re-adds a URL already in the list."""
+    if len(images) >= target or not image_candidates:
+        return images, False
+    used_urls = {img.get("url") for img in images}
+    remaining = [c for c in image_candidates if c["url"] not in used_urls]
+    if not remaining:
+        return images, False
+    ranked = sorted(remaining, key=lambda c: len(c.get("description") or ""), reverse=True)
+    added = ranked[: target - len(images)]
+    new_images = images + [
+        {
+            "url": c["url"],
+            "caption": (c.get("description") or f"Related image from {c.get('domain') or 'source'}")[:90],
+        }
+        for c in added
+    ]
+    log.warning(
+        "Report: model=%s selected only %d image(s) (rules ask for 2-4) — topping up with %d more "
+        "from unused candidates (%s)",
+        model_used, len(images), len(added), [c.get("domain") for c in added],
+    )
+    return new_images, True
 
 
 def _remap_web_image_placeholders(report_text: str, valid_mask: list[bool]) -> str:
@@ -1337,7 +1372,7 @@ async def generate_report(request: Request):
         "1. The uploaded file content (if provided) is your PRIMARY source — extract ALL numbers, tables, charts, and statistics from it first.\n"
         "2. Use web sources to supplement and validate the file data.\n"
         "3. Follow CHART RULES exactly — reproduce actual data from the file as charts where it exists.\n"
-        "4. Write the full 7-section, long-form report (target 2800-3500 words (MINIMUM 18000 characters — shorter responses will be rejected and retried)). Insert [CHART_n] inline where valid chart data exists.\n"
+        "4. Write the full 6-section, long-form report (target 2800-3500 words (MINIMUM 18000 characters — shorter responses will be rejected and retried)). Insert [CHART_n] inline where valid chart data exists.\n"
         "5. Follow IMAGE RULES — select 2-4 genuinely relevant candidates by index and insert [WEB_IMG_n] inline.\n"
         + ("6. Insert [PAGE_IMG_n] references inline where you reference data visible in that page image.\n" if file_images else "")
         + "7. Respond ONLY with the JSON object — no markdown fences, no text outside JSON."
@@ -1550,13 +1585,18 @@ async def generate_report(request: Request):
         _wimg_ph = _re_dbg2.findall(r"\[WEB_IMG_\d+\]", report_text)
         log.info("Report: final [WEB_IMG] placeholders in text: %s  images list len: %d", _wimg_ph or "none", len(images))
 
-        # ── Fallback: if the LLM selected images but placed no [WEB_IMG_n]
-        # placeholders in the report body, inject them at sensible positions so
-        # they actually render (both in the UI and in the PDF).
-        if images and not _wimg_ph:
-            log.info("Report: no [WEB_IMG_n] placeholders found — injecting fallback positions for %d image(s)", len(images))
-            report_text = _inject_fallback_image_placeholders(report_text, images)
-            log.info("Report: injected %d fallback [WEB_IMG_n] placeholder(s)", len(images))
+        # ── Top up: rules ask for 2-4 images, but the model has sometimes
+        # selected just 1 even with more decent candidates left unused — don't
+        # leave the report thinner on photos than what was actually available.
+        images, _ = _top_up_images(images, image_candidates, model_used)
+
+        # ── Fallback: inject a [WEB_IMG_n] marker for any image (model-picked,
+        # forced, or topped-up) that doesn't already have one in the body, so
+        # it actually renders (both in the UI and in the PDF).
+        _report_text_before_inject = report_text
+        report_text = _inject_fallback_image_placeholders(report_text, images)
+        if report_text != _report_text_before_inject:
+            log.info("Report: injected fallback [WEB_IMG_n] placeholder(s) — %d image(s) total now placed", len(images))
         clean_title = _sanitize_title(parsed.get("title", ""), question)
         elapsed = (time.perf_counter() - t0) * 1000
         log.info("Report complete in %.0fms — title=%r  charts=%d  images=%d  keyStats=%d",
@@ -1615,6 +1655,7 @@ async def generate_report(request: Request):
         salvaged = _try_extract_fields(clean)
         if salvaged:
             salvaged["images"], _ = _force_fallback_images(salvaged.get("images") or [], image_candidates, model_used)
+            salvaged["images"], _ = _top_up_images(salvaged["images"], image_candidates, model_used)
             salvaged["report"] = _inject_fallback_image_placeholders(salvaged.get("report", ""), salvaged["images"])
             log.info("Report: salvaged %d fields from truncated JSON (images=%d)", len(salvaged), len(salvaged.get("images", [])))
             salvaged["charts"] = await attach_datawrapper_charts(salvaged.get("charts", []))
@@ -1647,6 +1688,7 @@ async def generate_report(request: Request):
             except Exception:
                 pass
             repaired_imgs, _ = _force_fallback_images(repaired_imgs, image_candidates, model_used)
+            repaired_imgs, _ = _top_up_images(repaired_imgs, image_candidates, model_used)
             repaired_report = _strip_citation_markers((repaired_parsed.get("report", "") or "").replace("\\n", "\n"))
             repaired_report = _inject_fallback_image_placeholders(repaired_report, repaired_imgs)
             return JSONResponse({
