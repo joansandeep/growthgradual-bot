@@ -24,6 +24,86 @@ from utils.datawrapper import attach_datawrapper_charts
 router = APIRouter()
 log = logging.getLogger("report")
 
+# ── OKF context fetcher ────────────────────────────────────────────────────────
+import os as _os
+_SB_URL = _os.environ.get("SUPABASE_URL", "").rstrip("/")
+_SB_KEY = _os.environ.get("SUPABASE_ANON_KEY", "")
+_OKF_BUCKET = "paperly-uploads"
+_OKF_PREFIX = "paperly-okf"
+
+
+async def _fetch_okf_context(session_id: str, max_chars: int = 12000) -> str:
+    """Fetch OKF concept files for a session from Supabase Storage and return
+    them as a single structured context block for the report LLM prompt.
+
+    Each concept file is markdown with YAML frontmatter (type, title,
+    description, tags, timestamp) followed by the extracted document text.
+    This gives the LLM a structured, typed view of each uploaded file —
+    much more grounded than raw FAISS chunk text.
+
+    Returns an empty string if Supabase isn't configured or no OKF bundle
+    exists for this session — the existing RAG/file-context path still runs.
+    """
+    if not _SB_URL or not _SB_KEY or not session_id:
+        return ""
+
+    headers = {"apikey": _SB_KEY, "Authorization": f"Bearer {_SB_KEY}"}
+    prefix = f"{_OKF_PREFIX}/{session_id}"
+    concept_texts: list[str] = []
+
+    try:
+        async with httpx.AsyncClient(timeout=20) as client:
+            # List all documents in the session's OKF folder
+            list_resp = await client.post(
+                f"{_SB_URL}/storage/v1/object/list/{_OKF_BUCKET}",
+                headers={**headers, "Content-Type": "application/json"},
+                json={"prefix": f"{prefix}/documents", "limit": 50},
+            )
+            if not list_resp.is_success:
+                log.debug("OKF list failed %d: %s", list_resp.status_code, list_resp.text[:80])
+                return ""
+
+            entries = list_resp.json()
+            if not entries:
+                return ""
+
+            # Fetch each concept file and strip YAML frontmatter — keep only
+            # the human-readable body for the LLM (frontmatter is for machines)
+            total = 0
+            for entry in entries[:20]:  # cap at 20 docs
+                name = entry.get("name", "")
+                if not name or not name.endswith(".md"):
+                    continue
+                obj_resp = await client.get(
+                    f"{_SB_URL}/storage/v1/object/{_OKF_BUCKET}/{prefix}/documents/{name}",
+                    headers=headers,
+                )
+                if not obj_resp.is_success:
+                    continue
+                md = obj_resp.text
+
+                # Strip YAML frontmatter (--- ... ---) and keep body
+                body = re.sub(r'^---\n.*?\n---\n', '', md, flags=re.DOTALL).strip()
+
+                # Extract title from frontmatter for labelling
+                title_match = re.search(r'^title:\s*"?([^"\n]+)"?', md, re.MULTILINE)
+                doc_title = title_match.group(1).strip() if title_match else name.replace(".md", "")
+
+                chunk = f"### Source: {doc_title}\n\n{body}"
+                remaining = max_chars - total
+                if remaining <= 0:
+                    break
+                if len(chunk) > remaining:
+                    chunk = chunk[:remaining] + "\n\n[…truncated]"
+                concept_texts.append(chunk)
+                total += len(chunk)
+
+    except Exception as exc:
+        log.warning("OKF fetch error: %s", exc)
+        return ""
+
+    return "\n\n---\n\n".join(concept_texts)
+
 SKIP_PAGE_FETCH = [".pdf", "bloomberg.com", "wsj.com", "ft.com", "economist.com", "investing.com"]
 
 SYSTEM_PROMPT = """You are a senior research analyst at Growth Gradual. Write a COMPREHENSIVE, well-structured research report on ANY topic using the scraped web sources provided.
@@ -1321,10 +1401,29 @@ async def generate_report(request: Request):
         for s in enriched
     )
 
+    # ── OKF structured context from Supabase ─────────────────────────────────
+    # When files were indexed via Paperly, their OKF concept files (markdown
+    # with YAML frontmatter) were written to Supabase Storage under
+    # paperly-okf/<session_id>/. Fetching them here gives the report LLM a
+    # structured, typed view of each source document — much cleaner than the
+    # raw chunked text that comes back from FAISS retrieval, which improves
+    # title accuracy, section attribution, and factual grounding.
+    okf_context = ""
+    if session_id and has_file_data:
+        try:
+            okf_context = await _fetch_okf_context(session_id)
+            if okf_context:
+                log.info("Report: injecting OKF structured context (%d chars) for session %s",
+                         len(okf_context), session_id[:8])
+        except Exception as _exc:
+            log.warning("Report: OKF context fetch failed (non-fatal): %s", _exc)
+
     # ── Build user prompt — file content takes priority ───────────────────────
     file_section = ""
     if extracted_image_context:
         file_section += f"\n\n━━ DATA EXTRACTED FROM UPLOADED FILE IMAGES ━━\n{extracted_image_context[:8000]}\n━━ END FILE IMAGE DATA ━━\n"
+    if okf_context:
+        file_section += f"\n\n━━ STRUCTURED SOURCE DOCUMENTS (OKF) ━━\nEach block below is one uploaded file, structured as an Open Knowledge Format concept.\nUse these as your PRIMARY source — they are typed, titled, and extracted from the actual files the user uploaded.\n\n{okf_context}\n━━ END OKF SOURCES ━━\n"
     if file_context.strip():
         file_section += f"\n\n━━ UPLOADED FILE TEXT CONTENT ━━\n{file_context[:6000]}\n━━ END FILE CONTENT ━━\n"
 

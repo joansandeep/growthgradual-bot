@@ -328,6 +328,22 @@ def build_report_okf_bundle(
         )
         files[rel] = text
 
+    # ── Self-contained HTML — the human-readable entry point ─────────────
+    # Users double-click index.html to read the full report in a browser.
+    # The markdown files are the machine-readable OKF layer; this HTML is
+    # the usable layer on top, built from the same data without any server.
+    files["index.html"] = _build_html_report(
+        title=title or question or "Research Report",
+        question=question,
+        summary=summary,
+        report_md=report_md,
+        key_stats=key_stats,
+        charts=charts,
+        images=images,
+        source_documents=source_documents,
+        timestamp=now,
+    )
+
     # ── Zip it up ────────────────────────────────────────────────────────
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
@@ -335,3 +351,268 @@ def build_report_okf_bundle(
             zf.writestr(rel_path, content)
     buf.seek(0)
     return buf.getvalue()
+
+
+def _md_to_html(md: str) -> str:
+    """Minimal markdown→HTML converter (no deps — just handles the subset
+    Growth Gradual reports use: headings, bold, italic, bullets, tables,
+    horizontal rules, inline code, and paragraphs)."""
+    import html as _html
+    lines = md.split("\n")
+    out: list[str] = []
+    in_ul = False
+    in_table = False
+
+    def flush_ul():
+        nonlocal in_ul
+        if in_ul:
+            out.append("</ul>")
+            in_ul = False
+
+    def flush_table():
+        nonlocal in_table
+        if in_table:
+            out.append("</tbody></table>")
+            in_table = False
+
+    def inline(text: str) -> str:
+        # Bold+italic, bold, italic, inline code, links
+        import re
+        text = _html.escape(text, quote=False)
+        text = re.sub(r'\*\*\*(.+?)\*\*\*', r'<strong><em>\1</em></strong>', text)
+        text = re.sub(r'\*\*(.+?)\*\*',     r'<strong>\1</strong>', text)
+        text = re.sub(r'\*(.+?)\*',          r'<em>\1</em>', text)
+        text = re.sub(r'`(.+?)`',            r'<code>\1</code>', text)
+        text = re.sub(r'\[([^\]]+)\]\(([^)]+)\)', r'<a href="\2" target="_blank">\1</a>', text)
+        return text
+
+    i = 0
+    while i < len(lines):
+        line = lines[i]
+        stripped = line.strip()
+
+        # Blank line
+        if not stripped:
+            flush_ul()
+            flush_table()
+            i += 1
+            continue
+
+        # Headings
+        import re
+        m = re.match(r'^(#{1,4})\s+(.*)', stripped)
+        if m:
+            flush_ul(); flush_table()
+            level = len(m.group(1))
+            out.append(f"<h{level}>{inline(m.group(2))}</h{level}>")
+            i += 1
+            continue
+
+        # Horizontal rule
+        if re.match(r'^[-*_]{3,}$', stripped):
+            flush_ul(); flush_table()
+            out.append("<hr>")
+            i += 1
+            continue
+
+        # Table row (starts with |)
+        if stripped.startswith("|"):
+            cells = [c.strip() for c in stripped.strip("|").split("|")]
+            # Skip separator rows like |---|---|
+            if all(re.match(r'^[-:]+$', c) for c in cells if c):
+                if not in_table:
+                    pass  # will be handled as part of header
+                i += 1
+                continue
+            if not in_table:
+                out.append('<table><thead><tr>')
+                out.extend(f"<th>{inline(c)}</th>" for c in cells)
+                out.append('</tr></thead><tbody>')
+                in_table = True
+            else:
+                out.append('<tr>')
+                out.extend(f"<td>{inline(c)}</td>" for c in cells)
+                out.append('</tr>')
+            i += 1
+            continue
+
+        # Bullet list
+        m2 = re.match(r'^[-*+]\s+(.*)', stripped)
+        if m2:
+            flush_table()
+            if not in_ul:
+                out.append("<ul>")
+                in_ul = True
+            out.append(f"<li>{inline(m2.group(1))}</li>")
+            i += 1
+            continue
+
+        # Numbered list
+        m3 = re.match(r'^\d+\.\s+(.*)', stripped)
+        if m3:
+            flush_table(); flush_ul()
+            out.append(f"<p>• {inline(m3.group(1))}</p>")
+            i += 1
+            continue
+
+        # Plain paragraph
+        flush_ul(); flush_table()
+        out.append(f"<p>{inline(stripped)}</p>")
+        i += 1
+
+    flush_ul()
+    flush_table()
+    return "\n".join(out)
+
+
+def _build_html_report(
+    *,
+    title: str,
+    question: str,
+    summary: str,
+    report_md: str,
+    key_stats: list,
+    charts: list,
+    images: list,
+    source_documents: list,
+    timestamp: str,
+) -> str:
+    """Build a single self-contained HTML file that renders the full report.
+    No external dependencies — works by double-clicking in any browser.
+    """
+    # Key stats cards
+    stats_html = ""
+    if key_stats:
+        cards = ""
+        for s in key_stats:
+            chg = s.get("change", "") or ""
+            colour = "#16a34a" if "+" in chg else ("#dc2626" if "-" in chg else "#64748b")
+            cards += f"""<div class="stat-card">
+  <div class="stat-value">{s.get('value','')}</div>
+  <div class="stat-label">{s.get('label','')}</div>
+  {f'<div class="stat-change" style="color:{colour}">{chg}</div>' if chg else ''}
+</div>"""
+        stats_html = f'<div class="stats-grid">{cards}</div>'
+
+    # Charts section
+    charts_html = ""
+    for ch in charts:
+        dw = ch.get("datawrapper") or {}
+        url = dw.get("publicUrl") or dw.get("embedUrl") or ""
+        png = dw.get("pngUrl") or ""
+        ch_title = ch.get("title", "")
+        if png:
+            charts_html += f'<div class="chart-block"><h4>{ch_title}</h4><img src="{png}" alt="{ch_title}" style="max-width:100%;border-radius:8px"></div>'
+        elif url:
+            charts_html += f'<div class="chart-block"><h4>{ch_title}</h4><iframe src="{url}" width="100%" height="400" frameborder="0" style="border-radius:8px"></iframe></div>'
+
+    # Web images
+    images_html = ""
+    for im in images:
+        url = im.get("url", "")
+        caption = im.get("caption", "")
+        if url:
+            images_html += f'<figure><img src="{url}" alt="{caption}" style="max-width:100%;border-radius:8px"><figcaption>{caption}</figcaption></figure>'
+
+    # Source documents
+    sources_html = ""
+    if source_documents:
+        items = ""
+        for doc in source_documents:
+            excerpt = (doc.get("text") or "")[:2000].strip()
+            if len(doc.get("text") or "") > 2000:
+                excerpt += "\n\n[… truncated — see original file]"
+            import html as _html
+            items += f"""<details class="source-doc">
+  <summary><strong>{_html.escape(doc.get('name','File'))}</strong>
+    <span class="badge">{_html.escape(doc.get('file_type','') or 'file')}</span>
+  </summary>
+  <pre class="source-text">{_html.escape(excerpt)}</pre>
+</details>"""
+        sources_html = f'<section class="sources-section"><h2>📎 Source Files</h2>{items}</section>'
+
+    report_body_html = _md_to_html(report_md)
+    safe_title = title.replace("<", "&lt;").replace(">", "&gt;")
+    safe_summary = summary.replace("<", "&lt;").replace(">", "&gt;")
+
+    return f"""<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>{safe_title} — Growth Gradual</title>
+<style>
+  :root {{
+    --navy: #0f1535; --gold: #f59e0b; --green: #15803d;
+    --bg: #f8fafc; --card: #ffffff; --border: #e2e8f0;
+    --text: #1e293b; --muted: #64748b;
+  }}
+  * {{ box-sizing: border-box; margin: 0; padding: 0; }}
+  body {{ font-family: 'Segoe UI', system-ui, sans-serif; background: var(--bg); color: var(--text); line-height: 1.7; }}
+  .top-bar {{ background: var(--navy); color: #fff; padding: 14px 32px; display: flex; align-items: center; gap: 12px; }}
+  .top-bar .brand {{ font-size: 13px; font-weight: 700; letter-spacing: .08em; color: var(--gold); text-transform: uppercase; }}
+  .top-bar .ts {{ margin-left: auto; font-size: 11px; opacity: .6; }}
+  .hero {{ background: linear-gradient(135deg, var(--navy) 0%, #1a1f4e 100%); color: #fff; padding: 48px 32px 40px; }}
+  .hero h1 {{ font-size: clamp(20px, 3vw, 30px); font-weight: 800; line-height: 1.25; margin-bottom: 14px; }}
+  .hero .summary {{ font-size: 15px; opacity: .85; max-width: 760px; border-left: 3px solid var(--gold); padding-left: 16px; }}
+  .container {{ max-width: 900px; margin: 0 auto; padding: 32px 24px 64px; }}
+  .stats-grid {{ display: grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: 12px; margin: 28px 0; }}
+  .stat-card {{ background: var(--card); border: 1px solid var(--border); border-radius: 10px; padding: 16px; text-align: center; box-shadow: 0 1px 3px rgba(0,0,0,.06); }}
+  .stat-value {{ font-size: 22px; font-weight: 800; color: var(--navy); }}
+  .stat-label {{ font-size: 11px; color: var(--muted); margin-top: 4px; text-transform: uppercase; letter-spacing: .06em; }}
+  .stat-change {{ font-size: 12px; font-weight: 700; margin-top: 4px; }}
+  .report-body {{ background: var(--card); border: 1px solid var(--border); border-radius: 12px; padding: 32px; margin: 24px 0; box-shadow: 0 1px 4px rgba(0,0,0,.06); }}
+  .report-body h1,.report-body h2 {{ color: var(--navy); margin: 28px 0 10px; border-bottom: 2px solid var(--gold); padding-bottom: 6px; }}
+  .report-body h3,.report-body h4 {{ color: var(--navy); margin: 20px 0 8px; }}
+  .report-body p {{ margin: 10px 0; }}
+  .report-body ul {{ margin: 8px 0 8px 22px; }}
+  .report-body li {{ margin: 4px 0; }}
+  .report-body table {{ width: 100%; border-collapse: collapse; margin: 16px 0; font-size: 13px; }}
+  .report-body th {{ background: var(--navy); color: #fff; padding: 8px 12px; text-align: left; }}
+  .report-body td {{ padding: 7px 12px; border-bottom: 1px solid var(--border); }}
+  .report-body tr:nth-child(even) td {{ background: #f8fafc; }}
+  .report-body code {{ background: #f1f5f9; padding: 2px 6px; border-radius: 4px; font-size: 12px; }}
+  .report-body hr {{ border: none; border-top: 1px solid var(--border); margin: 24px 0; }}
+  .report-body a {{ color: var(--green); }}
+  .chart-block {{ background: var(--card); border: 1px solid var(--border); border-radius: 10px; padding: 20px; margin: 16px 0; }}
+  .chart-block h4 {{ color: var(--navy); margin-bottom: 12px; font-size: 14px; }}
+  figure {{ margin: 16px 0; text-align: center; }}
+  figcaption {{ font-size: 12px; color: var(--muted); margin-top: 6px; }}
+  .sources-section {{ margin-top: 32px; }}
+  .sources-section h2 {{ color: var(--navy); font-size: 18px; margin-bottom: 14px; }}
+  .source-doc {{ background: var(--card); border: 1px solid var(--border); border-radius: 8px; margin: 10px 0; overflow: hidden; }}
+  .source-doc summary {{ padding: 12px 16px; cursor: pointer; font-size: 14px; display: flex; align-items: center; gap: 8px; user-select: none; }}
+  .source-doc summary:hover {{ background: #f8fafc; }}
+  .badge {{ font-size: 10px; background: #e2e8f0; color: var(--muted); padding: 2px 8px; border-radius: 99px; text-transform: uppercase; }}
+  .source-text {{ padding: 16px; font-size: 12px; line-height: 1.6; white-space: pre-wrap; word-break: break-word; background: #f8fafc; border-top: 1px solid var(--border); color: var(--text); max-height: 400px; overflow-y: auto; }}
+  .footer {{ text-align: center; font-size: 11px; color: var(--muted); margin-top: 48px; padding-top: 20px; border-top: 1px solid var(--border); }}
+  .okf-note {{ background: #fffbeb; border: 1px solid #fde68a; border-radius: 8px; padding: 12px 16px; font-size: 12px; color: #92400e; margin-bottom: 24px; }}
+</style>
+</head>
+<body>
+<div class="top-bar">
+  <span class="brand">⚡ Growth Gradual — In The Money</span>
+  <span class="ts">Generated {timestamp}</span>
+</div>
+<div class="hero">
+  <h1>{safe_title}</h1>
+  {f'<p class="summary">{safe_summary}</p>' if safe_summary else ''}
+</div>
+<div class="container">
+  <div class="okf-note">
+    📦 This report is part of an <strong>Open Knowledge Format (OKF)</strong> bundle.
+    The <code>sections/</code>, <code>charts/</code>, <code>sources/</code> folders alongside this file
+    contain machine-readable markdown concepts with YAML frontmatter for each section and data source.
+  </div>
+  {stats_html}
+  {f'<div class="report-body">{report_body_html}</div>' if report_body_html else ''}
+  {charts_html}
+  {images_html}
+  {sources_html}
+  <div class="footer">
+    Growth Gradual Research Report &nbsp;·&nbsp; {timestamp} &nbsp;·&nbsp; growth-gradual.com
+  </div>
+</div>
+</body>
+</html>"""
+
