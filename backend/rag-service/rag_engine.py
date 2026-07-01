@@ -25,6 +25,8 @@ import faiss
 from sentence_transformers import SentenceTransformer
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 
+import okf_store
+
 log = logging.getLogger("rag-engine")
 
 MODEL_NAME          = os.getenv("EMBED_MODEL",            "all-MiniLM-L6-v2")
@@ -41,6 +43,7 @@ class SessionIndex:
         self.chunks:    List[Dict[str, Any]] = []
         self.doc_ids:   set = set()
         self.doc_names: Dict[str, str] = {}
+        self.okf_concepts: List[Dict[str, str]] = []  # [{"name", "rel_path"}] for bundle.md
         self.lock       = threading.Lock()
         # Dynamically extracted entity names from indexed text
         self._entities: set = set()
@@ -127,15 +130,16 @@ class RAGEngine:
             "exists":      True,
         }
 
-    def delete_session(self, sid: str):
+    async def delete_session(self, sid: str):
         """Remove all indexed data for a session — called when session is deleted."""
         with self._lock:
             self._sessions.pop(sid, None)
+        await okf_store.delete_session_bundle(sid)
         log.info(f"Deleted FAISS index for session {sid[:8]}")
 
     # ── Indexing ────────────────────────────────────────────────
 
-    def index(self, session_id: str, documents: List[Dict[str, Any]]) -> Dict[str, Any]:
+    async def index(self, session_id: str, documents: List[Dict[str, Any]]) -> Dict[str, Any]:
         """Index documents. Idempotent — skips already-indexed doc IDs."""
         sess = self._sess(session_id)
         chunks_added = 0
@@ -178,6 +182,21 @@ class RAGEngine:
             log.debug(f"Extracted {len(entities)} entities from '{name}'")
             chunks_added += len(metas)
             log.info(f"Indexed '{name}': {len(raw)} chunks")
+
+            # ── OKF persistence: write this document as a concept file
+            #    alongside the FAISS index, then refresh the session's
+            #    bundle manifest so file context is stored in an open,
+            #    inspectable format and not just inside the vector store.
+            #    Runs against Supabase Storage (not local disk) since the
+            #    rag-service's container filesystem on HF Spaces is
+            #    ephemeral. Non-fatal if it fails — FAISS indexing above
+            #    already succeeded, so Q&A/report retrieval still works.
+            rel_path = await okf_store.write_document_concept(session_id, doc)
+            if rel_path:
+                sess.okf_concepts.append({"name": name, "rel_path": rel_path})
+
+        if chunks_added > 0:
+            await okf_store.write_bundle_manifest(session_id, sess.okf_concepts)
 
         return {"chunks_added": chunks_added, "total_chunks": sess.total}
 

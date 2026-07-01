@@ -264,8 +264,10 @@ export default function FeedPage({ category }: { category: Category }) {
           </div>
         )}
 
-        {/* Loading state */}
-        {loading ? (
+        {/* Loading state — only show full skeletons when there's truly no data yet.
+            Once we have any articles (even partial, from polling), keep showing
+            them and let the in-progress banner below indicate a refresh is happening. */}
+        {loading && articles.length === 0 ? (
           <div style={{ display:'flex', flexDirection:'column', gap:'10px' }}>
             {isScraping && (
               <div style={{
@@ -299,6 +301,19 @@ export default function FeedPage({ category }: { category: Category }) {
           </div>
         ) : (
           <>
+            {(isScraping || refreshing) && articles.length > 0 && (
+              <div style={{
+                display:'flex', alignItems:'center', gap:'8px',
+                background:'linear-gradient(135deg,rgba(13,92,69,0.06),rgba(26,31,78,0.04))',
+                border:'1px solid rgba(13,92,69,0.2)', borderRadius:'8px',
+                padding:'8px 14px', marginBottom:'10px',
+              }}>
+                <div style={{ width:'6px', height:'6px', borderRadius:'50%', background:'#0d5c45', animation:'pulse 1.2s infinite' }}/>
+                <span style={{ fontSize:'11px', fontFamily:"'DM Sans',sans-serif", color:'#0d5c45', fontWeight:600 }}>
+                  Updating feed… showing latest available while new articles load.
+                </span>
+              </div>
+            )}
             {featured && (
               <div style={{ marginBottom:'10px' }} className="fade-up">
                 <ArticleCard article={featured} featured/>

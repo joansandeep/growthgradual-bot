@@ -17,7 +17,7 @@ export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 
 const log = createLogger('api/upload');
-const GATEWAY = (process.env.PAPERLY_GATEWAY_URL ?? 'https://paperly-api-gateway.onrender.com').replace(/\/$/, '');
+const GATEWAY = (process.env.PAPERLY_GATEWAY_URL ?? 'https://paperly-api-gateway-j9do.onrender.com').replace(/\/$/, '');
 
 export async function POST(req: NextRequest) {
   const done = logRequest(log, 'POST', '/api/upload');

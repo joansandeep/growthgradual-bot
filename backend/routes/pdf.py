@@ -977,20 +977,41 @@ def build_pdf(report: str, title: str, question: str, summary: str,
         q_clean = q_clean.rstrip("?!").strip()
         raw_title = q_clean[:80] if len(q_clean) >= 8 else f"{domain} Briefing"
     report_title = _strip_inline(raw_title)
-    # Single-line title — shrink font first, then truncate with an ellipsis
-    # (reserving room for "..." from the start) if it still doesn't fit even
-    # at the minimum size.
+    # Title rendering — shrink font first (24→16), then wrap to a second line
+    # if needed, so the full title is always visible (never truncated).
     title_size = 24
-    while title_size > 14 and c.stringWidth(report_title, "Helvetica-Bold", title_size) > CW:
+    while title_size > 16 and c.stringWidth(report_title, "Helvetica-Bold", title_size) > CW:
         title_size -= 1
-    if c.stringWidth(report_title, "Helvetica-Bold", title_size) > CW:
-        while c.stringWidth(report_title + "...", "Helvetica-Bold", title_size) > CW and len(report_title) > 10:
-            report_title = report_title[:-1]
-        report_title = report_title.rstrip() + "..."
+
+    def _wrap_title(text: str, font: str, size: float, max_w: float):
+        """Split *text* into at most two lines that each fit within *max_w*."""
+        if c.stringWidth(text, font, size) <= max_w:
+            return [text]
+        words = text.split()
+        line1, line2 = [], []
+        for w in words:
+            test = " ".join(line1 + [w])
+            if c.stringWidth(test, font, size) <= max_w:
+                line1.append(w)
+            else:
+                line2.append(w)
+        # If line2 still overflows at this size, shrink one more step
+        l2_text = " ".join(line2)
+        while size > 12 and c.stringWidth(l2_text, font, size) > max_w:
+            size -= 1
+        return [" ".join(line1), l2_text] if line2 else [" ".join(line1)]
+
+    title_lines = _wrap_title(report_title, "Helvetica-Bold", title_size, CW)
 
     c.setFillColorRGB(*NAVY); c.setFont("Helvetica-Bold", title_size)
     ty = tag_y - 36
-    c.drawString(MARGIN, ty, report_title)
+    line_gap = title_size + 4
+    for tl in title_lines:
+        c.drawString(MARGIN, ty, tl)
+        ty -= line_gap
+    # ty is now just below the last title line — adjust so gold rule spacing
+    # matches the original single-line layout (22pt gap after the title).
+    ty += line_gap - 22  # restore expected gap
 
     # Gold rule
     ty -= 22

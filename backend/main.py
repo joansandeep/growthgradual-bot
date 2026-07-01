@@ -3,7 +3,8 @@ Growth Gradual — In The Money  |  FastAPI Backend
 Serves:
   POST /api/chat              — SSE streaming chat (Groq → Gemini fallback)
   POST /api/chat/report       — Multi-source research report (JSON)
-  POST /api/chat/report/pdf   — PDF from report data (binary)
+  POST /api/chat/report/okf   — Open Knowledge Format bundle from report data (binary .zip)
+  POST /api/chat/report/pdf   — PDF from report data (binary, legacy)
 """
 import asyncio
 import logging
@@ -32,6 +33,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from routes.chat import router as chat_router
 from routes.report import router as report_router
 from routes.pdf import router as pdf_router
+from routes.okf import router as okf_router
 from routes.email import router as email_router
 from routes.rag import router as rag_router
 
@@ -47,6 +49,7 @@ app.add_middleware(
 
 app.include_router(chat_router,   prefix="/api/chat",                tags=["chat"])
 app.include_router(report_router, prefix="/api/chat/report",         tags=["report"])
+app.include_router(okf_router,    prefix="/api/chat/report/okf",     tags=["okf"])
 app.include_router(pdf_router,    prefix="/api/chat/report/pdf",     tags=["pdf"])
 app.include_router(email_router,  prefix="/api/chat/report/email",   tags=["email"])
 app.include_router(rag_router,    prefix="/api/rag",                  tags=["rag"])

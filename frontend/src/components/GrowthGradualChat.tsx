@@ -17,7 +17,7 @@ function proxyImg(url: string): string {
 interface DatawrapperInfo { id: string; embedUrl: string; publicUrl: string; }
 interface ChartSpec { type: 'bar' | 'line' | 'pie' | 'table'; title: string; series?: ChartSeries[]; unit?: string; columns?: string[]; rows?: string[][]; datawrapper?: DatawrapperInfo; }
 interface WebImage { url: string; caption?: string; }
-interface ReportData { report: string; title?: string; charts: ChartSpec[]; images?: WebImage[]; keyStats: {label:string;value:string;change?:string}[]; summary: string; fileImages?: {name:string;mimeType:string;data:string}[]; }
+interface ReportData { report: string; title?: string; charts: ChartSpec[]; images?: WebImage[]; keyStats: {label:string;value:string;change?:string}[]; summary: string; fileImages?: {name:string;mimeType:string;data:string}[]; sourceDocuments?: {name:string;text:string;file_type?:string}[]; }
 interface Message {
   id: string; role: 'user' | 'assistant'; text: string; ts: number;
   sources?: Source[]; searchPerformed?: boolean; queryType?: string;
@@ -679,29 +679,28 @@ function ReportPanel({ msg, question, hasPriorContext, onGenerate }: { msg: Mess
 
   if (!loading && !done && !eligible) return null;
 
-  const downloadPdf = async () => {
+  const downloadOkf = async () => {
     if (!rd || pdfLoading) return;
     setPdfLoading(true);
     try {
-      const res = await fetch('/api/chat/report/pdf', {
+      const res = await fetch('/api/chat/report/okf', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ report: rd.report, title: rd.title, charts: rd.charts, images: rd.images ?? [], question, keyStats: rd.keyStats, summary: rd.summary, fileImages: rd.fileImages ?? [] }),
+        body: JSON.stringify({ report: rd.report, title: rd.title, charts: rd.charts, images: rd.images ?? [], question, keyStats: rd.keyStats, summary: rd.summary, fileImages: rd.fileImages ?? [], sourceDocuments: rd.sourceDocuments ?? [] }),
       });
       const contentType = res.headers.get('Content-Type') ?? '';
-      if (contentType.includes('application/pdf')) {
+      if (contentType.includes('zip')) {
         const blob = await res.blob();
         const url = URL.createObjectURL(blob);
         const a = document.createElement('a');
         a.href = url;
-        a.download = `growth-gradual-report-${new Date().toISOString().slice(0,10)}.pdf`;
+        a.download = `growth-gradual-report-okf-${new Date().toISOString().slice(0,10)}.zip`;
         document.body.appendChild(a); a.click(); a.remove();
         setTimeout(() => URL.revokeObjectURL(url), 5000);
       } else {
-        const win = window.open('', '_blank');
-        if (win) { win.document.write(await res.text()); win.document.close(); win.focus(); setTimeout(() => win.print(), 600); }
+        console.error('[downloadOkf] unexpected response type:', contentType, await res.text());
       }
-    } catch(e) { console.error('[downloadPdf]', e); }
+    } catch(e) { console.error('[downloadOkf]', e); }
     finally { setPdfLoading(false); }
   };
 
@@ -797,11 +796,11 @@ function ReportPanel({ msg, question, hasPriorContext, onGenerate }: { msg: Mess
                 <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></svg>
                 {open ? 'Hide report' : 'Show report'}
               </button>
-              <button className="report-btn" onClick={downloadPdf} disabled={pdfLoading}
+              <button className="report-btn" onClick={downloadOkf} disabled={pdfLoading}
                 style={{ background: pdfLoading ? '#166534' : '#15803d', opacity: pdfLoading ? 0.8 : 1 }}>
                 {pdfLoading
-                  ? <><span className="dots" style={{marginRight:4}}><i/><i/><i/></span>Building PDF…</>
-                  : <><svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>Download PDF</>
+                  ? <><span className="dots" style={{marginRight:4}}><i/><i/><i/></span>Building OKF…</>
+                  : <><svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>Download OKF</>
                 }
               </button>
               <button className="report-btn" onClick={() => { setEmailResult(null); setEmailOpen(true); }}
@@ -1438,7 +1437,13 @@ export default function GrowthGradualChat() {
       const botMsgId = botMsg.id;
       const currentFiles = attachedFiles;
       const wantsVisual = /\b(chart|graph|plot|visuali[sz]e|trend\s*line)\b/i.test(q);
+      const hasReportableFiles = currentFiles.some(f => f.status === 'attached');
       const isSubstantiveQuery = (() => {
+        // Any attached file is inherently substantive — short prompts like
+        // "summarize this" or "analyze this file" are exactly when users
+        // want a report, so never gate eligibility on message length/chitchat
+        // when a file is attached.
+        if (hasReportableFiles) return true;
         const lower = q.toLowerCase().trim();
         // Skip very short messages (under 15 chars) — greetings, "hi", "hello", "ok", etc.
         if (q.trim().length < 15) return false;
@@ -1650,6 +1655,14 @@ export default function GrowthGradualChat() {
       return { fileImages, fileTextContext: fileTextParts.join('\n\n') };
     };
 
+    // Source-document concepts for the OKF bundle — one per attached file,
+    // independent of how much text made it into the LLM prompt (capped above
+    // at 12000 chars per file for the prompt; the OKF concept can carry more
+    // since it's just markdown, capped again server-side at 4000 chars).
+    const sourceDocuments = files
+      .filter(f => f.extractedText)
+      .map(f => ({ name: f.name, text: f.extractedText || '', file_type: f.type }));
+
     buildFilePayload().then(({ fileImages, fileTextContext }) => {
       return fetch('/api/chat/report', {
         method: 'POST',
@@ -1683,6 +1696,7 @@ export default function GrowthGradualChat() {
             keyStats:   data.keyStats   ?? [],
             summary:    data.summary    ?? '',
             fileImages: data.fileImages ?? [],
+            sourceDocuments,
           },
         } : m));
       })

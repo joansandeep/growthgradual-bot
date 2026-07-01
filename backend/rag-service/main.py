@@ -76,7 +76,7 @@ async def health():
 async def index_docs(req: IndexReq):
     t0 = time.time()
     try:
-        result = engine.index(req.session_id, [d.dict() for d in req.documents])
+        result = await engine.index(req.session_id, [d.dict() for d in req.documents])
         elapsed = round((time.time() - t0) * 1000)
         log.info(f"Indexed session={req.session_id[:8]} docs={len(req.documents)} "
                  f"chunks={result['chunks_added']} ({elapsed}ms)")
@@ -150,13 +150,39 @@ async def generate_report(req: ReportReq):
 
 @app.delete("/session/{session_id}")
 async def delete_session(session_id: str):
-    engine.delete_session(session_id)
+    await engine.delete_session(session_id)
     return {"success": True, "session_id": session_id}
 
 
 @app.get("/session/{session_id}/info")
 async def session_info(session_id: str):
     return engine.get_session_info(session_id)
+
+
+@app.get("/session/{session_id}/okf")
+async def session_okf_bundle(session_id: str):
+    """Download the session's OKF bundle (all indexed documents as markdown
+    concept files with YAML frontmatter) as a zip. Files are fetched from
+    Supabase Storage — the rag-service's own container filesystem on HF
+    Spaces is ephemeral, so nothing is read from local disk here."""
+    import io, zipfile
+    from fastapi.responses import Response
+    import okf_store
+
+    files = await okf_store.get_session_bundle_files(session_id)
+    if not files:
+        raise HTTPException(404, "No OKF bundle found for this session")
+
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+        for rel_path, content in files:
+            zf.writestr(rel_path, content)
+    buf.seek(0)
+    return Response(
+        content=buf.getvalue(),
+        media_type="application/zip",
+        headers={"Content-Disposition": f'attachment; filename="paperly-okf-{session_id[:8]}.zip"'},
+    )
 
 
 if __name__ == "__main__":
