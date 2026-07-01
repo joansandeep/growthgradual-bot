@@ -1496,9 +1496,27 @@ async def generate_report(request: Request):
         clean = clean[brace_idx:]
 
     # ── Pre-parse JSON repair ──────────────────────────────────────────────────────────────
-    # The LLM occasionally emits unescaped double-quotes inside the "report"
-    # string value, causing json.loads to fail mid-way (e.g. at char 12334).
-    # We scan char-by-char through the value to find and fix them.
+    # The LLM occasionally emits unescaped double-quotes inside string values
+    # (most often "report", since it's long-form prose that frequently quotes
+    # analysts, ratings like "buy"/"sell", etc.), causing json.loads to fail
+    # mid-way. We scan char-by-char through each value to find and fix them.
+    #
+    # IMPORTANT: the old heuristic decided a bare `"` was the value's
+    # *closing* quote just because the very next non-space character was a
+    # comma/brace/bracket. That's wrong — an internal quote like
+    # `rate it "buy",` also satisfies that check, since prose is full of
+    # quoted phrases immediately followed by a comma. Stopping there means
+    # everything after that false-positive point is copied through
+    # unescaped, which corrupts the rest of the JSON (charts/images/keyStats
+    # end up mangled or swallowed into the string) — this was the root cause
+    # of reports coming back with no charts and a report body that looked
+    # cut short. We now only treat a `"` as the real closing quote when what
+    # follows is unambiguous JSON structure: end-of-object, end-of-text, or
+    # a comma that leads directly into one of this schema's known next keys
+    # — not just "any comma".
+    _NEXT_FIELD_RE = re.compile(r'^\s*,\s*"(title|report|charts|images|keyStats|summary)"\s*:')
+    _OBJ_CLOSE_RE = re.compile(r'^\s*\}')
+
     def _repair_string_value(text: str, field: str) -> str:
         """Find "field": "<value>" and escape any bare internal double-quotes."""
         key_pat = re.compile(r'"' + re.escape(field) + r'"\s*:\s*"')
@@ -1508,23 +1526,24 @@ async def generate_report(request: Request):
         val_start = m.end()        # index of first char after the opening quote
         out = list(text[:val_start])
         i = val_start
-        while i < len(text):
+        n = len(text)
+        while i < n:
             ch = text[i]
             if ch == '\\':           # already-escaped sequence — copy verbatim
                 out.append(ch)
                 i += 1
-                if i < len(text):
+                if i < n:
                     out.append(text[i])
                     i += 1
                 continue
             if ch == '"':             # unescaped quote — closing or internal?
-                rest = text[i + 1:i + 20].lstrip()
-                if rest and rest[0] in (',', '}', '\n', ']'):
-                    # Closing delimiter — emit and keep the rest verbatim
+                rest = text[i + 1:i + 300]
+                if _OBJ_CLOSE_RE.match(rest) or _NEXT_FIELD_RE.match(rest) or rest.strip() == '':
+                    # Genuine closing delimiter — emit and keep the rest verbatim
                     out.append(ch)
                     out.append(text[i + 1:])
                     return ''.join(out)
-                # Internal bare quote — escape it
+                # Internal bare quote — escape it and keep scanning
                 out.append('\\')
                 out.append(ch)
                 i += 1
@@ -1533,8 +1552,49 @@ async def generate_report(request: Request):
             i += 1
         return ''.join(out)
 
-    clean = _repair_string_value(clean, "report")
-    clean = _repair_string_value(clean, "summary")
+    # Repair every top-level string field, in schema order — title first,
+    # since a broken title corrupts everything that comes after it too.
+    for _field in ("title", "report", "summary"):
+        clean = _repair_string_value(clean, _field)
+
+    def _extract_balanced_array(text: str, key: str) -> str | None:
+        """Find "key": [ ... ] and return the FULL bracket-balanced array
+        text, correctly handling nested arrays/objects (e.g. a chart's
+        "series": [...] inside "charts": [...]). The old approach used a
+        non-greedy regex (\\[[\\s\\S]*?\\]) that stops at the FIRST closing
+        bracket it sees — which is almost always a nested one, not the
+        outer array's — producing a truncated fragment that fails to parse
+        and gets silently dropped. That's why charts/keyStats often came
+        back empty even when the model had generated them."""
+        m = re.search(r'"' + re.escape(key) + r'"\s*:\s*\[', text)
+        if not m:
+            return None
+        start = m.end() - 1  # index of the opening '['
+        depth = 0
+        in_str = False
+        esc = False
+        i = start
+        n = len(text)
+        while i < n:
+            c = text[i]
+            if in_str:
+                if esc:
+                    esc = False
+                elif c == '\\':
+                    esc = True
+                elif c == '"':
+                    in_str = False
+            else:
+                if c == '"':
+                    in_str = True
+                elif c == '[':
+                    depth += 1
+                elif c == ']':
+                    depth -= 1
+                    if depth == 0:
+                        return text[start:i + 1]
+            i += 1
+        return None  # never closed — genuinely truncated, caller should skip
     # ─────────────────────────────────────────────────────────────────────────
 
     try:
@@ -1721,28 +1781,34 @@ async def generate_report(request: Request):
             m = re.search(r'"report"\s*:\s*"((?:[^"\\]|\\.)*)', text)
             if m:
                 report_raw = m.group(1).replace("\\n", "\n").replace('\\"', '"')
-                for boundary in ["\n## ", "\n### ", "\n\n"]:
-                    last = report_raw.rfind(boundary)
-                    if last > len(report_raw) * 0.4:
-                        report_raw = report_raw[:last].strip()
-                        break
+                # Only chop back to the last clean section boundary if the
+                # match actually ran off the end of the text without hitting
+                # a real closing quote (i.e. genuinely truncated output).
+                # Since "report" was already quote-repaired above, a match
+                # that stops well short of len(text) found a real closing
+                # delimiter — that's a complete field and shouldn't be cut.
+                genuinely_truncated = m.end(1) >= len(text) - 2
+                if genuinely_truncated:
+                    for boundary in ["\n## ", "\n### ", "\n\n"]:
+                        last = report_raw.rfind(boundary)
+                        if last > len(report_raw) * 0.4:
+                            report_raw = report_raw[:last].strip()
+                            break
                 if len(report_raw) > 200:
                     result["report"] = report_raw
-            m = re.search(r'"keyStats"\s*:\s*(\[[\s\S]*?\])', text)
-            if m:
-                try: result["keyStats"] = json.loads(m.group(1))
+            arr_text = _extract_balanced_array(text, "keyStats")
+            if arr_text:
+                try: result["keyStats"] = json.loads(arr_text)
                 except Exception: pass
-            m = re.search(r'"charts"\s*:\s*(\[[\s\S]*?\]\s*[,}])', text)
-            if m:
+            arr_text = _extract_balanced_array(text, "charts")
+            if arr_text:
                 try:
-                    arr_text = m.group(1).rstrip(",}").strip()
                     result["charts"] = json.loads(arr_text)
                 except Exception: pass
             # Also try to salvage images array from truncated JSON
-            m = re.search(r'"images"\s*:\s*(\[[\s\S]*?\]\s*[,}])', text)
-            if m:
+            arr_text = _extract_balanced_array(text, "images")
+            if arr_text:
                 try:
-                    arr_text = m.group(1).rstrip(",}").strip()
                     raw_imgs = json.loads(arr_text)
                     if image_candidates and raw_imgs:
                         validated, _ = _validate_image_selections(raw_imgs, image_candidates)
