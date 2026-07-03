@@ -1004,16 +1004,21 @@ async def call_groq(user_prompt: str) -> str:
 #
 #  Model                  | Max output tokens | Notes
 #  -----------------------|-------------------|-------------------------------
-#  gemini-2.5-pro         |        65 536     | Largest context, best quality
 #  gemini-2.5-flash       |        65 536     | Fast + high quality
 #  gemini-3.5-flash       |        65 536     | Next-gen flash
 #  gemini-3-flash-preview |        65 536     | Preview of Gemini 3
 #  gemini-2.5-flash-lite  |        32 768     | Smallest output window — last resort
 #
 # Removed: gemini-2.0-flash / gemini-2.0-flash-lite (retired June 2026)
+# Removed: gemini-2.5-pro — confirmed 0/0 RPM/TPM/RPD quota on every free-tier
+# project we hold (see AI Studio Rate Limit dashboards, checked 2026-07-03).
+# It can never succeed until at least one project has billing enabled, so
+# trying it first just burns ~1-2s and a key-level rate-limit mark on every
+# single report/extraction call for no chance of success. Re-add it once
+# billing is enabled on a project, ideally as a first-choice model rather
+# than folded back into this fallback order.
 # ---------------------------------------------------------------------------
 GEMINI_MODELS = [
-    "gemini-2.5-pro",          # 65 536 output tokens — best quality, largest window
     "gemini-2.5-flash",        # 65 536 output tokens — fast + high quality
     "gemini-3.5-flash",        # 65 536 output tokens — next-gen flash
     "gemini-3-flash-preview",  # 65 536 output tokens — Gemini 3 preview
@@ -1023,7 +1028,6 @@ GEMINI_MODELS = [
 # Per-model max output tokens — used to set the right ceiling per attempt.
 # Setting this too high on flash-lite causes it to hang; match the actual model limit.
 _GEMINI_MAX_OUTPUT = {
-    "gemini-2.5-pro":          65_536,
     "gemini-2.5-flash":        65_536,
     "gemini-3.5-flash":        65_536,
     "gemini-3-flash-preview":  65_536,
@@ -1078,7 +1082,7 @@ async def call_gemini(user_prompt: str) -> tuple[str, str]:
             # Suppress thinking tokens — keep full token budget for report JSON.
             # Gemini 2.5 family uses thinkingBudget:0; Gemini 3.x uses thinkingLevel.
             # Mixing these across families causes a 400 error.
-            _GEMINI_25 = {"gemini-2.5-flash", "gemini-2.5-flash-lite", "gemini-2.5-pro"}
+            _GEMINI_25 = {"gemini-2.5-flash", "gemini-2.5-flash-lite"}
             _GEMINI_3X = {"gemini-3-flash-preview", "gemini-3.5-flash"}
             if model in _GEMINI_25:
                 generation_config["thinkingConfig"] = {"thinkingBudget": 0}
@@ -1198,10 +1202,18 @@ async def extract_data_from_images(question: str, file_images: list[dict]) -> st
     if not available_keys:
         available_keys = vision_keys
 
+    # gemini-2.5-pro deliberately excluded — 0/0 RPM/TPM/RPD quota on every
+    # free-tier project we hold (see report generation model list above for
+    # the same rationale). It can only ever fail here, so trying it just
+    # wastes a request slot and a timeout window.
     for key in available_keys[:3]:  # try up to 3 keys
-        for model in ["gemini-2.5-flash-lite", "gemini-2.5-flash", "gemini-2.5-pro", "gemini-3-flash-preview", "gemini-3.5-flash"]:
+        for model in ["gemini-2.5-flash-lite", "gemini-2.5-flash", "gemini-3-flash-preview", "gemini-3.5-flash"]:
             try:
-                async with httpx.AsyncClient(timeout=60) as client:
+                # Shortened from 60s: a genuinely hung/degraded key should fail
+                # fast so we can move on to the next key/model, not eat a full
+                # minute per attempt (this previously caused ~3min stalls when
+                # a key was silently hanging instead of returning a fast 429).
+                async with httpx.AsyncClient(timeout=20) as client:
                     res = await client.post(
                         f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={key}",
                         json={
@@ -1221,8 +1233,14 @@ async def extract_data_from_images(question: str, file_images: list[dict]) -> st
                     log.info("extract_data_from_images: extracted %d chars via %s", len(text), model)
                     return text
             except Exception as exc:
-                log.warning("extract_data_from_images error model=%s: %s", model, exc)
-                continue
+                # Timeout or connection error — this key is degraded right now.
+                # Previously this fell through silently and got retried against
+                # every remaining model for the same key, each eating another
+                # full timeout window. Mark it rate-limited (short backoff) and
+                # move to the next key so a bad key can't stall the whole call.
+                log.warning("extract_data_from_images error model=%s key=...%s: %s", model, key[-4:], exc)
+                mark_rate_limited(key, 30_000)
+                break
 
     log.warning("extract_data_from_images: all attempts failed")
     return ""
