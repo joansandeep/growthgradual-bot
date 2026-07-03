@@ -286,40 +286,44 @@ write as much genuinely substantive analysis as the sources support):
 3-4 paragraphs (minimum 200 words): Provide rich context — explain the sector/topic, why it matters now, who the key stakeholders are, what macro or market forces are driving interest, the history/background that led here, and what this report covers. Write in plain prose. No filler, every sentence must add context or data. If a relevant image candidate exists, place [WEB_IMG_n] near the end of this section.
 Then add a **"What This Report Covers"** bullet list (4-6 short items, one per line, starting with "-") summarising the key questions this report answers — e.g. "- Which sectors led/lagged and by how much", "- Key macro drivers behind outperformers". This gives the reader a quick scannable preview.
 
-## 2. Data Analysis
+## 2. Methodology
+2-3 paragraphs (minimum 150 words): describe what sources were used, what metrics were collected, and how comparisons were made — the reader needs this BEFORE the Data Analysis section so they know the basis and scope of what follows. Explicitly state any caveats or limitations in the data (e.g. single-document scope, no external market figures used, time period covered). Do NOT include the sources table here — that belongs only in the final "Data Sources" section. This section is prose-only, explaining approach, not listing publications.
 
-### 2.1 [Heading matching actual topic and data]
+## 3. Data Analysis
+
+### 3.1 [Heading matching actual topic and data]
 Deep-dive quantitative findings (minimum 220 words). ALL numbers in markdown tables. Lead with 1-2 paragraphs of analysis, then a **MANDATORY bullet list** (3-5 items, not optional) calling out the standout data points or anomalies (e.g. "- IT sector returned 34% YTD, highest across all NIFTY sectors"). Explain what the data shows and why it matters. Insert [CHART_n] immediately after the paragraph whose data it visualises. Do NOT submit this subsection as pure paragraph prose — the bullet list must be present.
 
-### 2.2 [Second dimension of analysis]
+### 3.2 [Second dimension of analysis]
 Comparisons, breakdowns, benchmarks (minimum 220 words). Use a mix of formats: 1-2 paragraphs of context + a **MANDATORY bullet list** of key differentiators or ranked highlights (not optional) + tables + [CHART_n]. List top/bottom performers or distinguishing characteristics as bullets, not buried in paragraph sentences.
 
-### 2.3 [Trends or forward-looking data — only if sources have it]
+### 3.3 [Trends or forward-looking data — only if sources have it]
 Only include if sources have trend/time-series data with ≥4 distinct time points. Minimum 180 words if included. Use prose for the overall trend narrative; use a **MANDATORY bullet list** for discrete inflection points or catalysts (e.g. "- Q3 FY24: RBI rate pause triggered a rally in rate-sensitive sectors").
 
-### 2.4 [A fourth distinct angle — peer/sector context, valuation, ownership, regulatory backdrop, etc. — only if sources genuinely support it]
-Optional but encouraged when the sources have material left over after 2.1-2.3. Minimum 180 words if included. Skip entirely (don't stub it) if there's nothing left to say with real data.
+### 3.4 [A fourth distinct angle — peer/sector context, valuation, ownership, regulatory backdrop, etc. — only if sources genuinely support it]
+Optional but encouraged when the sources have material left over after 3.1-3.3. Minimum 180 words if included. Skip entirely (don't stub it) if there's nothing left to say with real data.
 
-## 3. Key Findings
+## 4. Key Findings
 8-12 findings. Each finding must follow this exact format — a **bold lead sentence** with a specific stat, then 1-2 sentences of plain explanation:
 **1. [Bold stat-driven headline — e.g. "IT sector surged 34% YTD, outpacing all peers"]** — explanation of what it means and why it matters to investors.
 No bracket citation markers — if attribution matters, name the publication in the sentence itself.
 
-## 4. Risks & Considerations
+## 5. Risks & Considerations
 3-5 distinct risks. Each risk uses a **bold label** followed by 2-3 sentences of explanation (minimum 200 words total). Format:
 **[Risk Name — e.g. "Valuation Stretch"]:** explanation grounded in what the sources flag — regulatory risk, competitive pressure, valuation concerns, macro sensitivity, data gaps, etc. If sources don't surface explicit risks, reason from data patterns themselves. Do not skip this section.
 
-## 5. Conclusion
+## 6. Conclusion
 2-3 paragraphs of synthesis (minimum 160 words) followed by a **"Key Takeaways"** bullet list (4-6 items, one per line) summarising the most important points for investors/stakeholders. End with a short forward-looking paragraph on outlook grounded in sources only.
-## 6. Data Sources & Methodology
-One markdown table of sources (Publication | URL | Data type). 2-3 paragraphs (minimum 150 words): describe what sources were used, what metrics were collected, how comparisons were made, and any caveats in the data.
+
+## 7. Data Sources
+One markdown table of sources (Publication | URL | Data type). One short intro sentence is fine, but do NOT repeat the methodology narrative here — that lives only in section 2. This section is the table itself, nothing more.
 SOURCE BREADTH: list EVERY distinct publication below that contributed any real fact, figure, or context — not only whichever source happened to have the most granular numbers. If five sources were provided and three had usable content (numbers, context, definitions, market commentary), the table should show three rows, not one. Only cite a single source if every other source genuinely had nothing usable (e.g. paywalled, off-topic, or duplicate of another result) — and if so, do not claim more sources were used than actually were. Never list a publication that contributed nothing to the report.
 URL COLUMN: the URL column must contain the EXACT "Source: <url>" value given for that publication in the supplementary sources below — never a description, a paraphrase, or any placeholder text standing in for a missing link. If a publication's URL truly is not in the source list, omit that row entirely from the table rather than writing anything else in its place.
-This table is the ONLY place sources are listed. Do NOT add a separate "7. Sources" section, a second bulleted source list, or any other repeated listing of the same publications/URLs after this table — one table, once, is the complete methodology section. The report ends here, after this table and its surrounding paragraphs.
+This table is the ONLY place sources are listed. Do NOT add a separate "8. Sources" section, a second bulleted source list, or any other repeated listing of the same publications/URLs after this table — one table, once, is the complete Data Sources section. The report ends here, after this table.
 
 GLOBAL RULES:
 - FORMATTING DENSITY — MANDATORY: no section may run more than 2 consecutive paragraphs without
-  a structural break — a bullet list, a table, or a chart. Sections 2.1 and 2.2 EACH require their
+  a structural break — a bullet list, a table, or a chart. Sections 3.1 and 3.2 EACH require their
   own bullet list even if section 1 or 3 already had one; "the report has bullets somewhere" does
   not satisfy a specific section's requirement. If you catch yourself writing a 4th paragraph in a
   row with no bullets/table/chart between, stop and convert part of it into a bullet list instead —
@@ -375,9 +379,9 @@ summary) takes ~2000 tokens. The report content needs ~6000-7000 tokens. Total: 
 You have 32000 output tokens available — more than enough. Do NOT rush or compress.
 
 Rules to prevent truncation:
-1. Write sections in order: Introduction → Data Analysis → Key Findings → Risks → Conclusion → Sources.
+1. Write sections in order: Introduction → Methodology → Data Analysis → Key Findings → Risks → Conclusion → Data Sources.
    Do NOT skip or abbreviate any section to save tokens.
-2. Pace yourself: if you are past section 3 (Key Findings) and have written fewer than 10000 chars
+2. Pace yourself: if you are past section 4 (Key Findings) and have written fewer than 10000 chars
    of report content, you are on track — keep going, do NOT start compressing.
 3. The "charts" array must be COMPLETE before you close the JSON. If you run low on space, write
    shorter chart titles but include ALL chart objects.
