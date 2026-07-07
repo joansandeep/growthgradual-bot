@@ -1565,14 +1565,30 @@ async def generate_report(request: Request):
         out = list(text[:val_start])
         i = val_start
         n = len(text)
+        _VALID_ESCAPES = set('"\\/bfnrtu')
         while i < n:
             ch = text[i]
-            if ch == '\\':           # already-escaped sequence — copy verbatim
-                out.append(ch)
-                i += 1
-                if i < n:
-                    out.append(text[i])
+            if ch == '\\':
+                nxt = text[i + 1] if i + 1 < n else ''
+                if nxt in _VALID_ESCAPES:
+                    # Genuine JSON escape sequence (\", \\, \n, \uXXXX, etc.) — copy verbatim.
+                    out.append(ch)
                     i += 1
+                    if i < n:
+                        out.append(text[i])
+                        i += 1
+                    continue
+                # Not a valid JSON escape — the model emitted a stray backslash
+                # (e.g. "43\%" or "Rs.\1,000" from percentages, fractions, or
+                # footnote-style markup). json.loads rejects any "\<char>" that
+                # isn't one of the fixed JSON escapes, with "Invalid \escape".
+                # Escape the backslash itself so it becomes a literal backslash
+                # character in the parsed string, and let the following
+                # character be processed normally on the next loop iteration
+                # (it might itself be a quote that needs the logic below).
+                out.append('\\')
+                out.append('\\')
+                i += 1
                 continue
             if ch == '"':             # unescaped quote — closing or internal?
                 rest = text[i + 1:i + 300]
@@ -1594,6 +1610,37 @@ async def generate_report(request: Request):
     # since a broken title corrupts everything that comes after it too.
     for _field in ("title", "report", "summary"):
         clean = _repair_string_value(clean, _field)
+
+    def _fix_invalid_json_escapes(text: str) -> str:
+        """Defense-in-depth beyond _repair_string_value above: escape any
+        backslash anywhere in the JSON text that isn't part of a valid JSON
+        escape sequence (\\", \\\\, \\/, \\b, \\f, \\n, \\r, \\t, \\uXXXX).
+        The model occasionally emits stray backslashes outside the
+        title/report/summary fields too — e.g. a chart title or keyStat
+        label containing "43\\%" or "Rs.\\1,000" — which json.loads rejects
+        with "Invalid \\escape". Safe to run on the whole text: backslashes
+        only ever legitimately appear inside JSON string values anyway.
+        """
+        out = []
+        i, n = 0, len(text)
+        valid = set('"\\/bfnrtu')
+        while i < n:
+            ch = text[i]
+            if ch == '\\':
+                nxt = text[i + 1] if i + 1 < n else ''
+                if nxt in valid:
+                    out.append(ch); i += 1
+                    if i < n:
+                        out.append(text[i]); i += 1
+                    continue
+                out.append('\\'); out.append('\\')
+                i += 1
+                continue
+            out.append(ch)
+            i += 1
+        return ''.join(out)
+
+    clean = _fix_invalid_json_escapes(clean)
 
     def _extract_balanced_array(text: str, key: str) -> str | None:
         """Find "key": [ ... ] and return the FULL bracket-balanced array
