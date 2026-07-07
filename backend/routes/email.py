@@ -122,7 +122,7 @@ def _md_to_html(md: str) -> str:
         return "".join(h)
 
     def inline(t: str) -> str:
-        t = _re.sub(r"\[CHART_\d+\]|\[PAGE_IMG_\d+\]", "", t)
+        t = _re.sub(r"\[CHART_\d+\]|\[FILE_IMG_\d+\]|\[PAGE_IMG_\d+\]", "", t)
         t = _re.sub(r"\*\*(.+?)\*\*", r'<strong>\1</strong>', t)
         t = _re.sub(r"\*(.+?)\*",     r'<em>\1</em>', t)
         t = _re.sub(r"`([^`]+)`", r'<code style="background:#f0f3ff;padding:1px 4px;border-radius:3px;">\1</code>', t)
@@ -276,7 +276,7 @@ async def send_report_email(
 
     plain = re.sub(r"#+\s*", "", report)
     plain = re.sub(r"\*+", "", plain)
-    plain = re.sub(r"\[(?:CHART|PAGE_IMG)_\d+\]", "", plain).strip()
+    plain = re.sub(r"\[(?:CHART|FILE_IMG|PAGE_IMG)_\d+\]", "", plain).strip()
     plain_body = f"{title}\n{'='*len(title)}\n\n{summary}\n\n{plain}" if title else plain
 
     log.info("Email report → %d recipients via Brevo | title=%r", len(to_list), (title or "")[:60])

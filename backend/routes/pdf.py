@@ -61,8 +61,16 @@ def fmt_inr(value_str: str) -> str:
     if not value_str:
         return value_str
     s = str(value_str).strip()
-    # Strip existing currency/comma formatting
-    cleaned = re.sub(r"[Rs.₹$€£,\s]", "", s).replace("Cr","").replace("cr","").strip()
+    # Strip known currency prefixes/symbols and thousands separators — but do
+    # NOT touch the decimal point in the number itself. The previous version
+    # used a single character-class regex `[Rs.₹$€£,\s]` which strips ANY "."
+    # anywhere in the string, so "1,000.80" lost its decimal point entirely
+    # and became "100080" — a 100x magnitude error (e.g. CMP ₹1,000.80
+    # rendered as Rs. 1,00,080). Strip whole currency tokens first instead.
+    cleaned = s
+    for token in ("Rs.", "Rs", "₹", "$", "€", "£", "Cr", "cr"):
+        cleaned = cleaned.replace(token, "")
+    cleaned = cleaned.replace(",", "").replace(" ", "").strip()
     try:
         num = float(cleaned)
     except (ValueError, TypeError):
@@ -360,9 +368,9 @@ def _tokenise(md: str):
             m = re.match(r"^\[CHART_(\d+)\]", stripped)
             yield {"type": "chart_placeholder", "index": int(m.group(1)) - 1}
 
-        elif re.match(r"^\[PAGE_IMG_\d+\]", stripped):
-            m = re.match(r"^\[PAGE_IMG_(\d+)\]", stripped)
-            yield {"type": "page_img_placeholder", "index": int(m.group(1)) - 1}
+        elif re.match(r"^\[FILE_IMG_\d+\]", stripped) or re.match(r"^\[PAGE_IMG_\d+\]", stripped):
+            m = re.match(r"^\[FILE_IMG_(\d+)\]", stripped) or re.match(r"^\[PAGE_IMG_(\d+)\]", stripped)
+            yield {"type": "file_img_placeholder", "index": int(m.group(1)) - 1}
 
         elif re.match(r"^\[WEB_IMG_\d+\]", stripped):
             m = re.match(r"^\[WEB_IMG_(\d+)\]", stripped)
@@ -417,12 +425,13 @@ def _tokenise(md: str):
             yield {"type": "numbered", "num": m.group(1), "text": m.group(2)}
 
         elif stripped:
-            # Split any inline [CHART_n], [WEB_IMG_n], [PAGE_IMG_n] placeholders
-            # that the LLM embedded mid-sentence rather than on their own line.
-            # We tokenise the paragraph by splitting on placeholder patterns and
-            # yielding each part separately so the renderer handles them correctly.
+            # Split any inline [CHART_n], [WEB_IMG_n], [FILE_IMG_n] placeholders
+            # (also accepts legacy [PAGE_IMG_n] for safety) that the LLM
+            # embedded mid-sentence rather than on their own line. We tokenise
+            # the paragraph by splitting on placeholder patterns and yielding
+            # each part separately so the renderer handles them correctly.
             _INLINE_PH = re.compile(
-                r"(\[CHART_\d+\]|\[WEB_IMG_\d+\]|\[PAGE_IMG_\d+\])"
+                r"(\[CHART_\d+\]|\[WEB_IMG_\d+\]|\[FILE_IMG_\d+\]|\[PAGE_IMG_\d+\])"
             )
             parts = _INLINE_PH.split(stripped)
             if len(parts) == 1:
@@ -434,13 +443,13 @@ def _tokenise(md: str):
                         continue
                     cm = re.match(r"^\[CHART_(\d+)\]$", part)
                     wm = re.match(r"^\[WEB_IMG_(\d+)\]$", part)
-                    pm = re.match(r"^\[PAGE_IMG_(\d+)\]$", part)
+                    pm = re.match(r"^\[FILE_IMG_(\d+)\]$", part) or re.match(r"^\[PAGE_IMG_(\d+)\]$", part)
                     if cm:
                         yield {"type": "chart_placeholder", "index": int(cm.group(1)) - 1}
                     elif wm:
                         yield {"type": "web_img_placeholder", "index": int(wm.group(1)) - 1}
                     elif pm:
-                        yield {"type": "page_img_placeholder", "index": int(pm.group(1)) - 1}
+                        yield {"type": "file_img_placeholder", "index": int(pm.group(1)) - 1}
                     else:
                         t = part.strip()
                         if t:
@@ -1250,8 +1259,9 @@ def build_pdf(report: str, title: str, question: str, summary: str,
                 rendered_charts.add(ci)
             continue
 
-        # ── Page image placeholder (from uploaded file) ───────────────────────
-        if tp == "page_img_placeholder":
+        # ── Extracted file image placeholder (chart/figure/photo pulled out of
+        #    the uploaded file — never a full-page screenshot) ────────────────
+        if tp == "file_img_placeholder":
             imgs = file_images or []
             pi = tok.get("index", 0)
             if pi < len(imgs):
@@ -1262,23 +1272,25 @@ def build_pdf(report: str, title: str, question: str, summary: str,
                     img_data = _b64.b64decode(img_info["data"])
                     pil_img = PILImage.open(_io.BytesIO(img_data))
                     pil_img = _flatten_to_rgb(pil_img)
-                    # Scale to fit content width, max height 340pt
+                    # Scale to fit content width. Max height kept modest (220pt)
+                    # since these are individual extracted charts/figures, not
+                    # full pages — a full page would need ~340pt+ to stay legible.
                     MAX_IMG_W = CW
-                    MAX_IMG_H = 340
+                    MAX_IMG_H = 220
                     ow, oh = pil_img.size
                     scale = min(MAX_IMG_W / ow, MAX_IMG_H / oh, 1.0)
                     iw, ih = ow * scale, oh * scale
                     need(ih + 32, current_section[0])
                     nl(10)
                     # Caption bar above image
-                    cap = img_info.get("name", f"Page {pi+1}")[:80]
+                    cap = img_info.get("name", f"Figure {pi+1}")[:80]
                     cx = MARGIN + (CW - iw) / 2
                     c.setFillColorRGB(0.95, 0.96, 0.99)
                     c.roundRect(MARGIN, y[0] - ih - 26, CW, ih + 26, 4, fill=1, stroke=0)
                     c.setStrokeColorRGB(0.87, 0.9, 0.95)
                     c.roundRect(MARGIN, y[0] - ih - 26, CW, ih + 26, 4, fill=0, stroke=1)
                     c.setFillColorRGB(*NAVY); c.setFont("Helvetica-Bold", 8)
-                    c.drawString(MARGIN + 8, y[0] - 14, f"📄 {cap}")
+                    c.drawString(MARGIN + 8, y[0] - 14, f"🖼 {cap}")
                     # Draw image
                     img_buf = _io.BytesIO()
                     pil_img.save(img_buf, format="JPEG", quality=85)
@@ -1287,7 +1299,7 @@ def build_pdf(report: str, title: str, question: str, summary: str,
                     c.drawImage(img_reader, cx, y[0] - ih - 22, width=iw, height=ih, mask="auto")
                     y[0] = y[0] - ih - 36
                 except Exception as exc:
-                    log.warning("PAGE_IMG_%d render failed: %s", pi + 1, exc)
+                    log.warning("FILE_IMG_%d render failed: %s", pi + 1, exc)
             continue
 
         # ── Web-search image placeholder (fetched from Tavily image results) ──

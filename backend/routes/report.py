@@ -1303,6 +1303,15 @@ async def generate_report(request: Request):
     sources: list[dict] = body.get("sources", [])
     file_context: str   = body.get("fileContext", "")
     file_images: list[dict] = body.get("fileImages", [])
+    # These are DIFFERENT from file_images above: file_images is full-page
+    # renders of the uploaded PDF, used only for Gemini Vision text extraction
+    # (extract_data_from_images below, which needs to read whole pages).
+    # embedded_file_images is actual embedded raster images/charts/figures
+    # pulled out of the PDF on the frontend (via pdf.js operator list) — this
+    # is what may get embedded inline in the generated report. We never embed
+    # a full page screenshot in the report itself, only real figures/charts
+    # extracted from the file, and only if the file actually contains any.
+    embedded_file_images: list[dict] = body.get("embeddedFileImages", [])
     session_id: str     = body.get("sessionId", "").strip()
     has_rag: bool       = bool(body.get("hasRag", False))
     # Separate from fileContext (which mixes in file text too) so the search
@@ -1449,16 +1458,23 @@ async def generate_report(request: Request):
     if file_context.strip():
         file_section += f"\n\n━━ UPLOADED FILE TEXT CONTENT ━━\n{file_context[:6000]}\n━━ END FILE CONTENT ━━\n"
 
-    # Image placement instruction — tell LLM where to place page image references
+    # Image placement instruction — tell LLM where to place extracted
+    # chart/figure image references. Deliberately built from
+    # embedded_file_images (real embedded images pulled out of the PDF), NOT
+    # file_images (full-page renders) — we never want a whole page screenshot
+    # embedded in the report. If the uploaded file had no embeddable images
+    # (e.g. its charts/tables are drawn as vector shapes, not raster images),
+    # this list is empty and no [FILE_IMG_n] instruction is given at all.
     img_placement_instruction = ""
-    if file_images:
-        page_list = ", ".join(f"[PAGE_IMG_{i+1}] = \"{img['name']}\"" for i, img in enumerate(file_images[:8]))
+    if embedded_file_images:
+        img_list = ", ".join(f"[FILE_IMG_{i+1}] = \"{img['name']}\"" for i, img in enumerate(embedded_file_images[:8]))
         img_placement_instruction = (
             f"\n\nIMAGE PLACEMENT RULES:\n"
-            f"The following page images from the uploaded file are available: {page_list}\n"
-            f"When discussing data, charts, or tables that appear on a specific page, insert [PAGE_IMG_n] "
-            f"on its own line right after the relevant paragraph. The PDF renderer will embed the actual page image there. "
-            f"Only place [PAGE_IMG_n] where it genuinely adds context — do NOT place all images, only the most relevant ones (max 4)."
+            f"The following images/charts/figures were extracted from the uploaded file: {img_list}\n"
+            f"These are actual embedded images from the file (charts, graphs, photos) — NOT full page screenshots. "
+            f"When discussing data that one of these images visualises, insert [FILE_IMG_n] "
+            f"on its own line right after the relevant paragraph. The PDF renderer will embed the actual image there. "
+            f"Only place [FILE_IMG_n] where it genuinely adds context — do NOT place all of them, only the most relevant ones (max 4)."
         )
 
     # Prior conversation turns, if this report follows on from a chat thread.
@@ -1495,7 +1511,7 @@ async def generate_report(request: Request):
         "3. Follow CHART RULES exactly — reproduce actual data from the file as charts where it exists.\n"
         "4. Write the full 6-section, long-form report (target 2800-3500 words (MINIMUM 18000 characters — shorter responses will be rejected and retried)). Insert [CHART_n] inline where valid chart data exists.\n"
         "5. Follow IMAGE RULES — select 2-4 genuinely relevant candidates by index and insert [WEB_IMG_n] inline.\n"
-        + ("6. Insert [PAGE_IMG_n] references inline where you reference data visible in that page image.\n" if file_images else "")
+        + ("6. Insert [FILE_IMG_n] references inline where you reference data visible in that extracted image/chart.\n" if embedded_file_images else "")
         + "7. Respond ONLY with the JSON object — no markdown fences, no text outside JSON."
     )
 
@@ -1789,7 +1805,7 @@ async def generate_report(request: Request):
             "images":     images,  # validated {url, caption} pairs for PDF/UI embedding
             "keyStats":   parsed.get("keyStats", []),
             "summary":    parsed.get("summary", ""),
-            "fileImages": file_images,  # pass back so PDF can embed them
+            "fileImages": embedded_file_images,  # extracted charts/images only — never full pages
         })
     except Exception as exc:
         log.error("Report: JSON parse failed: %s  (raw length: %d)", exc, len(raw))
@@ -1853,7 +1869,7 @@ async def generate_report(request: Request):
                 "images":     salvaged.get("images", []),
                 "keyStats":   salvaged.get("keyStats", []),
                 "summary":    salvaged.get("summary", ""),
-                "fileImages": file_images,
+                "fileImages": embedded_file_images,
             })
 
         try:
@@ -1885,7 +1901,7 @@ async def generate_report(request: Request):
                 "images":     repaired_imgs,
                 "keyStats":   repaired_parsed.get("keyStats", []),
                 "summary":    repaired_parsed.get("summary", ""),
-                "fileImages": file_images,
+                "fileImages": embedded_file_images,
             })
         except Exception:
             pass
@@ -1894,6 +1910,6 @@ async def generate_report(request: Request):
         return JSONResponse({
             "title": _sanitize_title("", question),
             "report": "## Report Generation Error\n\nThe AI response could not be parsed. Please try a more specific question.",
-            "charts": [], "images": [], "keyStats": [], "summary": "", "fileImages": file_images,
+            "charts": [], "images": [], "keyStats": [], "summary": "", "fileImages": embedded_file_images,
         })
 

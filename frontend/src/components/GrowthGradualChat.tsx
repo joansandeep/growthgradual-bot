@@ -1612,8 +1612,78 @@ export default function GrowthGradualChat() {
     setMessages(prev => prev.map(m => m.id === botMsgId ? { ...m, reportLoading: true } : m));
 
     const buildFilePayload = async () => {
+      // fileImages: FULL-PAGE renders — used ONLY so the backend's Gemini
+      // Vision call can read all text/tables/numbers off the page. These are
+      // never sent to the PDF renderer and never embedded in the report.
       const fileImages: { name: string; mimeType: string; data: string }[] = [];
+      // embeddedFileImages: actual embedded raster images (charts, graphs,
+      // photos) pulled OUT of the PDF pages themselves — these are the only
+      // images that may end up embedded inline in the generated report.
+      // If a file's charts/tables are drawn as vector shapes rather than
+      // embedded raster images (common in generated PDF reports), this list
+      // will legitimately be empty for that file — no full page is used as
+      // a fallback.
+      const embeddedFileImages: { name: string; mimeType: string; data: string }[] = [];
       const fileTextParts: string[] = [];
+
+      // Minimum size for an extracted image to be considered a genuine
+      // chart/figure/photo rather than a decorative icon, bullet glyph, or
+      // logo. Small dimension in points at typical PDF resolution.
+      const MIN_EMBED_DIM = 120;
+      // Cap on total embedded images sent, matching the backend's [:8] limit.
+      const MAX_EMBEDDED_IMAGES = 8;
+      const seenImageHashes = new Set<string>();
+
+      const simpleHash = (bytes: Uint8ClampedArray | Uint8Array): string => {
+        // Cheap content fingerprint for de-duplication (e.g. the same
+        // logo/header image repeated on every page) — not cryptographic,
+        // just needs to distinguish "same image again" from "new image".
+        let h = 0;
+        const step = Math.max(1, Math.floor(bytes.length / 256));
+        for (let i = 0; i < bytes.length; i += step) {
+          h = (h * 31 + bytes[i]) | 0;
+        }
+        return `${bytes.length}:${h}`;
+      };
+
+      const imgObjToDataUrl = (imgObj: any): string | null => {
+        try {
+          let canvas = document.createElement('canvas');
+          let ctx: CanvasRenderingContext2D | null = null;
+          if (typeof ImageBitmap !== 'undefined' && imgObj instanceof ImageBitmap) {
+            canvas.width = imgObj.width;
+            canvas.height = imgObj.height;
+            ctx = canvas.getContext('2d');
+            if (!ctx) return null;
+            ctx.drawImage(imgObj, 0, 0);
+          } else if (imgObj && imgObj.data && imgObj.width && imgObj.height) {
+            // Raw pixel buffer — pdf.js gives kind: 1=grayscale, 2=RGB, 3=RGBA
+            const { width, height, data, kind } = imgObj;
+            canvas.width = width;
+            canvas.height = height;
+            ctx = canvas.getContext('2d');
+            if (!ctx) return null;
+            const rgba = new Uint8ClampedArray(width * height * 4);
+            if (kind === 3 || data.length === width * height * 4) {
+              rgba.set(data);
+            } else if (kind === 2 || data.length === width * height * 3) {
+              for (let p = 0, q = 0; p < data.length; p += 3, q += 4) {
+                rgba[q] = data[p]; rgba[q + 1] = data[p + 1]; rgba[q + 2] = data[p + 2]; rgba[q + 3] = 255;
+              }
+            } else {
+              // Grayscale or unrecognised layout — skip rather than risk a
+              // corrupted/garbled image being embedded in the report.
+              return null;
+            }
+            ctx.putImageData(new ImageData(rgba, width, height), 0, 0);
+          } else {
+            return null;
+          }
+          return canvas.toDataURL('image/jpeg', 0.85).split(',')[1];
+        } catch {
+          return null;
+        }
+      };
 
       for (const f of files) {
         if (f.extractedText) {
@@ -1621,7 +1691,6 @@ export default function GrowthGradualChat() {
         }
 
         if (f.type === 'application/pdf') {
-          // Render PDF pages to images using pdf.js
           try {
             const pdfjsLib = await import('pdfjs-dist');
             pdfjsLib.GlobalWorkerOptions.workerSrc = `https://cdnjs.cloudflare.com/ajax/libs/pdf.js/${pdfjsLib.version}/pdf.worker.min.mjs`;
@@ -1632,8 +1701,13 @@ export default function GrowthGradualChat() {
             for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
             const pdf = await pdfjsLib.getDocument({ data: bytes }).promise;
             const numPages = Math.min(pdf.numPages, 8); // max 8 pages
+
             for (let pageNum = 1; pageNum <= numPages; pageNum++) {
               const page = await pdf.getPage(pageNum);
+
+              // 1) Full-page render — kept ONLY for the backend's vision-based
+              //    text extraction (extract_data_from_images). Never used for
+              //    embedding images in the report itself.
               const viewport = page.getViewport({ scale: 1.5 });
               const canvas = document.createElement('canvas');
               canvas.width = viewport.width;
@@ -1642,18 +1716,55 @@ export default function GrowthGradualChat() {
               await page.render({ canvasContext: ctx, viewport }).promise;
               const imgData = canvas.toDataURL('image/jpeg', 0.85).split(',')[1];
               fileImages.push({ name: `${f.name} page ${pageNum}`, mimeType: 'image/jpeg', data: imgData });
+
+              // 2) Extract only the actual embedded raster images on this
+              //    page (real charts/graphs/photos), via pdf.js's operator
+              //    list — this is what may get embedded in the report.
+              if (embeddedFileImages.length >= MAX_EMBEDDED_IMAGES) continue;
+              try {
+                const opList = await page.getOperatorList();
+                const OPS = pdfjsLib.OPS;
+                for (let idx = 0; idx < opList.fnArray.length; idx++) {
+                  if (embeddedFileImages.length >= MAX_EMBEDDED_IMAGES) break;
+                  const fn = opList.fnArray[idx];
+                  if (fn !== OPS.paintImageXObject && fn !== OPS.paintJpegXObject) continue;
+                  const objId = opList.argsArray[idx][0];
+                  const imgObj: any = await new Promise((resolve) => {
+                    try { page.objs.get(objId, resolve); } catch { resolve(null); }
+                  });
+                  if (!imgObj) continue;
+                  const w = imgObj.width || 0, h = imgObj.height || 0;
+                  if (w < MIN_EMBED_DIM || h < MIN_EMBED_DIM) continue; // skip icons/logos
+                  const dataStr = imgObjToDataUrl(imgObj);
+                  if (!dataStr) continue;
+                  const hash = simpleHash(imgObj.data instanceof Uint8ClampedArray || imgObj.data instanceof Uint8Array ? imgObj.data : new Uint8Array(0));
+                  if (hash !== '0:0' && seenImageHashes.has(hash)) continue; // skip repeated logos/headers
+                  seenImageHashes.add(hash);
+                  embeddedFileImages.push({
+                    name: `${f.name} — figure (page ${pageNum})`,
+                    mimeType: 'image/jpeg',
+                    data: dataStr,
+                  });
+                }
+              } catch (e) {
+                console.warn('[report] embedded image extraction failed for page', pageNum, e);
+              }
             }
           } catch (e) {
             console.warn('[report] pdf.js render failed:', e);
           }
         } else if (f.type.startsWith('image/')) {
-          // Direct image attachment
+          // Direct image attachment — this genuinely is "an image the user
+          // provided", not a page render, so it's fair game for both uses.
           const base64 = f.content.split(',')[1];
-          if (base64) fileImages.push({ name: f.name, mimeType: f.type, data: base64 });
+          if (base64) {
+            fileImages.push({ name: f.name, mimeType: f.type, data: base64 });
+            embeddedFileImages.push({ name: f.name, mimeType: f.type, data: base64 });
+          }
         }
       }
 
-      return { fileImages, fileTextContext: fileTextParts.join('\n\n') };
+      return { fileImages, embeddedFileImages, fileTextContext: fileTextParts.join('\n\n') };
     };
 
     // Source-document concepts for the OKF bundle — one per attached file,
@@ -1664,7 +1775,7 @@ export default function GrowthGradualChat() {
       .filter(f => f.extractedText)
       .map(f => ({ name: f.name, text: f.extractedText || '', file_type: f.type }));
 
-    buildFilePayload().then(({ fileImages, fileTextContext }) => {
+    buildFilePayload().then(({ fileImages, embeddedFileImages, fileTextContext }) => {
       return fetch('/api/chat/report', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -1678,7 +1789,8 @@ export default function GrowthGradualChat() {
           // title/content. It's sent as its own field below instead.
           fileContext: fileTextContext,
           conversationContext: conversationContext || '',
-          fileImages,
+          fileImages,             // full pages — vision text-extraction only
+          embeddedFileImages,     // actual charts/figures — may be embedded in the report
           sessionId:   getOrCreateSessionId(),
           hasRag:      ragIndexed,
         }),
