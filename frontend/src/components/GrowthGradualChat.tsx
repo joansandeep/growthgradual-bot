@@ -1727,7 +1727,7 @@ export default function GrowthGradualChat() {
                 for (let idx = 0; idx < opList.fnArray.length; idx++) {
                   if (embeddedFileImages.length >= MAX_EMBEDDED_IMAGES) break;
                   const fn = opList.fnArray[idx];
-                  if (fn !== OPS.paintImageXObject && fn !== OPS.paintJpegXObject) continue;
+                  if (fn !== OPS.paintImageXObject) continue;
                   const objId = opList.argsArray[idx][0];
                   const imgObj: any = await new Promise((resolve) => {
                     try { page.objs.get(objId, resolve); } catch { resolve(null); }
