@@ -33,24 +33,36 @@ router = APIRouter()
 log = logging.getLogger("pdf")
 
 # ─── Colour palette ───────────────────────────────────────────────────────────
-NAVY   = (26/255,  31/255,  78/255)
-GOLD   = (200/255, 134/255, 10/255)
-BLUE   = (59/255,  130/255, 246/255)
-GREEN  = (34/255,  197/255, 94/255)
-RED    = (239/255, 68/255,  68/255)
-AMBER  = (245/255, 158/255, 11/255)
-PURPLE = (139/255, 92/255,  246/255)
-CYAN   = (6/255,   182/255, 212/255)
-PINK   = (236/255, 72/255,  153/255)
-WHITE  = (1.0, 1.0, 1.0)
-LIGHT  = (240/255, 243/255, 255/255)
-GREY   = (139/255, 147/255, 181/255)
+# Matches the Growth Gradual house style seen in the sample "Market Currents"
+# report: deep navy + gold as the primary brand pair, with a restrained set of
+# muted, editorial accent colours (teal, slate blue, olive, burgundy) rather
+# than bright/neon web-app colours — those clash with the cream-paper, navy-
+# cover aesthetic the sample uses throughout.
+NAVY    = (26/255,  31/255,  78/255)
+GOLD    = (200/255, 134/255, 10/255)
+GREEN   = (22/255,  128/255, 88/255)    # muted teal-green — positive deltas, best sector
+RED     = (185/255, 60/255,  55/255)    # muted brick-red — negative deltas, worst sector
+TEAL    = (33/255,  118/255, 122/255)   # secondary chart colour — cool teal
+SLATE   = (74/255,  92/255,  138/255)   # secondary chart colour — muted slate blue
+OLIVE   = (128/255, 110/255, 40/255)    # tertiary chart colour — muted olive/bronze
+BURGUNDY = (110/255, 47/255, 58/255)    # tertiary chart colour — muted burgundy
+AMBER   = (194/255, 140/255, 40/255)    # close to GOLD, used for chart series variety
+# Kept as aliases so any pre-existing references elsewhere in this file still resolve.
+BLUE    = SLATE
+PURPLE  = BURGUNDY
+CYAN    = TEAL
+PINK    = BURGUNDY
+WHITE   = (1.0, 1.0, 1.0)
+LIGHT   = (240/255, 243/255, 255/255)
+GREY    = (139/255, 147/255, 181/255)
 BODY_TXT = (0.18, 0.21, 0.38)
 
-CHART_COLORS = [BLUE, GREEN, AMBER, RED, PURPLE, CYAN, PINK, NAVY]
+# Order chosen so the first 2-3 series (the common case) land on colours that
+# read cleanly against cream paper and don't fight the navy/gold brand pair.
+CHART_COLORS = [NAVY, GOLD, TEAL, RED, SLATE, OLIVE, BURGUNDY, GREEN]
 
-# Section accent colours (one per major section heading)
-SECTION_ACCENTS = [GOLD, BLUE, GREEN, AMBER, RED, PURPLE]
+# Section accent colours (one per major section heading) — same restrained set.
+SECTION_ACCENTS = [GOLD, TEAL, GREEN, OLIVE, RED, SLATE]
 
 
 def fmt_inr(value_str: str) -> str:
@@ -484,21 +496,38 @@ def _bar(c, spec, x0, y0, w, h):
         return
     unit  = spec.get("unit", "")
     n_ser = len(series_list)
+    # Multi-series composition/breakdown charts (e.g. "Portfolio Allocation by
+    # Fund" — Equity/Debt/Cash per fund) are meant to render as a STACKED
+    # column, not a grouped one — the parts sum to a whole per label. The
+    # model sets spec["stacked"]=true for these; anything else (comparisons
+    # across entities) stays grouped side-by-side as before.
+    stacked = bool(spec.get("stacked")) and n_ser > 1
 
-    # All values across all series for unified Y scale
-    all_vals = [abs(_coerce_value(d.get("value", 0))) for s in series_list for d in s.get("data", [])]
-    max_v    = max(all_vals) if all_vals else 1
+    if stacked:
+        # Y scale is the tallest CUMULATIVE stack across labels, not the
+        # tallest individual value.
+        n = max(len(data), 1)
+        totals = []
+        for i in range(n):
+            tot = sum(abs(_coerce_value((s.get("data") or [{}])[i].get("value", 0)))
+                       for s in series_list if i < len(s.get("data") or []))
+            totals.append(tot)
+        max_v = max(totals) if totals else 1
+    else:
+        # All values across all series for unified Y scale
+        all_vals = [abs(_coerce_value(d.get("value", 0))) for s in series_list for d in s.get("data", [])]
+        max_v    = max(all_vals) if all_vals else 1
+        n        = max(len(data), 1)
 
     has_legend = n_ser > 1
     LEGEND_H   = 16 if has_legend else 0
     PL, PB     = 52, 32
     pw         = w - PL - 12
     ph         = h - PB - 24 - LEGEND_H
-    n          = max(len(data), 1)
     sp         = pw / n
-    # Per-series bar width — grouped layout
+    # Per-series bar width — grouped layout; stacked uses one column per label
     bw_total   = min(sp * 0.78, 70.0)
-    bw         = max(4, bw_total / n_ser)
+    bw         = max(4, bw_total if stacked else bw_total / n_ser)
 
     safe_unit = _safe_text(unit)
     # Grid lines
@@ -513,25 +542,55 @@ def _bar(c, spec, x0, y0, w, h):
     c.setStrokeColorRGB(0.78, 0.82, 0.88); c.setLineWidth(0.8)
     c.line(x0 + PL, y0 + PB, x0 + PL + pw, y0 + PB)
 
-    # Draw grouped bars
-    for si, ser in enumerate(series_list):
-        ser_data = ser.get("data") or []
-        color    = CHART_COLORS[si % len(CHART_COLORS)]
-        for i, d in enumerate(ser_data):
-            if i >= n: continue
-            v  = _coerce_value(d.get("value", 0))
-            bh = max(2, (abs(v) / max_v) * ph)
-            group_x = x0 + PL + i * sp + (sp - bw_total) / 2
-            bx = group_x + si * bw
-            bx = min(bx, x0 + PL + pw - bw)
-            bar_color = RED if v < 0 else color
-            c.setFillColorRGB(*bar_color)
-            c.rect(bx, y0 + PB, bw - 1, bh, fill=1, stroke=0)
-            # Value label on top
-            if n_ser == 1 or bw > 14:
-                vs = f"{v:+.1f}{safe_unit}" if safe_unit == "%" else f"{v:.1f}{safe_unit}" if max_v < 10 else f"{v:.0f}{safe_unit}"
-                c.setFillColorRGB(*bar_color); c.setFont("Helvetica-Bold", 5.5)
-                c.drawCentredString(bx + (bw - 1) / 2, y0 + PB + bh + 2, vs)
+    if stacked:
+        # Draw each label's column as segments stacked bottom-to-top, one
+        # segment per series, in series order — the classic stacked-bar look.
+        for i, d in enumerate(data):
+            if i >= n:
+                continue
+            bx = x0 + PL + i * sp + (sp - bw) / 2
+            running_y = y0 + PB
+            for si, ser in enumerate(series_list):
+                ser_data = ser.get("data") or []
+                if i >= len(ser_data):
+                    continue
+                v  = abs(_coerce_value(ser_data[i].get("value", 0)))
+                bh = max(1.5, (v / max_v) * ph) if v else 0
+                color = CHART_COLORS[si % len(CHART_COLORS)]
+                c.setFillColorRGB(*color)
+                c.rect(bx, running_y, bw - 1, bh, fill=1, stroke=0)
+                # Segment value label — only if the segment is tall enough
+                # to hold text without overlapping its neighbors.
+                if bh > 9:
+                    vs = f"{v:.0f}{safe_unit}" if max_v >= 10 else f"{v:.1f}{safe_unit}"
+                    c.setFillColorRGB(*WHITE); c.setFont("Helvetica-Bold", 5.5)
+                    c.drawCentredString(bx + (bw - 1) / 2, running_y + bh / 2 - 2, vs)
+                running_y += bh
+            # Total label above the stack
+            total_v = totals[i] if i < len(totals) else 0
+            ts = f"{total_v:.0f}{safe_unit}" if max_v >= 10 else f"{total_v:.1f}{safe_unit}"
+            c.setFillColorRGB(*BODY_TXT); c.setFont("Helvetica-Bold", 6)
+            c.drawCentredString(bx + (bw - 1) / 2, running_y + 3, ts)
+    else:
+        # Draw grouped bars
+        for si, ser in enumerate(series_list):
+            ser_data = ser.get("data") or []
+            color    = CHART_COLORS[si % len(CHART_COLORS)]
+            for i, d in enumerate(ser_data):
+                if i >= n: continue
+                v  = _coerce_value(d.get("value", 0))
+                bh = max(2, (abs(v) / max_v) * ph)
+                group_x = x0 + PL + i * sp + (sp - bw_total) / 2
+                bx = group_x + si * bw
+                bx = min(bx, x0 + PL + pw - bw)
+                bar_color = RED if v < 0 else color
+                c.setFillColorRGB(*bar_color)
+                c.rect(bx, y0 + PB, bw - 1, bh, fill=1, stroke=0)
+                # Value label on top
+                if n_ser == 1 or bw > 14:
+                    vs = f"{v:+.1f}{safe_unit}" if safe_unit == "%" else f"{v:.1f}{safe_unit}" if max_v < 10 else f"{v:.0f}{safe_unit}"
+                    c.setFillColorRGB(*bar_color); c.setFont("Helvetica-Bold", 5.5)
+                    c.drawCentredString(bx + (bw - 1) / 2, y0 + PB + bh + 2, vs)
 
     # X-axis labels — thin these out once bars get too narrow for every
     # label to fit without the (rotated) text overlapping its neighbor.
@@ -646,6 +705,28 @@ def _line(c, spec, x0, y0, w, h):
                 c.setFillColorRGB(*color)
                 c.drawCentredString(px2, py2 + 5, f"{val:.1f}{safe_unit}")
                 c.setFillColorRGB(*color)
+
+        # For a single-series trend (e.g. an index/stock level across
+        # sessions) — callout the peak and trough points in gold, echoing
+        # the annotated-trend style of the sample report rather than
+        # leaving a bare line with no narrative markers.
+        if not has_legend and n >= 3:
+            vals = [_coerce_value(d.get("value", 0)) for d in pts]
+            hi_j, lo_j = vals.index(max(vals)), vals.index(min(vals))
+            for j in (hi_j, lo_j):
+                if j == hi_j == lo_j:
+                    continue
+                px2, py2 = coords[j]
+                is_hi = (j == hi_j)
+                c.setFillColorRGB(*GOLD)
+                c.circle(px2, py2, 3.2, fill=1, stroke=0)
+                vs = f"{vals[j]:.1f}{safe_unit}" if rng < 5 else f"{vals[j]:,.0f}{safe_unit}"
+                c.setFont("Helvetica-Bold", 6)
+                label_y = py2 + 8 if is_hi else py2 - 11
+                # Keep the callout from being clipped off the top/bottom of
+                # the plotted area.
+                label_y = min(max(label_y, y0 + PB + 6), y0 + PB + ph + 4)
+                c.drawCentredString(px2, label_y, vs)
 
     # X-axis labels — use full label, no truncation
     labels = series[0].get("data", [])

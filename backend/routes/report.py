@@ -176,6 +176,18 @@ STEP 1 — AGGRESSIVELY SCAN sources for ANY chartable numbers:
   • FII/DII flows by date → line or bar chart
   • Category-wise data (large cap vs mid cap vs small cap) → bar chart
 
+  SINGLE-ASSET TREND OVER TIME — DON'T SKIP THIS ONE:
+  Whenever the sources give the level of ONE index/stock/rate at several dates or
+  sessions (e.g. "Nifty 50 closed at X on Jun 1, Y on Jun 11, Z on Jun 19..."),
+  that is a single-series LINE chart — this is one of the most valuable charts in
+  a markets report and is frequently under-used. Use the actual session/event dates
+  as labels (not just start/end) so the line shows real path, not just two points.
+  → Example: "Nifty 50 — June 2026 Session Levels" → line, series=[{"name":"Nifty 50",
+     "data":[{"label":"Jun 1","value":23654},{"label":"Jun 11","value":23167},
+             {"label":"Jun 19","value":24013},{"label":"Jun 30","value":23866}]}]
+  → Do this for ANY index/benchmark/rate the sources track across multiple dated
+    points, not only when the question explicitly asks for a "trend" or "chart".
+
   COMPARISON TOPICS (X vs Y, A vs B) — MANDATORY MULTI-SERIES CHART:
   When the question compares TWO OR MORE assets (e.g. "Gold vs Silver",
   "Nifty vs Sensex", "HDFC vs ICICI", "equity vs debt"):
@@ -195,10 +207,13 @@ STEP 1 — AGGRESSIVELY SCAN sources for ANY chartable numbers:
   When a label (e.g. a quarter, a fund, a sector) breaks down into 2+ parts of
   a whole — portfolio allocation by asset class per fund, revenue split by
   segment per quarter, expense breakdown by category — use a multi-series bar
-  chart with each part as its own series sharing the same labels. This
-  automatically renders as a STACKED column chart, which reads far better than
-  a single flat bar or a separate pie per label.
-  → Example: "Portfolio Allocation by Fund" → bar,
+  chart with each part as its own series sharing the same labels, AND set
+  "stacked": true on the chart spec. This renders as a true stacked column
+  chart (segments stacked bottom-to-top, one column per label) — leaving
+  "stacked" unset/false on a multi-series bar instead renders side-by-side
+  GROUPED bars, which is the right shape for entity-vs-entity comparisons but
+  wrong for a composition/breakdown.
+  → Example: "Portfolio Allocation by Fund" → bar, stacked=true,
      series: [{"name":"Equity","data":[{"label":"Fund A","value":65},{"label":"Fund B","value":40}]},
               {"name":"Debt","data":[{"label":"Fund A","value":25},{"label":"Fund B","value":45}]},
               {"name":"Cash","data":[{"label":"Fund A","value":10},{"label":"Fund B","value":15}]}]
@@ -222,8 +237,9 @@ STEP 2 — ONLY create a chart if ALL conditions are met:
   ✗ NEVER create a chart from a single number
   ✗ NEVER duplicate labels
   ✗ NEVER use future/projected values you invented
-  ✗ A bar/pie needs ≥3 named distinct items — this is enforced server-side and
-    a 2-item bar/pie chart WILL be silently dropped, wasting the slot.
+  ✗ A bar chart needs ≥3 named distinct items; a pie chart needs ≥2 — this is
+    enforced server-side and anything short of that WILL be silently dropped,
+    wasting the slot.
   → If the topic naturally centers on 2 entities (e.g. "HDFC vs ICICI"), actively
     scan the rest of the sources for OTHER comparable entities mentioned anywhere
     (peer banks, sector averages, other funds in the same category, etc.) and add
@@ -258,6 +274,11 @@ Chart spec shape:
   "type": "bar" | "line" | "pie",
   "title": "<specific title e.g. 'Top 5 SIP Funds — 3-Year Returns' not 'Chart 1'>",
   "unit": "%" | "₹" | "Cr" | "B" | "$" | "x" | "",
+  "stacked": true | false,  // ONLY for multi-series bar charts where each series is
+                            // a PART of a whole per label (e.g. Equity/Debt/Cash per
+                            // fund) — set true so it renders as one stacked column
+                            // per label instead of side-by-side grouped bars. Omit
+                            // or set false for comparison charts (entity vs entity).
   "series": [{ "name": "<series name>", "data": [{ "label": "<unique label>", "value": <number> }] }]
 }
 
@@ -267,7 +288,7 @@ GOOD chart examples — do exactly this:
   • "Nifty 50 Quarterly EPS" → line, labels=[Q1FY25,Q2FY25,Q3FY25,Q4FY25,Q1FY26], values=[actual numbers from source]
   • "Top Banking Stocks — ROE %" → bar, labels=[HDFC Bank, ICICI Bank, Kotak, SBI, Axis], values from source
   • "MF Category Inflows" → pie, labels=[Large Cap, Mid Cap, Small Cap, Flexi Cap, ELSS], values=₹ crore
-  • "Portfolio Allocation by Fund" → STACKED bar (multi-series, parts of a whole per label — see above)
+  • "Portfolio Allocation by Fund" → bar with "stacked":true (multi-series, parts of a whole per label — see above)
 
 BAD chart examples — NEVER do this:
   ✗ labels=["Today","Today","Today"] — duplicate labels
@@ -1758,80 +1779,85 @@ async def generate_report(request: Request):
         return None  # never closed — genuinely truncated, caller should skip
     # ─────────────────────────────────────────────────────────────────────────
 
+    def _is_plausible_chart(ch: dict) -> bool:
+        if ch.get("type") == "table":
+            cols = ch.get("columns") or []
+            rows = ch.get("rows") or []
+            return bool(ch.get("title")) and len(cols) >= 2 and len(rows) >= 2
+        series = ch.get("series") or []
+        if not series or not ch.get("type") or not ch.get("title"):
+            return False
+        n_series = len(series)
+        chart_type = ch.get("type", "bar")
+
+        # For multi-series (comparison charts): validate each series individually
+        for s in series:
+            pts = s.get("data") or []
+            # Multi-series line charts only need 2+ pts per series
+            min_pts = 2 if chart_type == "line" else 1
+            if len(pts) < min_pts:
+                log.warning("Chart rejected — series '%s' has only %d points", s.get("name","?"), len(pts))
+                return False
+
+        # Enforce a minimum-distinct-items rule for bar/pie charts (matches
+        # the system prompt's own STEP 2 rule). A single-series bar chart
+        # with only 2 bars (e.g. just "HDFC Bank" vs "ICICI Bank") reads as
+        # a thin, low-value visual — reject it so the model either pulls in
+        # more comparable entities from the sources or skips the chart.
+        # Pie charts are allowed down to 2 slices (e.g. "FII vs DII flows",
+        # "green vs red IPO listings") since a 2-way split is still a
+        # legitimate, common pie — unlike a 2-bar chart it isn't thin, it's
+        # just binary.
+        if chart_type in ("bar", "pie") and n_series == 1:
+            n_labels = len(series[0].get("data") or [])
+            min_labels = 2 if chart_type == "pie" else 3
+            if n_labels < min_labels:
+                log.warning("Chart rejected — only %d distinct items (need ≥%d for %s chart): %s",
+                            n_labels, min_labels, chart_type, ch.get("title", "?"))
+                return False
+
+        all_pts = [pt for s in series for pt in (s.get("data") or [])]
+        values  = [pt.get("value", 0) for pt in all_pts]
+        if len(values) > 1 and len(set(values)) <= 1:
+            log.warning("Chart rejected — identical values: %s", values[:6])
+            return False
+
+        # Reject bar charts where a single series mixes wildly different scales
+        # (e.g. price 125957 and % change -3 as two bars in the same series)
+        if chart_type == "bar":
+            for s in series:
+                pts_vals = [pt.get("value", 0) for pt in (s.get("data") or [])]
+                if len(pts_vals) >= 2:
+                    pos_vals = [v for v in pts_vals if v > 0]
+                    neg_vals = [v for v in pts_vals if v < 0]
+                    if pos_vals and neg_vals:
+                        max_pos = max(pos_vals)
+                        max_neg = abs(min(neg_vals))
+                        if max_pos > 0 and max_neg > 0 and max_pos / max_neg > 100:
+                            log.warning("Chart rejected — mixed scale in '%s': pos=%.0f neg=%.0f",
+                                        s.get("name", "?"), max_pos, min(neg_vals))
+                            return False
+
+        # Check labels unique WITHIN each series (not across series)
+        for s in series:
+            labels = [str(pt.get("label", "")) for pt in (s.get("data") or [])]
+            if len(set(labels)) < len(labels):
+                log.warning("Chart rejected — duplicate labels in series '%s': %s", s.get("name","?"), labels[:6])
+                return False
+
+        # For single-series line charts: reject if values look arithmetically generated
+        if chart_type == "line" and n_series == 1 and len(values) >= 3:
+            diffs = [abs(values[i+1] - values[i]) for i in range(len(values)-1)]
+            if diffs and max(diffs) > 0:
+                variance = sum((d - sum(diffs)/len(diffs))**2 for d in diffs) / len(diffs)
+                cv = (variance ** 0.5) / (sum(diffs)/len(diffs))
+                if cv < 0.05:
+                    log.warning("Chart rejected — values look arithmetically generated (cv=%.3f): %s", cv, values)
+                    return False
+        return True
+
     try:
         parsed = json.loads(clean)
-
-        def _is_plausible_chart(ch: dict) -> bool:
-            if ch.get("type") == "table":
-                cols = ch.get("columns") or []
-                rows = ch.get("rows") or []
-                return bool(ch.get("title")) and len(cols) >= 2 and len(rows) >= 2
-            series = ch.get("series") or []
-            if not series or not ch.get("type") or not ch.get("title"):
-                return False
-            n_series = len(series)
-            chart_type = ch.get("type", "bar")
-
-            # For multi-series (comparison charts): validate each series individually
-            for s in series:
-                pts = s.get("data") or []
-                # Multi-series line charts only need 2+ pts per series
-                min_pts = 2 if chart_type == "line" else 1
-                if len(pts) < min_pts:
-                    log.warning("Chart rejected — series '%s' has only %d points", s.get("name","?"), len(pts))
-                    return False
-
-            # Enforce the ≥3-distinct-items rule for bar/pie charts (matches the
-            # system prompt's own STEP 2 rule). A single-series bar chart with
-            # only 2 bars (e.g. just "HDFC Bank" vs "ICICI Bank") reads as a
-            # thin, low-value visual — reject it so the model either pulls in
-            # more comparable entities from the sources or skips the chart.
-            if chart_type in ("bar", "pie") and n_series == 1:
-                n_labels = len(series[0].get("data") or [])
-                if n_labels < 3:
-                    log.warning("Chart rejected — only %d distinct items (need ≥3 for %s chart): %s",
-                                n_labels, chart_type, ch.get("title", "?"))
-                    return False
-
-            all_pts = [pt for s in series for pt in (s.get("data") or [])]
-            values  = [pt.get("value", 0) for pt in all_pts]
-            if len(values) > 1 and len(set(values)) <= 1:
-                log.warning("Chart rejected — identical values: %s", values[:6])
-                return False
-
-            # Reject bar charts where a single series mixes wildly different scales
-            # (e.g. price 125957 and % change -3 as two bars in the same series)
-            if chart_type == "bar":
-                for s in series:
-                    pts_vals = [pt.get("value", 0) for pt in (s.get("data") or [])]
-                    if len(pts_vals) >= 2:
-                        pos_vals = [v for v in pts_vals if v > 0]
-                        neg_vals = [v for v in pts_vals if v < 0]
-                        if pos_vals and neg_vals:
-                            max_pos = max(pos_vals)
-                            max_neg = abs(min(neg_vals))
-                            if max_pos > 0 and max_neg > 0 and max_pos / max_neg > 100:
-                                log.warning("Chart rejected — mixed scale in '%s': pos=%.0f neg=%.0f",
-                                            s.get("name", "?"), max_pos, min(neg_vals))
-                                return False
-
-            # Check labels unique WITHIN each series (not across series)
-            for s in series:
-                labels = [str(pt.get("label", "")) for pt in (s.get("data") or [])]
-                if len(set(labels)) < len(labels):
-                    log.warning("Chart rejected — duplicate labels in series '%s': %s", s.get("name","?"), labels[:6])
-                    return False
-
-            # For single-series line charts: reject if values look arithmetically generated
-            if chart_type == "line" and n_series == 1 and len(values) >= 3:
-                diffs = [abs(values[i+1] - values[i]) for i in range(len(values)-1)]
-                if diffs and max(diffs) > 0:
-                    variance = sum((d - sum(diffs)/len(diffs))**2 for d in diffs) / len(diffs)
-                    cv = (variance ** 0.5) / (sum(diffs)/len(diffs))
-                    if cv < 0.05:
-                        log.warning("Chart rejected — values look arithmetically generated (cv=%.3f): %s", cv, values)
-                        return False
-            return True
 
         original_charts_list = parsed.get("charts") or []
         valid_mask = [_is_plausible_chart(c) for c in original_charts_list]
@@ -1984,7 +2010,22 @@ async def generate_report(request: Request):
             salvaged["images"], _ = _top_up_images(salvaged["images"], image_candidates, model_used)
             salvaged["report"] = _inject_fallback_image_placeholders(salvaged.get("report", ""), salvaged["images"])
             log.info("Report: salvaged %d fields from truncated JSON (images=%d)", len(salvaged), len(salvaged.get("images", [])))
-            salvaged["charts"] = await attach_datawrapper_charts(salvaged.get("charts", []))
+            # Same chart pipeline as the happy path: validate whatever the model
+            # put in "charts", remap [CHART_n] placeholders around any that get
+            # dropped, then also pull in any raw chart JSON or markdown tables
+            # the model left directly in the report body. Truncated JSON was a
+            # common reason PDFs came back with zero charts even though the
+            # model had actually generated good ones (or good table data) —
+            # skipping this pipeline on the salvage path silently threw them away.
+            _raw_charts = salvaged.get("charts") or []
+            _valid_mask = [_is_plausible_chart(c) for c in _raw_charts]
+            _salv_charts = [c for c, keep in zip(_raw_charts, _valid_mask) if keep]
+            if len(_salv_charts) < len(_raw_charts):
+                log.info("Chart validation (salvage): kept %d / %d charts", len(_salv_charts), len(_raw_charts))
+            salvaged["report"] = _remap_chart_placeholders(salvaged.get("report", ""), _raw_charts, _valid_mask)
+            salvaged["report"], _salv_charts = _extract_inline_chart_jsons(salvaged["report"], _salv_charts)
+            salvaged["report"], _salv_charts = _extract_markdown_tables(salvaged["report"], _salv_charts)
+            salvaged["charts"] = await attach_datawrapper_charts(_salv_charts)
             return JSONResponse({
                 "title":      _sanitize_title(salvaged.get("title", ""), question),
                 "report":     _strip_citation_markers(salvaged.get("report", "")),
@@ -2004,8 +2045,7 @@ async def generate_report(request: Request):
             repaired += "]" * max(opens_arr, 0)
             repaired_parsed = json.loads(repaired)
             log.info("Report: repaired truncated JSON successfully")
-            repaired_charts = await attach_datawrapper_charts(repaired_parsed.get("charts", []))
-            # Try to recover images in the repaired path too
+            repaired_report = (repaired_parsed.get("report", "") or "").replace("\\n", "\n")
             repaired_imgs = []
             try:
                 raw_imgs = repaired_parsed.get("images") or []
@@ -2015,8 +2055,17 @@ async def generate_report(request: Request):
                 pass
             repaired_imgs, _ = _force_fallback_images(repaired_imgs, image_candidates, model_used)
             repaired_imgs, _ = _top_up_images(repaired_imgs, image_candidates, model_used)
-            repaired_report = _strip_citation_markers((repaired_parsed.get("report", "") or "").replace("\\n", "\n"))
+            _raw_charts = repaired_parsed.get("charts") or []
+            _valid_mask = [_is_plausible_chart(c) for c in _raw_charts]
+            _rep_charts = [c for c, keep in zip(_raw_charts, _valid_mask) if keep]
+            if len(_rep_charts) < len(_raw_charts):
+                log.info("Chart validation (repair): kept %d / %d charts", len(_rep_charts), len(_raw_charts))
+            repaired_report = _remap_chart_placeholders(repaired_report, _raw_charts, _valid_mask)
+            repaired_report, _rep_charts = _extract_inline_chart_jsons(repaired_report, _rep_charts)
+            repaired_report, _rep_charts = _extract_markdown_tables(repaired_report, _rep_charts)
+            repaired_charts = await attach_datawrapper_charts(_rep_charts)
             repaired_report = _inject_fallback_image_placeholders(repaired_report, repaired_imgs)
+            repaired_report = _strip_citation_markers(repaired_report)
             return JSONResponse({
                 "title":      _sanitize_title(repaired_parsed.get("title", ""), question),
                 "report":     repaired_report,
