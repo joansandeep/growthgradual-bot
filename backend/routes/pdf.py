@@ -918,38 +918,54 @@ def build_pdf(report: str, title: str, question: str, summary: str,
         y[0] -= n
 
     # ═══════════════════════════════════════════════════════════════════════════
-    # PAGE 1 — TITLE PAGE (light background)
+    # PAGE 1 — TITLE PAGE (navy textured cover, "Market Currents" style)
     # ═══════════════════════════════════════════════════════════════════════════
-    # White background
-    c.setFillColorRGB(1, 1, 1)
+    # Solid navy background, full bleed
+    c.setFillColorRGB(*NAVY)
     c.rect(0, 0, PAGE_W, PAGE_H, fill=1, stroke=0)
-    # Gold accent bar at top
+
+    # Subtle stipple texture — a sparse grid of faint dots to approximate the
+    # canvas/linen texture of the reference cover without needing an image
+    # asset. Kept very low-contrast so it reads as texture, not noise.
+    c.saveState()
+    c.setFillColorRGB(34/255, 39/255, 92/255)  # one shade lighter than NAVY
+    _tex_step = 9
+    for _tx in range(0, int(PAGE_W) + _tex_step, _tex_step):
+        for _ty in range(0, int(PAGE_H) + _tex_step, _tex_step):
+            # Skew every other row slightly so the grid doesn't read as
+            # perfectly mechanical — cheap approximation of woven texture.
+            _ox = (_tex_step / 2) if (_ty // _tex_step) % 2 else 0
+            c.circle(_tx + _ox, _ty, 0.5, fill=1, stroke=0)
+    c.restoreState()
+
+    # Gold accent bar at very top (thin, matches brand rule elsewhere)
     c.setFillColorRGB(*GOLD)
-    c.rect(0, PAGE_H - 8, PAGE_W, 8, fill=1, stroke=0)
-    # Thin navy rule under header area
-    c.setStrokeColorRGB(*NAVY); c.setLineWidth(1)
-    c.line(MARGIN, PAGE_H - 100, PAGE_W - MARGIN, PAGE_H - 100)
+    c.rect(0, PAGE_H - 6, PAGE_W, 6, fill=1, stroke=0)
 
-    # Logo — natural size on white background
-    logo_y = PAGE_H - 85
+    # Logo in a white card, top-left (source cover contains the logo inside
+    # a plain white box since the logo art itself expects a light background)
+    logo_card_w, logo_card_h = 150, 76
+    logo_card_x, logo_card_y = MARGIN, PAGE_H - 40 - logo_card_h
+    c.setFillColorRGB(*WHITE)
+    c.rect(logo_card_x, logo_card_y, logo_card_w, logo_card_h, fill=1, stroke=0)
     if logo_bytes:
-        if not _draw_logo(c, logo_bytes, MARGIN, logo_y, 150, 46):
-            c.setFillColorRGB(*NAVY); c.setFont("Helvetica-Bold", 16)
-            c.drawString(MARGIN, logo_y + 14, "Growth Gradual")
+        if not _draw_logo(c, logo_bytes, logo_card_x + 14, logo_card_y + 15, logo_card_w - 28, logo_card_h - 30):
+            c.setFillColorRGB(*NAVY); c.setFont("Helvetica-Bold", 14)
+            c.drawString(logo_card_x + 14, logo_card_y + logo_card_h / 2 - 5, "Growth Gradual")
     else:
-        c.setFillColorRGB(*NAVY); c.setFont("Helvetica-Bold", 16)
-        c.drawString(MARGIN, logo_y + 14, "Growth Gradual")
+        c.setFillColorRGB(*NAVY); c.setFont("Helvetica-Bold", 14)
+        c.drawString(logo_card_x + 14, logo_card_y + logo_card_h / 2 - 5, "Growth Gradual")
 
-    # Domain tag
-    tag_y = PAGE_H - 150
-    tag = f"Research Report  ·  {domain}"
-    tw = c.stringWidth(tag, "Helvetica-Bold", 8) + 20
-    c.setFillColorRGB(0.96, 0.91, 0.80)
-    c.roundRect(MARGIN, tag_y - 4, tw, 18, 3, fill=1, stroke=0)
-    c.setFillColorRGB(*GOLD); c.setFont("Helvetica-Bold", 8)
-    c.drawString(MARGIN + 10, tag_y + 2, tag.upper())
+    # Overline — small-caps gold label, letter-spaced
+    overline_y = logo_card_y - 46
+    overline = f"{domain.upper()} INTELLIGENCE"
+    c.setFillColorRGB(*GOLD); c.setFont("Helvetica-Bold", 9.5)
+    _ox = MARGIN
+    for _ch in overline:
+        c.drawString(_ox, overline_y, _ch)
+        _ox += c.stringWidth(_ch, "Helvetica-Bold", 9.5) + 1.6  # manual letter-spacing
 
-    # Report title — clean, single-line headline
+    # ── Title — serif, gold, wraps to fit; date line in white beneath it ──────
     raw_title = title or question
     raw_title = re.sub(r"^\*+\s*", "", raw_title.strip())
     m = re.match(r"^(.{0,80}?)(?:\*\*|:|\.\s|,\s*here are|,\s*based on)", raw_title, re.IGNORECASE)
@@ -961,19 +977,16 @@ def build_pdf(report: str, title: str, question: str, summary: str,
         r"^(?:latest|some of the latest)\b.{0,40}\b(news|trends|updates|data)\b",
         r"^the following\b",
         r"^below (?:is|are)\b",
-        r"^so,?\s",             # "So, you're looking for..."
-        r"^you(?:'re| are)\b",   # "You're looking for..."
-        r"^i(?:'ve| have| will| can)\b",  # "I've prepared..."
-        r"^let(?:'s| us)\b",    # "Let's look at..."
+        r"^so,?\s",
+        r"^you(?:'re| are)\b",
+        r"^i(?:'ve| have| will| can)\b",
+        r"^let(?:'s| us)\b",
         r"^looking for\b",
         r"^exploring\b",
         r"^understanding\b",
         r"^a (?:look|guide|deep dive|breakdown|comprehensive|detailed)\b",
         r"^an (?:analysis|overview|exploration|examination|in-depth)\b",
     )
-    # Full-sentence titles that don't start with one of the preamble phrases
-    # above but still read as a sentence, not a noun phrase — e.g. "...are as
-    # follows", or anything ending in a colon (always a sentence lead-in).
     _SENTENCE_PATTERNS = (
         r":\s*$",
         r"\bas\s+follows\s*$",
@@ -981,19 +994,16 @@ def build_pdf(report: str, title: str, question: str, summary: str,
     )
     if (any(re.match(p, raw_title.strip(), re.IGNORECASE) for p in _PREAMBLE_PATTERNS)
             or any(re.search(p, raw_title.strip(), re.IGNORECASE) for p in _SENTENCE_PATTERNS)):
-        # Try to extract a clean noun-phrase from the question itself
         q_clean = re.sub(r"(?i)^(tell me about|what are|what is|show me|give me|find me|list|compare|analyse|analyze|explain)\s+", "", question.strip())
         q_clean = q_clean.rstrip("?!").strip()
         raw_title = q_clean[:80] if len(q_clean) >= 8 else f"{domain} Briefing"
     report_title = _strip_inline(raw_title)
-    # Title rendering — shrink font first (24→16), then wrap to a second line
-    # if needed, so the full title is always visible (never truncated).
-    title_size = 24
-    while title_size > 16 and c.stringWidth(report_title, "Helvetica-Bold", title_size) > CW:
+
+    title_size = 27
+    while title_size > 18 and c.stringWidth(report_title, "Times-Bold", title_size) > CW:
         title_size -= 1
 
     def _wrap_title(text: str, font: str, size: float, max_w: float):
-        """Split *text* into at most two lines that each fit within *max_w*."""
         if c.stringWidth(text, font, size) <= max_w:
             return [text]
         words = text.split()
@@ -1004,128 +1014,41 @@ def build_pdf(report: str, title: str, question: str, summary: str,
                 line1.append(w)
             else:
                 line2.append(w)
-        # If line2 still overflows at this size, shrink one more step
         l2_text = " ".join(line2)
-        while size > 12 and c.stringWidth(l2_text, font, size) > max_w:
+        while size > 14 and c.stringWidth(l2_text, font, size) > max_w:
             size -= 1
         return [" ".join(line1), l2_text] if line2 else [" ".join(line1)]
 
-    title_lines = _wrap_title(report_title, "Helvetica-Bold", title_size, CW)
-
-    c.setFillColorRGB(*NAVY); c.setFont("Helvetica-Bold", title_size)
-    ty = tag_y - 36
-    line_gap = title_size + 4
+    title_lines = _wrap_title(report_title, "Times-Bold", title_size, CW)
+    ty = overline_y - 34
+    c.setFillColorRGB(*GOLD); c.setFont("Times-Bold", title_size)
     for tl in title_lines:
         c.drawString(MARGIN, ty, tl)
-        ty -= line_gap
-    # ty is now just below the last title line — adjust so gold rule spacing
-    # matches the original single-line layout (22pt gap after the title).
-    ty += line_gap - 22  # restore expected gap
+        ty -= title_size + 6
 
-    # Gold rule
-    ty -= 22
-    c.setStrokeColorRGB(*GOLD); c.setLineWidth(2)
-    c.line(MARGIN, ty, MARGIN + CW * 0.55, ty); ty -= 18
+    # Date subtitle line, in white, directly under the title (mirrors the
+    # reference cover's "June 2026" line under "India : Market Currents")
+    ty -= 4
+    c.setFillColorRGB(*WHITE); c.setFont("Helvetica", 15)
+    c.drawString(MARGIN, ty, date_str)
+    ty -= 30
 
-    # Summary block with subtle background
+    # ── Description paragraph — light grey/white body text ────────────────────
     if summary:
-        s_lines = _wrap(c, summary, "Helvetica", 11, CW - 30)
-        summary_h = len(s_lines[:6]) * 16 + 22
-        c.setFillColorRGB(0.97, 0.97, 1.0)
-        c.roundRect(MARGIN, ty - summary_h + 10, CW, summary_h, 4, fill=1, stroke=0)
-        c.setStrokeColorRGB(0.88, 0.90, 0.96)
-        c.roundRect(MARGIN, ty - summary_h + 10, CW, summary_h, 4, fill=0, stroke=1)
-        c.setFillColorRGB(*GOLD); c.rect(MARGIN, ty - summary_h + 10, 4, summary_h, fill=1, stroke=0)
-        c.setFillColorRGB(*BODY_TXT); c.setFont("Helvetica", 11)
-        ty_s = ty - 6
-        for ln in s_lines[:6]:
-            c.drawString(MARGIN + 14, ty_s, ln); ty_s -= 16
-        ty = ty_s - 14
+        c.setFillColorRGB(0.82, 0.85, 0.95); c.setFont("Helvetica", 10.5)
+        s_lines = _wrap(c, summary, "Helvetica", 10.5, CW)
+        for ln in s_lines[:5]:
+            c.drawString(MARGIN, ty, ln)
+            ty -= 15
+        ty -= 8
 
-    # ── Thin gold rule separator ──────────────────────────────────────────────
-    ty -= 16
-    c.setStrokeColorRGB(*GOLD); c.setLineWidth(0.8)
-    c.line(MARGIN, ty, MARGIN + CW * 0.40, ty)
-    ty -= 26
+    # Compact "about this report" line — small, unobtrusive, single row
+    c.setFillColorRGB(0.55, 0.60, 0.80); c.setFont("Helvetica", 7.5)
+    about_line = f"RESEARCH INTELLIGENCE   ·   GENERATED {date_str.upper()}   ·   GROWTH GRADUAL"
+    c.drawString(MARGIN, ty, about_line)
+    ty -= 22
 
-    # ── Two-column info panel ─────────────────────────────────────────────────
-    KS_ROW_H   = 14          # height per key-stat row (was 16 — tighter packing)
-    MAX_KS     = 8           # show at most 8 key stats
-    n_stats    = min(len(key_stats), MAX_KS)
-    # Panel must fit the header (14pt) + separator (4pt) + stat rows + 10pt pad
-    KS_INNER_H = 18 + n_stats * KS_ROW_H + 10   # dynamic
-    PANEL_H    = max(110, KS_INNER_H)            # never shorter than 110
-    COL2       = (CW - 14) / 2
-
-    # Left panel — navy background
-    c.setFillColorRGB(*NAVY)
-    c.roundRect(MARGIN, ty - PANEL_H, COL2, PANEL_H, 5, fill=1, stroke=0)
-    c.setFillColorRGB(*GOLD); c.setFont("Helvetica-Bold", 7.5)
-    c.drawString(MARGIN + 12, ty - 14, "ABOUT THIS REPORT")
-    c.setStrokeColorRGB(*GOLD); c.setLineWidth(0.8)
-    c.line(MARGIN + 12, ty - 18, MARGIN + COL2 - 12, ty - 18)
-    meta_items = [
-        ("DOMAIN",          domain),
-        ("GENERATED",       date_str),
-        ("CLASSIFICATION",  "Research Intelligence"),
-        ("PUBLISHER",       "Growth Gradual"),
-    ]
-    my = ty - 32
-    for lbl, val in meta_items:
-        c.setFillColorRGB(0.55, 0.62, 0.84); c.setFont("Helvetica", 6.5)
-        c.drawString(MARGIN + 12, my, lbl)
-        c.setFillColorRGB(*WHITE); c.setFont("Helvetica-Bold", 7.5)
-        c.drawString(MARGIN + 12 + 76, my, _safe_text(val)[:30])
-        my -= 16
-
-    # Right panel — light background
-    rx = MARGIN + COL2 + 14
-    c.setFillColorRGB(0.97, 0.97, 1.0)
-    c.roundRect(rx, ty - PANEL_H, COL2, PANEL_H, 5, fill=1, stroke=0)
-    c.setStrokeColorRGB(0.84, 0.87, 0.95)
-    c.roundRect(rx, ty - PANEL_H, COL2, PANEL_H, 5, fill=0, stroke=1)
-
-    if key_stats:
-        c.setFillColorRGB(*NAVY); c.setFont("Helvetica-Bold", 7.5)
-        c.drawString(rx + 12, ty - 14, "KEY METRICS")
-        c.setStrokeColorRGB(*GOLD); c.setLineWidth(0.8)
-        c.line(rx + 12, ty - 18, rx + COL2 - 12, ty - 18)
-        ky = ty - 32
-        for st in key_stats[:MAX_KS]:
-            val = _safe_text(fmt_inr(str(st.get("value", ""))))[:14]
-            lbl = _safe_text(st.get("label", ""))[:24]
-            chg = _safe_text(st.get("change", ""))
-            col_c = GREEN if chg.startswith("+") else (RED if chg.startswith("-") else GREY)
-            c.setFillColorRGB(*NAVY); c.setFont("Helvetica-Bold", 8)
-            c.drawString(rx + 12, ky, val)
-            c.setFillColorRGB(*GREY); c.setFont("Helvetica", 6.5)
-            vw = c.stringWidth(val, "Helvetica-Bold", 8)
-            c.drawString(rx + 12 + vw + 4, ky, lbl)
-            if chg:
-                c.setFillColorRGB(*col_c); c.setFont("Helvetica-Bold", 6.5)
-                c.drawRightString(rx + COL2 - 12, ky, chg)
-            ky -= KS_ROW_H
-    else:
-        c.setFillColorRGB(*NAVY); c.setFont("Helvetica-Bold", 7.5)
-        c.drawString(rx + 12, ty - 14, "INTELLIGENCE BRIEF")
-        c.setStrokeColorRGB(*GOLD); c.setLineWidth(0.8)
-        c.line(rx + 12, ty - 18, rx + COL2 - 12, ty - 18)
-        taglines = [
-            "AI-powered financial research",
-            "Curated from 60+ trusted sources",
-            "Real-time market intelligence",
-            "Institutional-grade analysis",
-        ]
-        tly = ty - 34
-        for tl in taglines:
-            c.setFillColorRGB(*GOLD); c.rect(rx + 12, tly + 1, 3, 7, fill=1, stroke=0)
-            c.setFillColorRGB(*BODY_TXT); c.setFont("Helvetica", 8)
-            c.drawString(rx + 20, tly, tl)
-            tly -= 16
-
-    ty -= PANEL_H + 20
-
-    # ── Table of contents ─────────────────────────────────────────────────────
+    # ── Table of contents — compact, restyled for the navy cover ──────────────
     section_headings = []
     for _tok in _tokenise(report):
         if _tok["type"] == "h2":
@@ -1133,51 +1056,59 @@ def build_pdf(report: str, title: str, question: str, summary: str,
         if len(section_headings) >= 6:
             break
 
-    bottom_strip_top = 68
-    available = ty - bottom_strip_top - 16
-    if available >= 70 and section_headings:
-        c.setFillColorRGB(*NAVY); c.setFont("Helvetica-Bold", 7.5)
+    STAT_ROW_H = 74   # reserved height for the bottom stat-card row
+    available = ty - STAT_ROW_H - 24
+    if available >= 60 and section_headings:
+        c.setFillColorRGB(*GOLD); c.setFont("Helvetica-Bold", 7.5)
         c.drawString(MARGIN, ty, "CONTENTS")
         lw = c.stringWidth("CONTENTS", "Helvetica-Bold", 7.5)
-        c.setStrokeColorRGB(*GOLD); c.setLineWidth(1)
+        c.setStrokeColorRGB(*GOLD); c.setLineWidth(0.8)
         c.line(MARGIN, ty - 4, MARGIN + lw, ty - 4)
 
-        toc_y  = ty - 18
+        toc_y = ty - 18
         col_w2 = (CW - 12) / 2
         col_idx = 0
         for i, heading in enumerate(section_headings):
-            if toc_y < bottom_strip_top + 16:
+            if toc_y < ty - available:
                 break
             tx = MARGIN + col_idx * (col_w2 + 12)
-            c.setFillColorRGB(*NAVY)
+            c.setFillColorRGB(*GOLD)
             c.roundRect(tx, toc_y - 2, 14, 12, 2, fill=1, stroke=0)
-            c.setFillColorRGB(*GOLD); c.setFont("Helvetica-Bold", 7)
+            c.setFillColorRGB(*NAVY); c.setFont("Helvetica-Bold", 7)
             c.drawCentredString(tx + 7, toc_y + 1, str(i + 1))
-            c.setFillColorRGB(*BODY_TXT); c.setFont("Helvetica", 8)
+            c.setFillColorRGB(0.85, 0.87, 0.97); c.setFont("Helvetica", 8)
             c.drawString(tx + 18, toc_y, heading[:40])
-            name_w = c.stringWidth(heading[:40], "Helvetica", 8)
-            dot_x  = tx + 18 + name_w + 4
-            dot_end = tx + col_w2 - 4
-            c.setStrokeColorRGB(0.82, 0.85, 0.92); c.setLineWidth(0.4)
-            c.setDash(1, 3)
-            c.line(dot_x, toc_y + 4, dot_end, toc_y + 4)
-            c.setDash()
             col_idx += 1
             if col_idx >= 2:
                 col_idx = 0
                 toc_y -= 16
         ty = toc_y - 10
 
-    # ── Thin rule above footer ────────────────────────────────────────────────
-    c.setStrokeColorRGB(0.82, 0.86, 0.94); c.setLineWidth(0.5)
-    c.line(MARGIN, bottom_strip_top + 2, PAGE_W - MARGIN, bottom_strip_top + 2)
-
-    # ── Bottom footer strip ───────────────────────────────────────────────────
-    c.setFillColorRGB(*NAVY)
-    c.rect(0, 0, PAGE_W, bottom_strip_top, fill=1, stroke=0)
-    c.setStrokeColorRGB(*GOLD); c.setLineWidth(1.2)
-    c.line(0, bottom_strip_top, PAGE_W, bottom_strip_top)
-    c.setFillColorRGB(*GOLD); c.setFont("Helvetica-Bold", 7)
+    # ── Bottom stat-card row — colour-coded KPI cards (mirrors the reference
+    #    cover's NIFTY/SENSEX/sector stat blocks at the foot of the page) ──────
+    if key_stats:
+        n_cards = min(len(key_stats), 4)
+        card_gap = 18
+        card_w = (CW - card_gap * (n_cards - 1)) / n_cards
+        card_y = 34
+        for i in range(n_cards):
+            st = key_stats[i]
+            val = _safe_text(fmt_inr(str(st.get("value", ""))))[:14]
+            lbl = _safe_text(st.get("label", ""))[:26]
+            chg = _safe_text(st.get("change", ""))
+            col_c = GREEN if chg.startswith("+") or val.startswith("+") else (RED if chg.startswith("-") or val.startswith("-") else WHITE)
+            cx = MARGIN + i * (card_w + card_gap)
+            c.setFillColorRGB(*col_c); c.setFont("Helvetica-Bold", 17)
+            c.drawString(cx, card_y + 26, val)
+            c.setFillColorRGB(0.7, 0.74, 0.9); c.setFont("Helvetica-Bold", 7.5)
+            lbl_lines = _wrap(c, lbl.upper(), "Helvetica-Bold", 7.5, card_w)
+            lyy = card_y + 12
+            for ll in lbl_lines[:2]:
+                c.drawString(cx, lyy, ll)
+                lyy -= 10
+            if chg and chg != val:
+                c.setFillColorRGB(*col_c); c.setFont("Helvetica-Bold", 7.5)
+                c.drawString(cx, lyy, chg)
     c.setFillColorRGB(0.60, 0.65, 0.85); c.setFont("Helvetica", 6.5)
     c.setFillColorRGB(*WHITE); c.setFont("Helvetica-Bold", 9)
     c.drawRightString(PAGE_W - MARGIN, 44, "growth-gradual.com")
@@ -1362,20 +1293,45 @@ def build_pdf(report: str, title: str, question: str, summary: str,
         if tp == "h2":
             section_idx[0] += 1
             text = _strip_inline(tok["text"])
+            # Strip any leading "N. " the LLM already put in the heading text
+            # itself, since we render our own "SECTION 0N" overline instead —
+            # avoids a duplicated/mismatched number ("SECTION 02" over "2. Title").
+            text_display = re.sub(r"^\d+\.\s*", "", text)
             current_section[0] = text
-            # 10(gap above) + 28(banner) + 34(nl after) + 40(min content below) = 112
-            need(112, text)
-            nl(14)   # visible gap before section banner
+            # 22(overline+gap) + up to 2 title lines + 10(rule) + 14(gap) + 30(min content) = ~110
+            need(110, text)
+            nl(20)   # visible gap before section heading block
             col = accent()
-            # Full-width section banner
-            c.setFillColorRGB(*NAVY)
-            c.rect(MARGIN, y[0] - 8, CW, 28, fill=1, stroke=0)
-            # Left accent bar in section colour
-            c.setFillColorRGB(*col)
-            c.rect(MARGIN, y[0] - 8, 5, 28, fill=1, stroke=0)
-            c.setFillColorRGB(*WHITE); c.setFont("Helvetica-Bold", 12)
-            c.drawString(MARGIN + 14, y[0] + 6, text[:80])
-            nl(38); continue   # extra gap after banner before content starts
+            # Gold "SECTION 0N" overline, letter-spaced small caps
+            ov = f"SECTION {section_idx[0]:02d}"
+            c.setFillColorRGB(*GOLD); c.setFont("Helvetica-Bold", 8.5)
+            _ox = MARGIN
+            for _ch in ov:
+                c.drawString(_ox, y[0], _ch)
+                _ox += c.stringWidth(_ch, "Helvetica-Bold", 8.5) + 1.4
+            nl(20)
+            # Serif navy title, wraps to 2 lines if needed
+            title_font_sz = 16
+            while title_font_sz > 11 and c.stringWidth(text_display, "Times-Bold", title_font_sz) > CW:
+                title_font_sz -= 1
+            title_words = text_display.split()
+            t_line1, t_line2 = [], []
+            for w in title_words:
+                test = " ".join(t_line1 + [w])
+                if c.stringWidth(test, "Times-Bold", title_font_sz) <= CW:
+                    t_line1.append(w)
+                else:
+                    t_line2.append(w)
+            c.setFillColorRGB(*NAVY); c.setFont("Times-Bold", title_font_sz)
+            c.drawString(MARGIN, y[0], " ".join(t_line1)[:90])
+            if t_line2:
+                nl(title_font_sz + 4)
+                c.drawString(MARGIN, y[0], " ".join(t_line2)[:90])
+            nl(12)
+            # Thin gold rule under the title, in the section's accent colour
+            c.setStrokeColorRGB(*col); c.setLineWidth(1.4)
+            c.line(MARGIN, y[0], MARGIN + CW, y[0])
+            nl(20); continue
 
         # ── H3 — sub-section ─────────────────────────────────────────────────
         if tp == "h3":

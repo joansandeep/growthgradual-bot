@@ -32,7 +32,15 @@ _OKF_BUCKET = "paperly-uploads"
 _OKF_PREFIX = "paperly-okf"
 
 
-async def _fetch_okf_context(session_id: str, max_chars: int = 12000) -> str:
+def _normalize_filename(s: str) -> str:
+    """Lowercase + strip punctuation/whitespace for fuzzy filename matching
+    between OKF frontmatter titles and the raw filenames sent by the client
+    (which may differ slightly in spacing/quoting)."""
+    return re.sub(r"[^a-z0-9]+", "", s.lower())
+
+
+async def _fetch_okf_context(session_id: str, max_chars: int = 12000,
+                              current_filenames: set[str] | None = None) -> str:
     """Fetch OKF concept files for a session from Supabase Storage and return
     them as a single structured context block for the report LLM prompt.
 
@@ -41,11 +49,27 @@ async def _fetch_okf_context(session_id: str, max_chars: int = 12000) -> str:
     This gives the LLM a structured, typed view of each uploaded file —
     much more grounded than raw FAISS chunk text.
 
+    current_filenames: if provided and non-empty, ONLY documents whose OKF
+    title matches one of these (normalized, fuzzy substring match) are
+    included. This matters because session_id is a long-lived client-side ID
+    that can persist across many separate, unrelated file uploads over days —
+    without this filter, a document uploaded in an earlier, unrelated session
+    (e.g. a fund factsheet) keeps silently riding along into every later
+    report for that same browser session (e.g. one about a completely
+    different company), showing up as a spurious extra "source" and giving
+    the model irrelevant context to potentially blend in. If current_filenames
+    is empty (no file freshly attached this turn — e.g. a pure RAG follow-up
+    question), no filtering is applied and the full session context is used,
+    since there's no signal to scope by and that's the existing intended
+    behaviour for follow-up questions about previously uploaded documents.
+
     Returns an empty string if Supabase isn't configured or no OKF bundle
     exists for this session — the existing RAG/file-context path still runs.
     """
     if not _SB_URL or not _SB_KEY or not session_id:
         return ""
+
+    norm_current = {_normalize_filename(n) for n in (current_filenames or set())}
 
     headers = {"apikey": _SB_KEY, "Authorization": f"Bearer {_SB_KEY}"}
     prefix = f"{_OKF_PREFIX}/{session_id}"
@@ -88,6 +112,13 @@ async def _fetch_okf_context(session_id: str, max_chars: int = 12000) -> str:
                 # Extract title from frontmatter for labelling
                 title_match = re.search(r'^title:\s*"?([^"\n]+)"?', md, re.MULTILINE)
                 doc_title = title_match.group(1).strip() if title_match else name.replace(".md", "")
+
+                if norm_current:
+                    norm_title = _normalize_filename(doc_title)
+                    # Fuzzy substring match either direction — OKF titles and
+                    # client filenames can differ slightly in truncation/slugging.
+                    if not any(nc in norm_title or norm_title in nc for nc in norm_current):
+                        continue  # stale document from an earlier, unrelated upload — skip it
 
                 chunk = f"### Source: {doc_title}\n\n{body}"
                 remaining = max_chars - total
@@ -335,6 +366,16 @@ GLOBAL RULES:
   sources as written, omit that claim entirely rather than approximating it. Before closing the
   report, mentally re-scan every figure you wrote and confirm each one matches a source value
   exactly — this matters more than hitting the word-count target.
+- NO BACKGROUND-KNOWLEDGE FILL-IN: if the subject is a real, named company/fund/entity you recognise,
+  you may already "know" plausible-sounding figures for it from training — DO NOT use those. This
+  applies especially to multi-year tables (e.g. a 5-year income statement) where only one or two years'
+  numbers were actually extracted (from text or vision) and the rest of the row would otherwise need to
+  be your own estimate of "what those numbers probably were." A table with genuinely fewer rows/columns
+  of real data is correct; a complete-looking table padded with your own guess of what a real company's
+  historicals likely were is a fabrication, even if the guessed numbers are individually reasonable and
+  self-consistent. If a year/column's source value was not actually extracted, state "data not available
+  from sources" for that cell/row or omit it — never reconstruct it from what you already know about the
+  company.
 - NEVER invent any number, date, name, or statistic
 - NUMERIC CONSISTENCY: when the same metric appears in more than one place (a chart, a table, keyStats, and/or the prose), it MUST use the exact same figure and precision everywhere — e.g. if a source gives 6.6%, write "6.6" in the chart, the table, and the text; never round it to "7" in one spot and "6.6" in another. Copy the figure once from the source, then reuse that exact string everywhere it recurs.
 - TABLE HYGIENE: every column must have real values for EVERY row. If a column would
@@ -1228,6 +1269,20 @@ async def extract_data_from_images(question: str, file_images: list[dict]) -> st
                 if res.status_code == 429:
                     mark_rate_limited(key, 60_000)
                     break
+                if res.status_code == 403:
+                    # Key is invalid/revoked/out of quota entirely (not just
+                    # rate-limited) — this previously fell through to the
+                    # generic "continue" below, which just tried the SAME
+                    # dead key against the next model, guaranteeing 3 more
+                    # wasted 403s before moving on, and never actually
+                    # recorded the failure — so the very next call started
+                    # fresh with this same dead key again. Ban it for the
+                    # rest of this process's lifetime (matches the 24h ban
+                    # already used elsewhere for 403s) and move to the next
+                    # key immediately instead of burning through all models.
+                    mark_rate_limited(key, 24 * 60 * 60_000)
+                    log.warning("extract_data_from_images: key=...%s got 403 — banned for 24h", key[-4:])
+                    break
                 if res.status_code == 503:
                     continue
                 if not res.is_success:
@@ -1442,7 +1497,12 @@ async def generate_report(request: Request):
     okf_context = ""
     if session_id and has_file_data:
         try:
-            okf_context = await _fetch_okf_context(session_id)
+            # [File: name] markers in file_context come from files actually
+            # attached THIS turn (see buildFilePayload on the frontend) — use
+            # them to scope OKF context to the current request rather than
+            # every document ever uploaded under this (long-lived) session id.
+            current_filenames = set(re.findall(r"\[File:\s*([^\]]+?)\]", file_context))
+            okf_context = await _fetch_okf_context(session_id, current_filenames=current_filenames)
             if okf_context:
                 log.info("Report: injecting OKF structured context (%d chars) for session %s",
                          len(okf_context), session_id[:8])
@@ -1453,6 +1513,22 @@ async def generate_report(request: Request):
     file_section = ""
     if extracted_image_context:
         file_section += f"\n\n━━ DATA EXTRACTED FROM UPLOADED FILE IMAGES ━━\n{extracted_image_context[:8000]}\n━━ END FILE IMAGE DATA ━━\n"
+    elif file_images:
+        # Vision extraction was attempted (file_images is non-empty) but came
+        # back with nothing usable — i.e. any tables/charts that exist ONLY
+        # as images in the source (not as selectable text) were NOT read.
+        # Without this explicit signal, a gap here can otherwise get quietly
+        # filled with the model's own background knowledge of the subject —
+        # see the NO BACKGROUND-KNOWLEDGE FILL-IN rule above.
+        file_section += (
+            "\n\n━━ NOTE: IMAGE-BASED DATA UNAVAILABLE ━━\n"
+            "The uploaded file's page images could not be analysed this time (vision extraction "
+            "failed). Any tables/charts/figures that exist ONLY as pictures in the source (not as "
+            "selectable text below or in the structured context) are NOT available for this report. "
+            "Do not reconstruct or estimate their contents — omit that specific table/data point or "
+            "state it is not available from sources.\n"
+            "━━ END NOTE ━━\n"
+        )
     if okf_context:
         file_section += f"\n\n━━ STRUCTURED SOURCE DOCUMENTS (OKF) ━━\nEach block below is one uploaded file, structured as an Open Knowledge Format concept.\nUse these as your PRIMARY source — they are typed, titled, and extracted from the actual files the user uploaded.\n\n{okf_context}\n━━ END OKF SOURCES ━━\n"
     if file_context.strip():
