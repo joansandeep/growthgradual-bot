@@ -298,34 +298,10 @@ BAD chart examples — NEVER do this:
   ✗ [CHART_n] in report without matching charts[n-1] entry
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-IMAGE RULES — the user prompt below the sources includes a CANDIDATE IMAGES list,
-each with a 1-based index, the source domain it came from, and a short description
-(the description is sometimes thin or missing — use the domain + topic context too).
-Use them to make the report visual, not just chart-heavy:
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-  ✓ Pick 2-4 of the candidates that are genuinely relevant and illustrative — a company's
-    building/branch/product/leadership photo, a relevant chart screenshot from a source, a
-    sector/market photo, etc.
-  ✓ A thin or missing description is NOT automatic grounds for rejection — judge primarily
-    by whether the source domain is plausibly about the report's topic (e.g. a stock-data
-    or market-news domain image for a markets report is usually fine to include even with
-    a sparse description). Reserve rejection for candidates that are clearly off-topic or
-    clearly decorative/structural, not merely under-described.
-  ✗ SKIP any candidate that is obviously a logo, icon, banner ad, social-media share icon,
-    avatar, or generic stock photo unrelated to the topic — the description or domain
-    usually gives this away (e.g. "logo", "icon", a person's name with no topical connection).
-  ✗ NEVER invent an image URL. You may ONLY reference an image by its candidateIndex exactly
-    as given in the candidate list — never type out or alter a URL yourself.
-  ✗ Returning "images": [] is only correct when EVERY candidate is genuinely junk/off-topic —
-    not as a default when you're merely uncertain. For most market/finance/company reports
-    with ≥3 candidates, at least 1-2 should be usable; treat 0 as the rare exception, not
-    the safe default.
-  → Output shape: "images": [{ "candidateIndex": <int from the candidate list>, "caption": "<short caption, max 14 words, e.g. 'HDFC Bank's corporate headquarters in Mumbai'>" }]
-  → Place [WEB_IMG_n] inline in the report markdown the same way as [CHART_n] — images[0] = [WEB_IMG_1],
-    images[1] = [WEB_IMG_2], etc. — right after the paragraph it illustrates. Don't cluster all
-    images together at the top; spread them across the sections they're actually relevant to.
-
+IMAGE RULES — this report is charts/graphs/tables only. Do NOT reference, request,
+or place any stock/decorative photos. Never emit a [WEB_IMG_n] marker and never
+return an "images" array — visual content in this report comes exclusively from
+[CHART_n] (and [FILE_IMG_n] where applicable), not from web-sourced photography.
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 REPORT STRUCTURE (each section MUST be substantive — this is a LONG-FORM report, ~10-12 pages
 once charts/tables/images are laid in. Minimum word counts below are FLOORS, not targets —
@@ -335,7 +311,7 @@ write as much genuinely substantive analysis as the sources support):
 # [Report Title]
 
 ## 1. Introduction
-3-4 paragraphs (minimum 200 words): Provide rich context — explain the sector/topic, why it matters now, who the key stakeholders are, what macro or market forces are driving interest, the history/background that led here, and what this report covers. Write in plain prose. No filler, every sentence must add context or data. If a relevant image candidate exists, place [WEB_IMG_n] near the end of this section.
+3-4 paragraphs (minimum 200 words): Provide rich context — explain the sector/topic, why it matters now, who the key stakeholders are, what macro or market forces are driving interest, the history/background that led here, and what this report covers. Write in plain prose. No filler, every sentence must add context or data.
 Then add a **"What This Report Covers"** bullet list (4-6 short items, one per line, starting with "-") summarising the key questions this report answers — e.g. "- Which sectors led/lagged and by how much", "- Key macro drivers behind outperformers". This gives the reader a quick scannable preview.
 
 ## 2. Methodology
@@ -1478,7 +1454,7 @@ async def generate_report(request: Request):
             # market context, comparisons, recent news) — supplement with web data.
             log.info("Report: file-first mode — supplementing with web search")
             search_query = _build_followup_search_query(question, conversation_context)
-            searched = await _tavily_search(search_query, max_results=20, min_results=10, images_out=image_candidates_raw)
+            searched = await _tavily_search(search_query, max_results=20, min_results=10)
             sources = [
                 {"title": r["title"], "url": r["url"],
                  "snippet": r["snippet"], "fullContent": r.get("fullContent", "")}
@@ -1496,7 +1472,7 @@ async def generate_report(request: Request):
         if search_query != question:
             log.info("Report: search query enriched with prior context (%d → %d chars)",
                       len(question), len(search_query))
-        searched = await _tavily_search(search_query, max_results=20, images_out=image_candidates_raw)
+        searched = await _tavily_search(search_query, max_results=20)
         sources = [
             {"title": r["title"], "url": r["url"],
              "snippet": r["snippet"], "fullContent": r.get("fullContent", "")}
@@ -1618,10 +1594,14 @@ async def generate_report(request: Request):
     # Curate the images Tavily found during the search(es) above into a
     # numbered candidate list the model can pick from (never URLs it invents
     # itself — see _validate_image_selections below).
-    image_candidates = _filter_image_candidates(image_candidates_raw)
-    image_candidates_block = _build_image_candidates_block(image_candidates)
-    if image_candidates:
-        log.info("Report: %d image candidates available for selection", len(image_candidates))
+    # Web-image embedding (stock/decorative photos from Tavily image search) is
+    # disabled — the report should only carry charts, graphs and tables, never
+    # unrelated stock photography. Forcing this to an empty list makes every
+    # downstream helper (_force_fallback_images, _top_up_images,
+    # _inject_fallback_image_placeholders) a no-op, since they all short-circuit
+    # when image_candidates/images is empty.
+    image_candidates: list[dict] = []
+    image_candidates_block = ""
 
     user_prompt = (
         f"Research Question / Topic (this — and ONLY this — defines the report's title and subject): {question}\n"
@@ -1635,7 +1615,7 @@ async def generate_report(request: Request):
         "2. Use web sources to supplement and validate the file data.\n"
         "3. Follow CHART RULES exactly — reproduce actual data from the file as charts where it exists.\n"
         "4. Write the full 6-section, long-form report (target 2800-3500 words (MINIMUM 18000 characters — shorter responses will be rejected and retried)). Insert [CHART_n] inline where valid chart data exists.\n"
-        "5. Follow IMAGE RULES — select 2-4 genuinely relevant candidates by index and insert [WEB_IMG_n] inline.\n"
+        "5. Do NOT insert any [WEB_IMG_n] markers and do not return an \"images\" array — this report uses charts/graphs/tables only, never stock or decorative photos.\n"
         + ("6. Insert [FILE_IMG_n] references inline where you reference data visible in that extracted image/chart.\n" if embedded_file_images else "")
         + "7. Respond ONLY with the JSON object — no markdown fences, no text outside JSON."
     )
