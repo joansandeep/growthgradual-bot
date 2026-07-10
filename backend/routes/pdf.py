@@ -294,7 +294,7 @@ def _flatten_to_rgb(pil_img):
 
 def detect_domain(question: str) -> str:
     q = question.lower()
-    if re.search(r"\b(stock|share|nse|bse|sensex|nifty|sebi|ipo|equity|mutual fund|etf|trading|portfolio|invest)\b", q):
+    if re.search(r"\b(stock|share|market|nse|bse|sensex|nifty|sebi|ipo|equity|mutual fund|etf|trading|portfolio|invest)\b", q):
         return "Markets & Equities"
     if re.search(r"\b(crypto|bitcoin|ethereum|blockchain|defi|web3|token)\b", q):
         return "Crypto & Blockchain"
@@ -312,12 +312,19 @@ def detect_domain(question: str) -> str:
         return "Energy & Climate"
     if re.search(r"\b(real estate|property|realty|reit|land|housing|construction)\b", q):
         return "Real Estate"
-    return "Research Intelligence"
+    # Generic fallback — deliberately NOT "Research Intelligence": the cover
+    # page builds its overline as f"{domain.upper()} INTELLIGENCE", so a
+    # domain that already ends in "Intelligence" doubles up into the
+    # "RESEARCH INTELLIGENCE INTELLIGENCE" label bug.
+    return "Research"
 
 
 # ─── Safe text — strip chars Helvetica can't render ──────────────────────────
 def _safe_text(text: str) -> str:
-    """Replace characters that Helvetica can't render (shows as ■ tofu)."""
+    """Replace characters that Helvetica can't render (shows as ■ tofu).
+    En/em dashes are NOT replaced — reportlab's base14 Helvetica renders them
+    fine via WinAnsiEncoding, and replacing \u2014 with a literal "--" was
+    producing an ugly double-hyphen artifact in generated titles/headings."""
     return (text
         .replace("₹", "Rs.")
         .replace("\u20b9", "Rs.")
@@ -325,8 +332,6 @@ def _safe_text(text: str) -> str:
         .replace("\u2018", "'")
         .replace("\u201c", '"')
         .replace("\u201d", '"')
-        .replace("\u2013", "-")
-        .replace("\u2014", "--")
         .replace("\u2026", "...")
     )
 
@@ -1039,7 +1044,8 @@ def build_pdf(report: str, title: str, question: str, summary: str,
 
     # Overline — small-caps gold label, letter-spaced
     overline_y = logo_card_y - 46
-    overline = f"{domain.upper()} INTELLIGENCE"
+    _domain_up = domain.upper()
+    overline = _domain_up if _domain_up.endswith("INTELLIGENCE") else f"{_domain_up} INTELLIGENCE"
     c.setFillColorRGB(*GOLD); c.setFont("Helvetica-Bold", 9.5)
     _ox = MARGIN
     for _ch in overline:

@@ -122,6 +122,47 @@ def _dw_type(spec: dict) -> str:
     return "d3-bars"
 
 
+def _format_table_cell(raw_value, column_header: str):
+    """Datawrapper's Tables chart type auto-detects "number-looking" columns
+    and applies its OWN default number format — which, left unset, rounds to
+    whole numbers and drops the +/- sign. That's exactly why a genuine
+    "-2.12%" or "+26.04%" value was showing up as a bare "-2" / "26" in
+    published reports even though the source data had full precision.
+    Fix: turn any raw numeric cell in a %/points/price-flavoured column into
+    an already-formatted STRING (sign + fixed decimals + unit suffix) here,
+    before it ever reaches Datawrapper, so there is no ambiguous number left
+    for Datawrapper to reformat — a pre-formatted string just gets printed
+    verbatim as text. Cells that already arrived as formatted strings (the
+    model wrote "-2.12%" directly) are left untouched.
+    """
+    if raw_value is None:
+        return ""
+    if isinstance(raw_value, str):
+        return raw_value  # already text — trust the model's own formatting
+    if not isinstance(raw_value, (int, float)):
+        return raw_value
+
+    header_low = (column_header or "").lower()
+    is_pct = "%" in header_low or "percent" in header_low
+    # "Change"/"delta"-style columns (points, ₹, etc.) read better with an
+    # explicit +/- sign even when not a percentage.
+    is_signed_delta = any(w in header_low for w in ("change", "delta", "chg", "mom", "yoy", "qoq"))
+
+    if is_pct:
+        return f"{raw_value:+.2f}%"
+    if is_signed_delta:
+        # Preserve decimals if the source actually had them (e.g. 14.68 →
+        # "+14.68"), otherwise keep it a clean signed integer (e.g. -1,677).
+        if float(raw_value).is_integer():
+            return f"{raw_value:+,.0f}"
+        return f"{raw_value:+,.2f}"
+    # Non-delta numeric column (closing level, price) — just keep full
+    # precision with thousands separators, no forced rounding to 0 decimals.
+    if float(raw_value).is_integer():
+        return f"{raw_value:,.0f}"
+    return f"{raw_value:,.2f}"
+
+
 def _spec_to_csv(spec: dict) -> str:
     """Build the CSV Datawrapper expects from our chart-spec shape."""
     chart_type = spec.get("type", "bar")
@@ -134,7 +175,11 @@ def _spec_to_csv(spec: dict) -> str:
         rows = spec.get("rows") or []
         writer.writerow(columns)
         for row in rows:
-            writer.writerow(row)
+            formatted_row = [
+                _format_table_cell(cell, columns[ci] if ci < len(columns) else "")
+                for ci, cell in enumerate(row)
+            ]
+            writer.writerow(formatted_row)
         return buf.getvalue()
 
     series = spec.get("series") or []

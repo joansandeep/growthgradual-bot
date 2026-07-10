@@ -514,6 +514,21 @@ _JUNK_IMAGE_HINTS = (
     ".svg",
 )
 
+# Generic queries (e.g. "Latest market news") give Tavily's image search very
+# little to anchor on, and it has been observed to return completely
+# off-topic entertainment images — actor headshots, movie posters, DVD
+# covers — that happen to rank well for the word "news" or similar. These
+# are checked against the candidate's own DESCRIPTION (not the article text),
+# so this is cheap and catches the failure mode without needing real topical
+# NLP. A finance/markets report should never carry a Batman DVD cover.
+_OFFTOPIC_IMAGE_HINTS = (
+    "movie", "film", " actor", "actress", "dvd", "blu-ray", "poster", "trailer",
+    "tv series", "tv show", "television series", "celebrity", "hollywood",
+    "starring", "red carpet", "album cover", "music video", "film franchise",
+    "superhero", "batman", "superman", "marvel", "dc comics", "riddler", "joker",
+    "animated movie", "movie poster",
+)
+
 
 def _filter_image_candidates(raw_images: list[dict], limit: int = 10) -> list[dict]:
     """Dedupe by URL and drop obvious logos/icons/tracking pixels before these
@@ -529,6 +544,9 @@ def _filter_image_candidates(raw_images: list[dict], limit: int = 10) -> list[di
             continue
         low = url.lower()
         if any(hint in low for hint in _JUNK_IMAGE_HINTS):
+            continue
+        desc_low = (img.get("description") or "").lower()
+        if any(hint in desc_low for hint in _OFFTOPIC_IMAGE_HINTS):
             continue
         seen.add(url)
         try:
@@ -715,7 +733,13 @@ def _remap_web_image_placeholders(report_text: str, valid_mask: list[bool]) -> s
 def _strip_citation_markers(text: str) -> str:
     if not text:
         return text
-    return _CITATION_MARKER_RE.sub("", text)
+    text = _CITATION_MARKER_RE.sub("", text)
+    # Same "--" → em dash normalization as the title (see _sanitize_title) —
+    # applied at report-body level too since this function is the one choke
+    # point every parse/salvage/repair path already runs the final report
+    # text through.
+    text = re.sub(r"(?<=\S)\s--\s(?=\S)", " — ", text)
+    return text
 
 
 _TITLE_PREAMBLE_RE = re.compile(
@@ -747,6 +771,10 @@ def _sanitize_title(title: str, question: str) -> str:
     if not title:
         title = question
     title = title.strip().rstrip(".")
+    # Models frequently type "--" as a stand-in for an em dash (e.g. "Overview
+    # -- July 2026"). Normalize to a real em dash so it doesn't read as a
+    # typo on the cover page.
+    title = re.sub(r"\s+--\s+", " — ", title)
     if _TITLE_PREAMBLE_RE.match(title) or _TITLE_SENTENCE_RE.search(title):
         # Extract noun-phrase from question
         q = re.sub(r"(?i)^(tell me about|what are|what is|show me|give me|find me|list the|compare|analyse|analyze|explain|explore|summarize|summarise)\s+", "", question.strip())
