@@ -30,6 +30,13 @@ interface Message {
 }
 interface Conversation {
   id: string; title: string; messages: Message[]; ts: number;
+  // The RAG/OKF session id used for files uploaded in this conversation.
+  // Scoping this per-conversation (rather than one global browser-wide id)
+  // means switching to a new chat starts with a clean file/knowledge base —
+  // old uploads from unrelated past conversations never silently leak into
+  // a new report. Optional because conversations saved before this field
+  // existed won't have it (see loadConversation's fallback).
+  ragSessionId?: string;
 }
 
 function uid() { return Math.random().toString(36).slice(2, 10); }
@@ -86,6 +93,21 @@ function getOrCreateSessionId(): string {
     _inMemorySessionId = crypto.randomUUID();
   }
   return _inMemorySessionId;
+}
+
+/** Generate a fresh id for scoping a single conversation's RAG index + OKF
+ *  file store. Unlike getOrCreateSessionId() (one permanent id per browser,
+ *  forever), this is meant to be regenerated every time a new chat starts,
+ *  so files uploaded in one conversation never bleed into a later, unrelated
+ *  one under the same browser/localStorage. */
+function newConversationSessionId(): string {
+  try {
+    return crypto.randomUUID();
+  } catch {
+    // Extremely old browsers without crypto.randomUUID — fall back to the
+    // same scheme used for message/file ids elsewhere in this file.
+    return `${Math.random().toString(36).slice(2, 10)}${Math.random().toString(36).slice(2, 10)}`;
+  }
 }
 function loadConversations(): Conversation[] {
   if (typeof window === 'undefined') return [];
@@ -908,21 +930,9 @@ const ACCEPTED_TYPES = [
   'application/pdf',
   'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
   'application/msword',
-  'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', // .xlsx
-  'application/vnd.ms-excel', // .xls
   'text/plain', 'text/csv', 'text/markdown',
   'image/jpeg', 'image/png', 'image/webp', 'image/gif',
 ];
-// Browsers are inconsistent about the MIME type they report for .xlsx/.xls
-// (some send 'application/octet-stream' or ''), so spreadsheet files are
-// also recognised by extension as a fallback — see isSpreadsheetFile below.
-function isSpreadsheetFile(f: { name: string; type: string }): boolean {
-  return (
-    f.type === 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' ||
-    f.type === 'application/vnd.ms-excel' ||
-    /\.(xlsx|xls)$/i.test(f.name)
-  );
-}
 const MAX_ATTACH = 10;
 function fmtSize(b: number) {
   if (b < 1024) return `${b}B`;
@@ -972,60 +982,15 @@ async function extractPdfText(file: File): Promise<string> {
   }
 }
 
-/** Parses an uploaded .xlsx/.xls workbook into plain text: one block per
- *  sheet, each row rendered as CSV. This is what feeds `extractedText`,
- *  which in turn becomes the report generator's PRIMARY SOURCE file content
- *  (see buildFilePayload / fileContext on the backend) — so multi-sheet
- *  data like fund/scheme performance tables survives intact rather than
- *  being dropped because the file wasn't a PDF or plain text.
- *  Fully blank rows are skipped; very large workbooks are capped per-sheet
- *  and in total so a single upload can't blow out the prompt budget. */
-async function extractXlsxText(file: File): Promise<string> {
-  try {
-    const XLSX = await import('xlsx');
-    const dataUrl = await readAsDataURL(file);
-    const base64  = dataUrl.split(',')[1];
-    const binary  = atob(base64);
-    const bytes   = new Uint8Array(binary.length);
-    for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
-    const wb = XLSX.read(bytes, { type: 'array' });
-
-    const MAX_SHEETS = 40;
-    const MAX_ROWS_PER_SHEET = 400;
-    const MAX_TOTAL_CHARS = 150_000; // generous — Gemini's context handles this easily;
-                                      // the Groq path auto-skips to Gemini for large prompts
-
-    const parts: string[] = [];
-    let totalChars = 0;
-    for (const sheetName of wb.SheetNames.slice(0, MAX_SHEETS)) {
-      if (totalChars >= MAX_TOTAL_CHARS) break;
-      const ws = wb.Sheets[sheetName];
-      const csv = XLSX.utils.sheet_to_csv(ws, { blankrows: false });
-      const rows = csv.split('\n').filter(r => r.trim().length > 0).slice(0, MAX_ROWS_PER_SHEET);
-      if (!rows.length) continue;
-      const block = `[Sheet: ${sheetName}]\n${rows.join('\n')}`;
-      totalChars += block.length;
-      parts.push(block);
-    }
-    return parts.join('\n\n').slice(0, MAX_TOTAL_CHARS);
-  } catch (e) {
-    console.warn('[processFile] xlsx extraction failed:', e);
-    return '';
-  }
-}
-
 async function processFile(file: File): Promise<AttachedFile | null> {
-  const accepted = ACCEPTED_TYPES.includes(file.type) || file.type.startsWith('image/') || file.type.startsWith('text/') || isSpreadsheetFile(file);
+  const accepted = ACCEPTED_TYPES.includes(file.type) || file.type.startsWith('image/') || file.type.startsWith('text/');
   if (!accepted) return null;
   const id = Math.random().toString(36).slice(2, 10);
   // Return immediately with 'attaching' status
   const base: AttachedFile = { id, name: file.name, size: file.size, type: file.type, content: '', status: 'attaching' };
   try {
     let content = '', extractedText = '';
-    if (isSpreadsheetFile(file)) {
-      content       = await readAsDataURL(file);
-      extractedText = await extractXlsxText(file);
-    } else if (file.type.startsWith('text/')) {
+    if (file.type.startsWith('text/')) {
       extractedText = await readAsText(file);
       content = extractedText;
     } else if (file.type === 'application/pdf') {
@@ -1151,6 +1116,13 @@ export default function GrowthGradualChat() {
   // Conversations (sidebar history)
   const [conversations, setConversations] = useState<Conversation[]>([]);
   const [activeId, setActiveId]           = useState<string | null>(null);
+  // The RAG/OKF session id scoped to whichever conversation is currently
+  // active. A ref (not state) because it's read inside async callbacks
+  // (file indexing, chat streaming, report generation) where we want the
+  // latest value without triggering re-renders. Freshly generated on mount
+  // (brand-new, not-yet-saved chat) and every startNewChat(); restored from
+  // conv.ragSessionId in loadConversation() when switching to a saved chat.
+  const chatSessionIdRef = useRef<string>(newConversationSessionId());
   const [messages, setMessages]           = useState<Message[]>([]);
   const [sidebarOpen, setSidebarOpen]     = useState(true);
 
@@ -1222,7 +1194,7 @@ export default function GrowthGradualChat() {
 
     setAttachLoading(false);
 
-    const sessionId = getOrCreateSessionId();
+    const sessionId = chatSessionIdRef.current;
     setRagIndexing(true);
 
     // ── Strategy: index directly to HF Space immediately (don't wait for gateway) ──
@@ -1382,6 +1354,9 @@ export default function GrowthGradualChat() {
     setRagIndexed(false);
     setRagIndexing(false);
     setWelcomeMode(null);
+    // Fresh RAG/OKF scope for this new chat — files from whatever
+    // conversation was open before must never leak into this one.
+    chatSessionIdRef.current = newConversationSessionId();
     setTimeout(() => inputRef.current?.focus(), 100);
   }, []);
 
@@ -1395,6 +1370,11 @@ export default function GrowthGradualChat() {
     );
     setMessages(cleanedMessages);
     setActiveId(conv.id);
+    // Restore this conversation's own RAG scope so follow-up questions can
+    // still see its previously uploaded files. Conversations saved before
+    // this field existed fall back to the old global browser-wide id, so
+    // they don't lose access to whatever was indexed under it.
+    chatSessionIdRef.current = conv.ragSessionId || getOrCreateSessionId();
     historyRef.current = conv.messages.map(m => ({ role: m.role, content: m.text }));
     setTimeout(() => bottomRef.current?.scrollIntoView({ behavior:'smooth' }), 50);
   }, []);
@@ -1402,7 +1382,17 @@ export default function GrowthGradualChat() {
   // Delete a conversation
   const deleteConversation = useCallback((id: string, e: React.MouseEvent) => {
     e.stopPropagation();
-    setConversations(prev => prev.filter(c => c.id !== id));
+    setConversations(prev => {
+      // Fire-and-forget cleanup of that conversation's RAG index server-side
+      // so abandoned sessions don't sit in the vector store indefinitely.
+      const conv = prev.find(c => c.id === id);
+      if (conv?.ragSessionId) {
+        fetch(`/api/rag/session/${conv.ragSessionId}`, { method: 'DELETE' }).catch(() => {
+          // Non-critical — worst case the old index just ages out unused.
+        });
+      }
+      return prev.filter(c => c.id !== id);
+    });
     if (activeId === id) startNewChat();
   }, [activeId, startNewChat]);
 
@@ -1468,7 +1458,7 @@ export default function GrowthGradualChat() {
         // Store metadata on message for future reference — intentionally NOT rendered in JSX
         setMessages(prev => prev.map(m => m.id === botMsg.id
           ? { ...m, searchPerformed: meta.searchPerformed, sources: meta.sources, queryType: meta.queryType } : m));
-      }, fileCtx, getOrCreateSessionId(), ragIndexed, chatFileImages)) {
+      }, fileCtx, chatSessionIdRef.current, ragIndexed, chatFileImages)) {
         if (!metaDone) { setSearching(false); metaDone = true; }
         acc += chunk;
         if (acc.length > 0) setStatusMsg('');
@@ -1635,7 +1625,7 @@ export default function GrowthGradualChat() {
             // Guard: don't add if a conv with this title was just created (Strict Mode double-fire)
             const alreadyExists = convPrev.some(c => c.title === title && Date.now() - c.ts < 2000);
             if (alreadyExists) return convPrev;
-            const newConv: Conversation = { id:uid(), title, messages:final, ts:Date.now() };
+            const newConv: Conversation = { id:uid(), title, messages:final, ts:Date.now(), ragSessionId: chatSessionIdRef.current };
             setActiveId(newConv.id);
             return [newConv, ...convPrev];
           }
@@ -1744,12 +1734,7 @@ export default function GrowthGradualChat() {
 
       for (const f of files) {
         if (f.extractedText) {
-          // Spreadsheets (e.g. multi-sheet fund/scheme performance workbooks)
-          // are dense, structured data that the report treats as its primary
-          // source — give them a much larger budget than prose file types so
-          // a 20+ sheet workbook doesn't get chopped down to its first sheet.
-          const textCap = isSpreadsheetFile(f) ? 150_000 : 12_000;
-          fileTextParts.push(`[File: ${f.name}]\n${f.extractedText.slice(0, textCap)}`);
+          fileTextParts.push(`[File: ${f.name}]\n${f.extractedText.slice(0, 12000)}`);
         }
 
         if (f.type === 'application/pdf') {
@@ -1853,7 +1838,7 @@ export default function GrowthGradualChat() {
           conversationContext: conversationContext || '',
           fileImages,             // full pages — vision text-extraction only
           embeddedFileImages,     // actual charts/figures — may be embedded in the report
-          sessionId:   getOrCreateSessionId(),
+          sessionId:   chatSessionIdRef.current,
           hasRag:      ragIndexed,
         }),
       });
@@ -2447,7 +2432,7 @@ export default function GrowthGradualChat() {
         ref={fileInputRef}
         type="file"
         multiple
-        accept=".pdf,.doc,.docx,.txt,.csv,.md,.xlsx,.xls,.jpg,.jpeg,.png,.webp,.gif"
+        accept=".pdf,.doc,.docx,.txt,.csv,.md,.jpg,.jpeg,.png,.webp,.gif"
         style={{ display:'none' }}
         onChange={async e => {
           const files = Array.from(e.target.files ?? []);

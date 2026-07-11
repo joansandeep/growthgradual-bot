@@ -14,8 +14,7 @@
     "puppeteer-core": "^25.0.4",
     "react": "19.2.4",
     "react-dom": "19.2.4",
-    "pdfjs-dist": "^4.4.168",
-    "xlsx": "^0.18.5"
+    "pdfjs-dist": "^4.4.168"
   },
   "devDependencies": {
     "@tailwindcss/postcss": "^4",
