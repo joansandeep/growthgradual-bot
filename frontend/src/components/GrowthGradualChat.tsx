@@ -930,9 +930,23 @@ const ACCEPTED_TYPES = [
   'application/pdf',
   'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
   'application/msword',
+  'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', // .xlsx
+  'application/vnd.ms-excel', // legacy .xls
   'text/plain', 'text/csv', 'text/markdown',
   'image/jpeg', 'image/png', 'image/webp', 'image/gif',
 ];
+// Excel MIME types are unreliable across browsers/OSes (some report .xlsx as
+// a generic 'application/octet-stream' or even '' for less common setups),
+// so we also fall back to checking the file extension directly.
+const XLSX_MIME_TYPES = new Set([
+  'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+  'application/vnd.ms-excel',
+]);
+function isXlsxFile(file: File): boolean {
+  if (XLSX_MIME_TYPES.has(file.type)) return true;
+  const name = file.name.toLowerCase();
+  return name.endsWith('.xlsx') || name.endsWith('.xls');
+}
 const MAX_ATTACH = 10;
 function fmtSize(b: number) {
   if (b < 1024) return `${b}B`;
@@ -982,15 +996,40 @@ async function extractPdfText(file: File): Promise<string> {
   }
 }
 
+async function extractXlsxText(file: File): Promise<string> {
+  try {
+    // Dynamic import keeps SheetJS out of the initial bundle — only loaded
+    // when someone actually attaches a spreadsheet.
+    const XLSX = await import('xlsx');
+    const buf = await file.arrayBuffer();
+    const wb = XLSX.read(buf, { type: 'array' });
+    const parts: string[] = [];
+    for (const sheetName of wb.SheetNames) {
+      const sheet = wb.Sheets[sheetName];
+      // CSV form is compact and lossless for numbers/text/dates — a good
+      // balance between fidelity and token cost for the LLM/RAG pipeline.
+      const csv = XLSX.utils.sheet_to_csv(sheet, { blankrows: false }).trim();
+      if (csv) parts.push(`[Sheet: ${sheetName}]\n${csv}`);
+    }
+    return parts.join('\n\n');
+  } catch (e) {
+    console.warn('[processFile] xlsx extraction failed:', e);
+    return '';
+  }
+}
+
 async function processFile(file: File): Promise<AttachedFile | null> {
-  const accepted = ACCEPTED_TYPES.includes(file.type) || file.type.startsWith('image/') || file.type.startsWith('text/');
+  const accepted = ACCEPTED_TYPES.includes(file.type) || file.type.startsWith('image/') || file.type.startsWith('text/') || isXlsxFile(file);
   if (!accepted) return null;
   const id = Math.random().toString(36).slice(2, 10);
   // Return immediately with 'attaching' status
   const base: AttachedFile = { id, name: file.name, size: file.size, type: file.type, content: '', status: 'attaching' };
   try {
     let content = '', extractedText = '';
-    if (file.type.startsWith('text/')) {
+    if (isXlsxFile(file)) {
+      content       = await readAsDataURL(file);
+      extractedText = await extractXlsxText(file);
+    } else if (file.type.startsWith('text/')) {
       extractedText = await readAsText(file);
       content = extractedText;
     } else if (file.type === 'application/pdf') {
@@ -2432,7 +2471,7 @@ export default function GrowthGradualChat() {
         ref={fileInputRef}
         type="file"
         multiple
-        accept=".pdf,.doc,.docx,.txt,.csv,.md,.jpg,.jpeg,.png,.webp,.gif"
+        accept=".pdf,.doc,.docx,.txt,.csv,.md,.xlsx,.xls,.jpg,.jpeg,.png,.webp,.gif"
         style={{ display:'none' }}
         onChange={async e => {
           const files = Array.from(e.target.files ?? []);
