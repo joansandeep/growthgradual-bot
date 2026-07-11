@@ -1428,13 +1428,39 @@ async def generate_report(request: Request):
             report_type="comprehensive",
         )
         if rag_result.get("has_content") and rag_result.get("system_prompt"):
-            # Build a rich user prompt that includes the RAG grounded system prompt
-            rag_file_context = rag_result["system_prompt"]
-            log.info("Report: RAG retrieved %d chunks from %s",
-                     rag_result.get("retrieved", 0), rag_result.get("source_files", []))
-            # Inject RAG context into file_context so the existing pipeline uses it
-            file_context = rag_file_context
-            has_rag = False  # prevent double-calling
+            returned_sources = rag_result.get("source_files", []) or []
+            # Guard against session_id being a long-lived, cross-conversation ID
+            # (same issue _fetch_okf_context guards against below): the RAG
+            # service's /report endpoint retrieves full-coverage context scoped
+            # ONLY by session_id, not by which file(s) were actually attached
+            # THIS turn. A session that ever indexed an unrelated document days
+            # or conversations ago (an equity research note, a fund factsheet)
+            # will silently have it pulled into today's report too — showing up
+            # as a fabricated extra "Data Source" the user never attached this
+            # time. If this turn has an actual attachment, require at least one
+            # returned source to match it (fuzzy substring, same as OKF below);
+            # otherwise discard the RAG context entirely and fall through to
+            # the direct file_context/OKF path built from what was really sent.
+            current_filenames = set(re.findall(r"\[File:\s*([^\]]+?)\]", file_context))
+            stale = False
+            if current_filenames:
+                norm_current  = {_normalize_filename(n) for n in current_filenames}
+                norm_returned = {_normalize_filename(s) for s in returned_sources}
+                stale = not any(nc in nr or nr in nc for nc in norm_current for nr in norm_returned)
+            if stale:
+                log.warning(
+                    "Report: RAG source_files %s don't match this turn's attachment(s) %s "
+                    "— discarding stale cross-session RAG context",
+                    returned_sources, current_filenames,
+                )
+            else:
+                # Build a rich user prompt that includes the RAG grounded system prompt
+                rag_file_context = rag_result["system_prompt"]
+                log.info("Report: RAG retrieved %d chunks from %s",
+                         rag_result.get("retrieved", 0), returned_sources)
+                # Inject RAG context into file_context so the existing pipeline uses it
+                file_context = rag_file_context
+                has_rag = False  # prevent double-calling
 
     # ── If file images were uploaded, use Gemini Vision to extract data ───────
     extracted_image_context = ""
