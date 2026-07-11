@@ -1557,7 +1557,14 @@ async def generate_report(request: Request):
     if okf_context:
         file_section += f"\n\n━━ STRUCTURED SOURCE DOCUMENTS (OKF) ━━\nEach block below is one uploaded file, structured as an Open Knowledge Format concept.\nUse these as your PRIMARY source — they are typed, titled, and extracted from the actual files the user uploaded.\n\n{okf_context}\n━━ END OKF SOURCES ━━\n"
     if file_context.strip():
-        file_section += f"\n\n━━ UPLOADED FILE TEXT CONTENT ━━\n{file_context[:6000]}\n━━ END FILE CONTENT ━━\n"
+        # 6000 chars used to be the ceiling here, which is fine for a page or
+        # two of prose but silently guillotines a multi-sheet spreadsheet
+        # (e.g. a PMS/fund performance workbook with 20+ sheets) down to a
+        # fraction of its first sheet. Gemini's context window comfortably
+        # fits this; Groq's own pre-flight size check (GROQ_MAX_PROMPT_CHARS,
+        # see call_groq) already skips straight to Gemini when the combined
+        # prompt is too large, so raising this is safe on both paths.
+        file_section += f"\n\n━━ UPLOADED FILE TEXT CONTENT ━━\n{file_context[:150000]}\n━━ END FILE CONTENT ━━\n"
 
     # Image placement instruction — tell LLM where to place extracted
     # chart/figure image references. Deliberately built from

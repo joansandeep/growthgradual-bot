@@ -1124,6 +1124,18 @@ def build_pdf(report: str, title: str, question: str, summary: str,
     if summary:
         c.setFillColorRGB(0.82, 0.85, 0.95); c.setFont("Helvetica", 10.5)
         s_lines = _wrap(c, summary, "Helvetica", 10.5, CW)
+        if len(s_lines) > 5:
+            # Don't hard-cut mid-sentence — back up to the last sentence
+            # boundary that fits within the 5-line budget, so the cover
+            # paragraph always ends cleanly (with punctuation) rather than
+            # stopping on a dangling clause.
+            kept_text = " ".join(s_lines[:5])
+            last_punct = max(kept_text.rfind(". "), kept_text.rfind("! "), kept_text.rfind("? "))
+            if last_punct > len(kept_text) * 0.4:  # only trim back if it doesn't lose too much
+                kept_text = kept_text[: last_punct + 1]
+            else:
+                kept_text = kept_text.rstrip(",;: ") + "…"
+            s_lines = _wrap(c, kept_text, "Helvetica", 10.5, CW)
         for ln in s_lines[:5]:
             c.drawString(MARGIN, ty, ln)
             ty -= 15
@@ -1181,7 +1193,7 @@ def build_pdf(report: str, title: str, question: str, summary: str,
         for i in range(n_cards):
             st = key_stats[i]
             val = _safe_text(fmt_inr(str(st.get("value", ""))))[:14]
-            lbl = _safe_text(st.get("label", ""))[:26]
+            lbl = _safe_text(st.get("label", ""))[:60]
             chg = _safe_text(st.get("change", ""))
             col_c = GREEN if chg.startswith("+") or val.startswith("+") else (RED if chg.startswith("-") or val.startswith("-") else WHITE)
             cx = MARGIN + i * (card_w + card_gap)
@@ -1196,10 +1208,11 @@ def build_pdf(report: str, title: str, question: str, summary: str,
             if chg and chg != val:
                 c.setFillColorRGB(*col_c); c.setFont("Helvetica-Bold", 7.5)
                 c.drawString(cx, lyy, chg)
-    c.setFillColorRGB(0.60, 0.65, 0.85); c.setFont("Helvetica", 6.5)
-    c.setFillColorRGB(*WHITE); c.setFont("Helvetica-Bold", 9)
-    c.drawRightString(PAGE_W - MARGIN, 44, "growth-gradual.com")
-    c.setFillColorRGB(*GOLD); c.setFont("Helvetica", 7)
+    # "growth-gradual.com" — placed top-right, level with the overline, so it
+    # never collides with the bottom stat-card row (which can run tall when
+    # a card's label wraps to two lines).
+    c.setFillColorRGB(0.55, 0.60, 0.80); c.setFont("Helvetica", 8)
+    c.drawRightString(PAGE_W - MARGIN, overline_y, "growth-gradual.com")
     c.showPage()
 
     # ═══════════════════════════════════════════════════════════════════════════

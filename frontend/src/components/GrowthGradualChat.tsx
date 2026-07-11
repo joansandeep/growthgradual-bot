@@ -908,9 +908,21 @@ const ACCEPTED_TYPES = [
   'application/pdf',
   'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
   'application/msword',
+  'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', // .xlsx
+  'application/vnd.ms-excel', // .xls
   'text/plain', 'text/csv', 'text/markdown',
   'image/jpeg', 'image/png', 'image/webp', 'image/gif',
 ];
+// Browsers are inconsistent about the MIME type they report for .xlsx/.xls
+// (some send 'application/octet-stream' or ''), so spreadsheet files are
+// also recognised by extension as a fallback — see isSpreadsheetFile below.
+function isSpreadsheetFile(f: { name: string; type: string }): boolean {
+  return (
+    f.type === 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' ||
+    f.type === 'application/vnd.ms-excel' ||
+    /\.(xlsx|xls)$/i.test(f.name)
+  );
+}
 const MAX_ATTACH = 10;
 function fmtSize(b: number) {
   if (b < 1024) return `${b}B`;
@@ -960,15 +972,60 @@ async function extractPdfText(file: File): Promise<string> {
   }
 }
 
+/** Parses an uploaded .xlsx/.xls workbook into plain text: one block per
+ *  sheet, each row rendered as CSV. This is what feeds `extractedText`,
+ *  which in turn becomes the report generator's PRIMARY SOURCE file content
+ *  (see buildFilePayload / fileContext on the backend) — so multi-sheet
+ *  data like fund/scheme performance tables survives intact rather than
+ *  being dropped because the file wasn't a PDF or plain text.
+ *  Fully blank rows are skipped; very large workbooks are capped per-sheet
+ *  and in total so a single upload can't blow out the prompt budget. */
+async function extractXlsxText(file: File): Promise<string> {
+  try {
+    const XLSX = await import('xlsx');
+    const dataUrl = await readAsDataURL(file);
+    const base64  = dataUrl.split(',')[1];
+    const binary  = atob(base64);
+    const bytes   = new Uint8Array(binary.length);
+    for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+    const wb = XLSX.read(bytes, { type: 'array' });
+
+    const MAX_SHEETS = 40;
+    const MAX_ROWS_PER_SHEET = 400;
+    const MAX_TOTAL_CHARS = 150_000; // generous — Gemini's context handles this easily;
+                                      // the Groq path auto-skips to Gemini for large prompts
+
+    const parts: string[] = [];
+    let totalChars = 0;
+    for (const sheetName of wb.SheetNames.slice(0, MAX_SHEETS)) {
+      if (totalChars >= MAX_TOTAL_CHARS) break;
+      const ws = wb.Sheets[sheetName];
+      const csv = XLSX.utils.sheet_to_csv(ws, { blankrows: false });
+      const rows = csv.split('\n').filter(r => r.trim().length > 0).slice(0, MAX_ROWS_PER_SHEET);
+      if (!rows.length) continue;
+      const block = `[Sheet: ${sheetName}]\n${rows.join('\n')}`;
+      totalChars += block.length;
+      parts.push(block);
+    }
+    return parts.join('\n\n').slice(0, MAX_TOTAL_CHARS);
+  } catch (e) {
+    console.warn('[processFile] xlsx extraction failed:', e);
+    return '';
+  }
+}
+
 async function processFile(file: File): Promise<AttachedFile | null> {
-  const accepted = ACCEPTED_TYPES.includes(file.type) || file.type.startsWith('image/') || file.type.startsWith('text/');
+  const accepted = ACCEPTED_TYPES.includes(file.type) || file.type.startsWith('image/') || file.type.startsWith('text/') || isSpreadsheetFile(file);
   if (!accepted) return null;
   const id = Math.random().toString(36).slice(2, 10);
   // Return immediately with 'attaching' status
   const base: AttachedFile = { id, name: file.name, size: file.size, type: file.type, content: '', status: 'attaching' };
   try {
     let content = '', extractedText = '';
-    if (file.type.startsWith('text/')) {
+    if (isSpreadsheetFile(file)) {
+      content       = await readAsDataURL(file);
+      extractedText = await extractXlsxText(file);
+    } else if (file.type.startsWith('text/')) {
       extractedText = await readAsText(file);
       content = extractedText;
     } else if (file.type === 'application/pdf') {
@@ -1687,7 +1744,12 @@ export default function GrowthGradualChat() {
 
       for (const f of files) {
         if (f.extractedText) {
-          fileTextParts.push(`[File: ${f.name}]\n${f.extractedText.slice(0, 12000)}`);
+          // Spreadsheets (e.g. multi-sheet fund/scheme performance workbooks)
+          // are dense, structured data that the report treats as its primary
+          // source — give them a much larger budget than prose file types so
+          // a 20+ sheet workbook doesn't get chopped down to its first sheet.
+          const textCap = isSpreadsheetFile(f) ? 150_000 : 12_000;
+          fileTextParts.push(`[File: ${f.name}]\n${f.extractedText.slice(0, textCap)}`);
         }
 
         if (f.type === 'application/pdf') {
@@ -2385,7 +2447,7 @@ export default function GrowthGradualChat() {
         ref={fileInputRef}
         type="file"
         multiple
-        accept=".pdf,.doc,.docx,.txt,.csv,.md,.jpg,.jpeg,.png,.webp,.gif"
+        accept=".pdf,.doc,.docx,.txt,.csv,.md,.xlsx,.xls,.jpg,.jpeg,.png,.webp,.gif"
         style={{ display:'none' }}
         onChange={async e => {
           const files = Array.from(e.target.files ?? []);
