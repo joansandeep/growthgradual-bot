@@ -143,12 +143,23 @@ You MUST respond with valid JSON only — no markdown fences, no preamble, no te
 Respond with EXACTLY this shape:
 {
   "title": "<concise NOUN-PHRASE report title, max 12 words. Examples: 'Top Banking Stocks India 2026', 'Indian Mutual Fund SIP Returns Analysis', 'HDFC vs ICICI Bank Comparison', 'Nifty 50 Market Outlook — June 2026'. STRICT RULES: NEVER start with 'So', 'You', 'I', 'Let's', 'Here', 'Based', 'Looking', 'Understanding', 'A look at', 'An analysis of', or any verb/pronoun. NEVER start with 'The' followed by a verb — e.g. BAD: 'The Nifty outlook today is mixed, with some analysts predicting...' (full sentence starting with The) → GOOD: 'Nifty 50 Outlook — Mixed Signals Amid Volatility'. NEVER write a full sentence — this includes sentences that don't start with one of those words too, e.g. BAD: 'The Minimum Investment Amounts For These Top-Performing SIPs Are As Follows' → GOOD: 'Top-Performing SIP Funds — Minimum Investment Requirements'. Never end a title with a colon, 'as follows', or '...' — those signal an incomplete sentence, not a heading. ALWAYS write a noun phrase — topic first, qualifiers after.>",
-  "report": "<full markdown report — target 2800-3500 words (MINIMUM 18000 characters — shorter responses will be rejected and retried), structured and data-rich. This is a LONG-FORM report (aim for ~10-12 printed pages once charts/tables/images are laid in) — see REPORT STRUCTURE below for the section list that gets you there. Add DEPTH, not invented data: more context, more explanation of mechanisms and causes, more comparison and discussion of what the numbers mean — never pad with filler sentences or numbers not in the sources.>",
+  "summary": "<2-3 sentence executive summary>",
+  "keyStats": [{ "label": "<short label>", "value": "<value string>", "change": "<+/- % or empty string>" }],
   "charts": [...],
   "images": [...],
-  "keyStats": [{ "label": "<short label>", "value": "<value string>", "change": "<+/- % or empty string>" }],
-  "summary": "<2-3 sentence executive summary>"
+  "report": "<full markdown report — target 2800-3500 words (MINIMUM 18000 characters — shorter responses will be rejected and retried), structured and data-rich. This is a LONG-FORM report (aim for ~10-12 printed pages once charts/tables/images are laid in) — see REPORT STRUCTURE below for the section list that gets you there. Add DEPTH, not invented data: more context, more explanation of mechanisms and causes, more comparison and discussion of what the numbers mean — never pad with filler sentences or numbers not in the sources.>"
 }
+
+NOTE ON FIELD ORDER: summary, keyStats, charts, and images are written BEFORE the long "report" field
+on purpose. "report" is by far the largest, most variable-length field, and on a long or data-dense
+source (e.g. a spreadsheet with many rows) it's the one most likely to run long and eat into your
+output budget. Writing the compact fields first means the cover-page summary, key stats, and charts
+are already complete and safe even in the rare case where "report" itself runs out of room and has
+to be wrapped up early — a shorter report body is a much smaller loss than a blank cover page.
+While the shape above lists "charts" before "report", you MUST still decide chart contents by
+scanning the FULL source data first (same STEP 1-4 process below) — writing charts first does not
+mean skipping analysis, it means front-loading the numeric extraction you'd do anyway.
+
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 CRITICAL DATA INTEGRITY RULES — VIOLATIONS DEGRADE REPORT QUALITY:
@@ -268,6 +279,17 @@ STEP 4 — Aim for 5-8 charts/tables per report when data supports it — this r
   the numbers for it. Vary the shapes (bar, stacked bar, line, pie) rather than repeating the same
   shape for every chart; use the stacked-bar shape above whenever a breakdown is compared across
   multiple labels. If sources genuinely lack numeric data → 0 charts is acceptable. But look hard first.
+
+  ⚠ SPREADSHEET/TABULAR SOURCE DATA — read this if the source is itself a spreadsheet, CSV, or any
+  data that already arrives as rows/columns (e.g. a PMS performance sheet, a fund comparison table):
+  this is the BEST case for charts, not an excuse to skip them. A markdown table reproducing the raw
+  rows is NOT a substitute for a bar chart — reports that only reproduce source tables without a single
+  actual bar/line/pie chart are considered incomplete. For this kind of source, you MUST pull out at
+  least 3-4 genuine bar/pie charts such as: a "Top 10 by <return period>" bar chart, an "Average return
+  by category" bar chart, an "AUM by top entities" bar chart, or a category allocation pie chart. Do
+  this BEFORE writing the surrounding prose — decide the chart, then write the paragraph that discusses
+  it, then place [CHART_n] right after. Every major numeric column in the source data is a candidate for
+  its own chart; do not let the whole report degrade into "table, table, table" with no visuals.
 
 Chart spec shape:
 {
@@ -412,21 +434,25 @@ JSON COMPLETION — CRITICAL: NEVER TRUNCATE THE OUTPUT
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 You MUST output a fully valid, complete JSON object. Truncated output causes total report failure.
 
-BEFORE you start writing: budget your tokens. The JSON wrapper (title, charts, images, keyStats,
-summary) takes ~2000 tokens. The report content needs ~6000-7000 tokens. Total: ~9000 tokens.
+BEFORE you start writing: budget your tokens. The JSON wrapper (title, summary, keyStats, charts,
+images) takes ~2000 tokens. The report content needs ~6000-7000 tokens. Total: ~9000 tokens.
 You have 32000 output tokens available — more than enough. Do NOT rush or compress.
 
 Rules to prevent truncation:
-1. Write sections in order: Introduction → Methodology → Data Analysis → Key Findings → Risks → Conclusion → Data Sources.
-   Do NOT skip or abbreviate any section to save tokens.
-2. Pace yourself: if you are past section 4 (Key Findings) and have written fewer than 10000 chars
-   of report content, you are on track — keep going, do NOT start compressing.
-3. The "charts" array must be COMPLETE before you close the JSON. If you run low on space, write
-   shorter chart titles but include ALL chart objects.
-4. Always end the JSON with: "summary": "...", "keyStats": [...]} — never leave it open.
+1. Field order matters: write title → summary → keyStats → charts → images FIRST, while your
+   output budget is freshest. These are compact and MUST all be complete before you touch "report".
+   Never leave any of them as an empty placeholder just to get to the report body sooner.
+2. Only once summary/keyStats/charts/images are fully written do you start "report", and it comes
+   LAST. Write its sections in order: Introduction → Methodology → Data Analysis → Key Findings →
+   Risks → Conclusion → Data Sources. Do NOT skip or abbreviate any section to save tokens.
+3. Pace yourself inside "report": if you are past section 4 (Key Findings) and have written fewer
+   than 10000 chars of report content, you are on track — keep going, do NOT start compressing.
+4. If you sense you are running low on room while writing "report", it is FAR better to wrap up the
+   report body a section short (with a clean closing paragraph) than to let it run and risk cutting
+   off mid-JSON — but this should be rare, since report is now the last and only open-ended field.
 5. If a section runs shorter than its minimum, EXPAND it with more analysis rather than moving on.
 6. NEVER end the "report" string mid-sentence. Always close with a complete conclusion paragraph,
-   then close the JSON string with " and the remaining fields.
+   then close the JSON string and the object.
 """
 
 # Matches stray bracket-number citation markers like "[1]", "[1, 2]", "[8]" that
