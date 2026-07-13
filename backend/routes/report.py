@@ -143,23 +143,12 @@ You MUST respond with valid JSON only — no markdown fences, no preamble, no te
 Respond with EXACTLY this shape:
 {
   "title": "<concise NOUN-PHRASE report title, max 12 words. Examples: 'Top Banking Stocks India 2026', 'Indian Mutual Fund SIP Returns Analysis', 'HDFC vs ICICI Bank Comparison', 'Nifty 50 Market Outlook — June 2026'. STRICT RULES: NEVER start with 'So', 'You', 'I', 'Let's', 'Here', 'Based', 'Looking', 'Understanding', 'A look at', 'An analysis of', or any verb/pronoun. NEVER start with 'The' followed by a verb — e.g. BAD: 'The Nifty outlook today is mixed, with some analysts predicting...' (full sentence starting with The) → GOOD: 'Nifty 50 Outlook — Mixed Signals Amid Volatility'. NEVER write a full sentence — this includes sentences that don't start with one of those words too, e.g. BAD: 'The Minimum Investment Amounts For These Top-Performing SIPs Are As Follows' → GOOD: 'Top-Performing SIP Funds — Minimum Investment Requirements'. Never end a title with a colon, 'as follows', or '...' — those signal an incomplete sentence, not a heading. ALWAYS write a noun phrase — topic first, qualifiers after.>",
-  "summary": "<2-3 sentence executive summary>",
-  "keyStats": [{ "label": "<short label>", "value": "<value string>", "change": "<+/- % or empty string>" }],
+  "report": "<full markdown report — target 2800-3500 words (MINIMUM 18000 characters — shorter responses will be rejected and retried), structured and data-rich. This is a LONG-FORM report (aim for ~10-12 printed pages once charts/tables/images are laid in) — see REPORT STRUCTURE below for the section list that gets you there. Add DEPTH, not invented data: more context, more explanation of mechanisms and causes, more comparison and discussion of what the numbers mean — never pad with filler sentences or numbers not in the sources.>",
   "charts": [...],
   "images": [...],
-  "report": "<full markdown report — target 2800-3500 words (MINIMUM 18000 characters — shorter responses will be rejected and retried), structured and data-rich. This is a LONG-FORM report (aim for ~10-12 printed pages once charts/tables/images are laid in) — see REPORT STRUCTURE below for the section list that gets you there. Add DEPTH, not invented data: more context, more explanation of mechanisms and causes, more comparison and discussion of what the numbers mean — never pad with filler sentences or numbers not in the sources.>"
+  "keyStats": [{ "label": "<short label>", "value": "<value string>", "change": "<+/- % or empty string>" }],
+  "summary": "<2-3 sentence executive summary>"
 }
-
-NOTE ON FIELD ORDER: summary, keyStats, charts, and images are written BEFORE the long "report" field
-on purpose. "report" is by far the largest, most variable-length field, and on a long or data-dense
-source (e.g. a spreadsheet with many rows) it's the one most likely to run long and eat into your
-output budget. Writing the compact fields first means the cover-page summary, key stats, and charts
-are already complete and safe even in the rare case where "report" itself runs out of room and has
-to be wrapped up early — a shorter report body is a much smaller loss than a blank cover page.
-While the shape above lists "charts" before "report", you MUST still decide chart contents by
-scanning the FULL source data first (same STEP 1-4 process below) — writing charts first does not
-mean skipping analysis, it means front-loading the numeric extraction you'd do anyway.
-
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 CRITICAL DATA INTEGRITY RULES — VIOLATIONS DEGRADE REPORT QUALITY:
@@ -185,7 +174,14 @@ STEP 1 — AGGRESSIVELY SCAN sources for ANY chartable numbers:
   • Allocation/composition (sector weights, portfolio mix) → pie chart
   • Comparisons: 1yr vs 3yr vs 5yr returns of same fund → bar chart
   • FII/DII flows by date → line or bar chart
-  • Category-wise data (large cap vs mid cap vs small cap) → bar chart
+  • Category-wise RETURNS (large cap vs mid cap vs small cap performance) → bar chart
+  • Category-wise AUM/asset totals (how much money sits in each PMS/fund category,
+    sector, or AMC out of the whole) → this is composition, not ranking — use a
+    PIE chart, even though the report already has bar charts of top performers by
+    return. Sum AUM per category first (skip UNDISC./blank entries), then chart
+    only categories with a real total. Don't skip this just because bar charts
+    were already used elsewhere in the report — composition data gets a pie
+    chart on its own merits, for chart-type variety.
 
   SINGLE-ASSET TREND OVER TIME — DON'T SKIP THIS ONE:
   Whenever the sources give the level of ONE index/stock/rate at several dates or
@@ -279,17 +275,6 @@ STEP 4 — Aim for 5-8 charts/tables per report when data supports it — this r
   the numbers for it. Vary the shapes (bar, stacked bar, line, pie) rather than repeating the same
   shape for every chart; use the stacked-bar shape above whenever a breakdown is compared across
   multiple labels. If sources genuinely lack numeric data → 0 charts is acceptable. But look hard first.
-
-  ⚠ SPREADSHEET/TABULAR SOURCE DATA — read this if the source is itself a spreadsheet, CSV, or any
-  data that already arrives as rows/columns (e.g. a PMS performance sheet, a fund comparison table):
-  this is the BEST case for charts, not an excuse to skip them. A markdown table reproducing the raw
-  rows is NOT a substitute for a bar chart — reports that only reproduce source tables without a single
-  actual bar/line/pie chart are considered incomplete. For this kind of source, you MUST pull out at
-  least 3-4 genuine bar/pie charts such as: a "Top 10 by <return period>" bar chart, an "Average return
-  by category" bar chart, an "AUM by top entities" bar chart, or a category allocation pie chart. Do
-  this BEFORE writing the surrounding prose — decide the chart, then write the paragraph that discusses
-  it, then place [CHART_n] right after. Every major numeric column in the source data is a candidate for
-  its own chart; do not let the whole report degrade into "table, table, table" with no visuals.
 
 Chart spec shape:
 {
@@ -434,25 +419,21 @@ JSON COMPLETION — CRITICAL: NEVER TRUNCATE THE OUTPUT
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 You MUST output a fully valid, complete JSON object. Truncated output causes total report failure.
 
-BEFORE you start writing: budget your tokens. The JSON wrapper (title, summary, keyStats, charts,
-images) takes ~2000 tokens. The report content needs ~6000-7000 tokens. Total: ~9000 tokens.
+BEFORE you start writing: budget your tokens. The JSON wrapper (title, charts, images, keyStats,
+summary) takes ~2000 tokens. The report content needs ~6000-7000 tokens. Total: ~9000 tokens.
 You have 32000 output tokens available — more than enough. Do NOT rush or compress.
 
 Rules to prevent truncation:
-1. Field order matters: write title → summary → keyStats → charts → images FIRST, while your
-   output budget is freshest. These are compact and MUST all be complete before you touch "report".
-   Never leave any of them as an empty placeholder just to get to the report body sooner.
-2. Only once summary/keyStats/charts/images are fully written do you start "report", and it comes
-   LAST. Write its sections in order: Introduction → Methodology → Data Analysis → Key Findings →
-   Risks → Conclusion → Data Sources. Do NOT skip or abbreviate any section to save tokens.
-3. Pace yourself inside "report": if you are past section 4 (Key Findings) and have written fewer
-   than 10000 chars of report content, you are on track — keep going, do NOT start compressing.
-4. If you sense you are running low on room while writing "report", it is FAR better to wrap up the
-   report body a section short (with a clean closing paragraph) than to let it run and risk cutting
-   off mid-JSON — but this should be rare, since report is now the last and only open-ended field.
+1. Write sections in order: Introduction → Methodology → Data Analysis → Key Findings → Risks → Conclusion → Data Sources.
+   Do NOT skip or abbreviate any section to save tokens.
+2. Pace yourself: if you are past section 4 (Key Findings) and have written fewer than 10000 chars
+   of report content, you are on track — keep going, do NOT start compressing.
+3. The "charts" array must be COMPLETE before you close the JSON. If you run low on space, write
+   shorter chart titles but include ALL chart objects.
+4. Always end the JSON with: "summary": "...", "keyStats": [...]} — never leave it open.
 5. If a section runs shorter than its minimum, EXPAND it with more analysis rather than moving on.
 6. NEVER end the "report" string mid-sentence. Always close with a complete conclusion paragraph,
-   then close the JSON string and the object.
+   then close the JSON string with " and the remaining fields.
 """
 
 # Matches stray bracket-number citation markers like "[1]", "[1, 2]", "[8]" that
@@ -1454,13 +1435,39 @@ async def generate_report(request: Request):
             report_type="comprehensive",
         )
         if rag_result.get("has_content") and rag_result.get("system_prompt"):
-            # Build a rich user prompt that includes the RAG grounded system prompt
-            rag_file_context = rag_result["system_prompt"]
-            log.info("Report: RAG retrieved %d chunks from %s",
-                     rag_result.get("retrieved", 0), rag_result.get("source_files", []))
-            # Inject RAG context into file_context so the existing pipeline uses it
-            file_context = rag_file_context
-            has_rag = False  # prevent double-calling
+            returned_sources = rag_result.get("source_files", []) or []
+            # Guard against session_id being a long-lived, cross-conversation ID
+            # (same issue _fetch_okf_context guards against below): the RAG
+            # service's /report endpoint retrieves full-coverage context scoped
+            # ONLY by session_id, not by which file(s) were actually attached
+            # THIS turn. A session that ever indexed an unrelated document days
+            # or conversations ago (an equity research note, a fund factsheet)
+            # will silently have it pulled into today's report too — showing up
+            # as a fabricated extra "Data Source" the user never attached this
+            # time. If this turn has an actual attachment, require at least one
+            # returned source to match it (fuzzy substring, same as OKF below);
+            # otherwise discard the RAG context entirely and fall through to
+            # the direct file_context/OKF path built from what was really sent.
+            current_filenames = set(re.findall(r"\[File:\s*([^\]]+?)\]", file_context))
+            stale = False
+            if current_filenames:
+                norm_current  = {_normalize_filename(n) for n in current_filenames}
+                norm_returned = {_normalize_filename(s) for s in returned_sources}
+                stale = not any(nc in nr or nr in nc for nc in norm_current for nr in norm_returned)
+            if stale:
+                log.warning(
+                    "Report: RAG source_files %s don't match this turn's attachment(s) %s "
+                    "— discarding stale cross-session RAG context",
+                    returned_sources, current_filenames,
+                )
+            else:
+                # Build a rich user prompt that includes the RAG grounded system prompt
+                rag_file_context = rag_result["system_prompt"]
+                log.info("Report: RAG retrieved %d chunks from %s",
+                         rag_result.get("retrieved", 0), returned_sources)
+                # Inject RAG context into file_context so the existing pipeline uses it
+                file_context = rag_file_context
+                has_rag = False  # prevent double-calling
 
     # ── If file images were uploaded, use Gemini Vision to extract data ───────
     extracted_image_context = ""
@@ -1583,7 +1590,14 @@ async def generate_report(request: Request):
     if okf_context:
         file_section += f"\n\n━━ STRUCTURED SOURCE DOCUMENTS (OKF) ━━\nEach block below is one uploaded file, structured as an Open Knowledge Format concept.\nUse these as your PRIMARY source — they are typed, titled, and extracted from the actual files the user uploaded.\n\n{okf_context}\n━━ END OKF SOURCES ━━\n"
     if file_context.strip():
-        file_section += f"\n\n━━ UPLOADED FILE TEXT CONTENT ━━\n{file_context[:6000]}\n━━ END FILE CONTENT ━━\n"
+        # 6000 chars used to be the ceiling here, which is fine for a page or
+        # two of prose but silently guillotines a multi-sheet spreadsheet
+        # (e.g. a PMS/fund performance workbook with 20+ sheets) down to a
+        # fraction of its first sheet. Gemini's context window comfortably
+        # fits this; Groq's own pre-flight size check (GROQ_MAX_PROMPT_CHARS,
+        # see call_groq) already skips straight to Gemini when the combined
+        # prompt is too large, so raising this is safe on both paths.
+        file_section += f"\n\n━━ UPLOADED FILE TEXT CONTENT ━━\n{file_context[:150000]}\n━━ END FILE CONTENT ━━\n"
 
     # Image placement instruction — tell LLM where to place extracted
     # chart/figure image references. Deliberately built from
