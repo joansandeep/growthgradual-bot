@@ -109,9 +109,8 @@ export default function NewsFAB() {
           position: fixed; inset: 0; z-index: 9997;
           background: rgba(15,23,42,.3);
           backdrop-filter: blur(3px);
-          animation: nfab-fi .2s ease;
+          transition: opacity .2s ease;
         }
-        @keyframes nfab-fi { from { opacity:0; } to { opacity:1; } }
 
         /* ── Slide panel ──────────────────────────────────────────────────── */
         .nfab-panel {
@@ -124,11 +123,7 @@ export default function NewsFAB() {
           display: flex;
           flex-direction: column;
           overflow: hidden;
-          animation: nfab-slide .28s cubic-bezier(.34,1.56,.64,1);
-        }
-        @keyframes nfab-slide {
-          from { transform: translateX(-100%); opacity: 0; }
-          to   { transform: translateX(0);     opacity: 1; }
+          transition: transform .28s cubic-bezier(.34,1.56,.64,1), opacity .2s;
         }
 
         /* ── Panel header ─────────────────────────────────────────────────── */
@@ -205,12 +200,31 @@ export default function NewsFAB() {
         <span className="nfab__label">{isChatPage ? 'News' : 'Chat'}</span>
       </button>
 
-      {/* Backdrop */}
-      {open && isChatPage && <div className="nfab-backdrop" onClick={() => setOpen(false)} />}
+      {/* Backdrop — stays mounted while on the chat page so the panel (and its
+          news fetch) can be pre-loaded before the user ever clicks the FAB;
+          visibility is purely CSS-driven so there's no mount/unmount refetch. */}
+      {isChatPage && (
+        <div
+          className="nfab-backdrop"
+          onClick={() => setOpen(false)}
+          style={{ opacity: open ? 1 : 0, visibility: open ? 'visible' : 'hidden' }}
+        />
+      )}
 
-      {/* Slide-in panel */}
-      {open && isChatPage && (
-        <div className="nfab-panel" role="dialog" aria-label="Latest news">
+      {/* Slide-in panel — mounted as soon as we're on the chat page (not just
+          when opened) so FeedPage fetches news in the background ahead of time. */}
+      {isChatPage && (
+        <div
+          className="nfab-panel"
+          role="dialog"
+          aria-label="Latest news"
+          aria-hidden={!open}
+          style={{
+            transform: open ? 'translateX(0)' : 'translateX(-100%)',
+            opacity: open ? 1 : 0,
+            visibility: open ? 'visible' : 'hidden',
+          }}
+        >
           <div className="nfab-panel__hdr">
             <div className="nfab-panel__title">
               <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">

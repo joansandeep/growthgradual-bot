@@ -208,12 +208,6 @@ FEEDS: list[dict] = [
         selectors=[".article-list h2 a", ".title a", "h2 a", "h3 a"],
     ),
     dict(
-        url="https://www.dsij.in/",
-        source="DSIJ", category="stocks", tag="Analysis",
-        strategy="httpx|selenium",
-        selectors=["h3.post-title a", ".post-title a", "h2.entry-title a", "h3 a", "h2 a"],
-    ),
-    dict(
         url="https://groww.in/blog",
         source="Groww", category="stocks", tag="Markets",
         strategy="httpx|selenium",
@@ -337,14 +331,6 @@ FEEDS: list[dict] = [
         selectors=[".news-item h3 a", ".article-list h3 a", "h3 a", "h2 a"],
         sel_wait=3,
     ),
-    dict(
-        url="https://www.amfiindia.com/investor-corner/news-and-updates",
-        source="AMFI", category="mutual_funds", tag="Mutual Funds",
-        strategy="httpx|selenium",
-        selectors=[".news-list li a", "ul li a", "table td a"],
-        sel_wait=3,
-    ),
-
     # ══════════════════════════════════════════════════════════════════════════
     # FINANCE / ECONOMY
     # ══════════════════════════════════════════════════════════════════════════

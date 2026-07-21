@@ -35,6 +35,13 @@ export interface ArticleContent {
   favicon: string;
   readingTime: number;
   fullContentFetched: boolean;
+  // Set true when the article is behind a genuine subscription paywall (e.g.
+  // BusinessLine's "READ MORE" soft-paywall) and only preview text could be
+  // extracted. Optional so every other source's existing output is untouched.
+  premium?: boolean;
+  // Set true when the page is a live-blog (schema.org LiveBlogPosting) rather
+  // than a standard NewsArticle — `paragraphs` holds chronological updates.
+  isLiveBlog?: boolean;
 }
 
 // ─── "Read More" link patterns per site ──────────────────────────────────────
@@ -902,6 +909,8 @@ function parseArticlePage(
         rawHtml: html,
         container: null as unknown as HTMLElement,
         heroImagePosition: 'afterLede' as const,
+        premium: false,
+        isLiveBlog: false,
       };
     }
 
@@ -972,9 +981,154 @@ function parseArticlePage(
           rawHtml: html,
           container: liveRoot as unknown as HTMLElement,
           heroImagePosition: 'afterLede' as const,
+          premium: false,
+          isLiveBlog: true,
         };
       }
     }
+  }
+
+  // ===========================
+  // The Hindu BusinessLine Special Handling
+  // ===========================
+  // BusinessLine (Drupal CMS) serves three distinct page shapes the generic
+  // NewsArticle parser further below can't handle correctly:
+  //
+  //   1. Google News interstitial shells ("This article is hosted on
+  //      BusinessLine" / "OPEN ON BUSINESSLINE") — these are unwrapped
+  //      *before* we ever get here, in scrapeArticle(), since they arrive
+  //      under a different URL/HTML than the real article. Nothing to do
+  //      in this function for that case.
+  //   2. Live blog pages — itemtype="http://schema.org/LiveBlogPosting"
+  //      instead of the usual itemtype="http://schema.org/NewsArticle".
+  //      Content lives in a series of timestamped update blocks, not one
+  //      article body.
+  //   3. Soft-paywalled "premium" articles — a few free paragraphs followed
+  //      by a gradient overlay + red "READ MORE" CTA
+  //      (div.bl-premium-article-paywall). Since we fetch static HTML with
+  //      no JS execution, "clicking" the CTA means following its href via
+  //      the existing read-more pass in scrapeArticle(); if that doesn't
+  //      surface more text, the article is genuinely subscriber-only and we
+  //      return `premium: true` with whatever preview text is available
+  //      instead of letting the scrape come back empty.
+  if (/thehindubusinessline\.com/i.test(url)) {
+    const blRoot = parse(html, { lowerCaseTagName: false, comment: false });
+
+    // ── Case 3: live blog detection ──────────────────────────────────────
+    const isLiveBlog =
+      /itemtype\s*=\s*["']https?:\/\/schema\.org\/LiveBlogPosting["']/i.test(html) ||
+      blRoot.querySelector('[itemtype*="LiveBlogPosting"]') !== null;
+
+    if (isLiveBlog) {
+      const liveContainer =
+        (blRoot.querySelector('[itemtype*="LiveBlogPosting"]') as HTMLElement) ?? blRoot;
+
+      // Each update is normally itemprop="liveBlogUpdate" wrapping a
+      // BlogPosting. Fall back to BusinessLine's common live-blog class
+      // names if a given update is missing full schema markup.
+      let updateEls = liveContainer.querySelectorAll(
+        '[itemprop="liveBlogUpdate"], [itemtype*="BlogPosting"]'
+      );
+      if (updateEls.length === 0) {
+        updateEls = liveContainer.querySelectorAll(
+          '.live-blog-post, .lb-update, .live-update, .blog-post'
+        );
+      }
+
+      const updates: { time: string; text: string; sortKey: number }[] = [];
+      updateEls.forEach((el, i) => {
+        const timeEl = el.querySelector('[itemprop="datePublished"], time');
+        const isoTime =
+          timeEl?.getAttribute('datetime') || timeEl?.getAttribute('content') || '';
+        const displayTime = cleanText(timeEl?.text || isoTime || '');
+
+        const bodyEl = el.querySelector(
+          '[itemprop="articleBody"], [itemprop="description"], .lb-update-body, p'
+        );
+        const text = cleanText(bodyEl?.text || el.text || '');
+
+        if (text.length > 15) {
+          const parsedTime = isoTime ? Date.parse(isoTime) : NaN;
+          updates.push({ time: displayTime, text, sortKey: Number.isNaN(parsedTime) ? i : parsedTime });
+        }
+      });
+
+      // BusinessLine renders live updates newest-first in the DOM. If we
+      // have real parsed timestamps, sort ascending for true chronological
+      // order; otherwise fall back to reversing DOM order.
+      const havePublishTimes = updateEls.length > 0 && updates.some(u => u.sortKey > updates.length);
+      const ordered = havePublishTimes
+        ? [...updates].sort((a, b) => a.sortKey - b.sortKey)
+        : [...updates].reverse();
+
+      const paragraphs = ordered.map(u => (u.time ? `[${u.time}] ${u.text}` : u.text));
+
+      if (paragraphs.length > 0) {
+        const meta = extractMeta(blRoot, url);
+        return {
+          meta,
+          images: extractImages(liveContainer, url),
+          paragraphs,
+          readMoreLinks: [],
+          rawHtml: html,
+          container: liveContainer,
+          heroImagePosition: 'afterLede' as const,
+          premium: false,
+          isLiveBlog: true,
+        };
+      }
+      // Schema detected but no updates extracted — fall through to the
+      // generic parser below rather than returning an empty article.
+    }
+
+    // ── Case 2: soft-paywall / premium detection ─────────────────────────
+    const paywallEl = blRoot.querySelector(
+      'div.bl-premium-article-paywall, [class*="premium-article-paywall"]'
+    );
+    if (paywallEl) {
+      let previewContainer: HTMLElement | null = null;
+      for (const sel of [
+        'div.article-body-content',
+        'div[class*="article-body"]',
+        'div[itemprop="articleBody"]',
+        'article',
+      ]) {
+        const el = blRoot.querySelector(sel);
+        if (el) { previewContainer = el as HTMLElement; break; }
+      }
+      previewContainer = previewContainer ?? (blRoot as unknown as HTMLElement);
+
+      // "Click" the READ MORE CTA — follow its href if it points anywhere
+      // other than the current page. scrapeArticle()'s existing read-more
+      // pass fetches this and re-runs parseArticlePage on the result; if the
+      // article is truly subscriber-only, that follow-up will hit this same
+      // paywall branch again and scrapeArticle() will keep `premium: true`.
+      const ctaLink = paywallEl.querySelector('a');
+      const ctaHref = ctaLink?.getAttribute('href') || '';
+      const readMoreLinks = ctaHref ? [absoluteUrl(ctaHref, url)] : [];
+
+      // Remove the paywall CTA block from the preview so its button label
+      // ("READ MORE") doesn't leak into the extracted preview paragraphs.
+      paywallEl.remove();
+
+      const previewParagraphs = extractParagraphs(previewContainer, false);
+      const meta = extractMeta(blRoot, url);
+
+      return {
+        meta,
+        images: extractImages(previewContainer, url),
+        paragraphs: previewParagraphs,
+        readMoreLinks,
+        rawHtml: html,
+        container: previewContainer,
+        heroImagePosition: detectHeroImagePosition(previewContainer),
+        premium: true,
+        isLiveBlog: false,
+      };
+    }
+    // No paywall marker, not a live blog — fall through to the generic
+    // parser below, which already has BusinessLine's contentSelectors /
+    // removeSelectors registered in SOURCE_RULES for the normal case.
   }
 
   // ===========================
@@ -1055,7 +1209,9 @@ function parseArticlePage(
     readMoreLinks,
     rawHtml: html,
     container,
-    heroImagePosition
+    heroImagePosition,
+    premium: false,
+    isLiveBlog: false,
   };
 }
 
@@ -1069,6 +1225,14 @@ async function scrapeArticle(articleUrl: string): Promise<ArticleContent> {
   const isAsset = /\.(jpg|jpeg|png|gif|webp|svg|ico|css|js|woff|woff2|ttf|pdf|mp4|mp3|zip)(\?|$)/i.test(urlObj.pathname);
 
   if (isGoogleInfra || isAsset) {
+    // BusinessLine Case 1: before giving up, try unwrapping a Google
+    // AMP-Viewer shell URL (google.com/amp/s/<real-url>) — the real
+    // publisher URL is embedded right in the path, no extra fetch needed.
+    const unwrapped = !isAsset ? unwrapAmpViewerUrl(articleUrl) : null;
+    if (unwrapped && unwrapped !== articleUrl) {
+      return scrapeArticle(unwrapped);
+    }
+
     // Return an empty article so the UI shows the "open externally" fallback.
     // Pass an empty title so the article page falls back to the title from URL params.
     const source = urlObj.hostname.replace(/^www\./, '');
@@ -1077,6 +1241,7 @@ async function scrapeArticle(articleUrl: string): Promise<ArticleContent> {
       author: '', publishedAt: '', heroImage: '', heroImagePosition: 'afterLede',
       images: [], paragraphs: [], source, sourceUrl: articleUrl,
       favicon: '', readingTime: 1, fullContentFetched: false,
+      premium: false, isLiveBlog: false,
     };
   }
 
@@ -1116,6 +1281,23 @@ async function scrapeArticle(articleUrl: string): Promise<ArticleContent> {
     primaryHtml = await fetchHTML(effectiveUrl);
   }
 
+  // BusinessLine Case 1 (defense in depth): even after URL-level unwrapping
+  // above, a Google interstitial shell can still arrive here under a URL
+  // that didn't look Google-owned (e.g. after a redirect chain). Detect the
+  // "This article is hosted on X / OPEN ON X" shell by its content and hop
+  // to the real article before parsing — generic, so it protects every
+  // source reached via a Google News link, not just BusinessLine.
+  const interstitialLink = extractHostedOnInterstitialLink(primaryHtml, primaryUrl);
+  if (interstitialLink && interstitialLink !== primaryUrl) {
+    try {
+      log.info('Unwrapping Google interstitial shell → %s', interstitialLink);
+      primaryHtml = await fetchHTML(interstitialLink, primaryUrl);
+      primaryUrl = interstitialLink;
+    } catch (e) {
+      log.warn('Interstitial follow-through failed: %s — %s', interstitialLink, e);
+    }
+  }
+
   const pass1 = parseArticlePage(primaryHtml, primaryUrl, rule);
 
   // Collect what we have
@@ -1123,8 +1305,16 @@ async function scrapeArticle(articleUrl: string): Promise<ArticleContent> {
   let images = pass1.images;
   let fullContentFetched = !isTruncated(paragraphs, primaryHtml);
   const { meta, heroImagePosition } = pass1;
+  // BusinessLine Case 2/3: carried through from parseArticlePage. `premiumFlag`
+  // can be revised by pass 2 below (e.g. if following the READ MORE CTA lands
+  // on the same paywall again, or conversely on the full un-gated content).
+  let premiumFlag = pass1.premium ?? false;
+  const isLiveBlog = pass1.isLiveBlog ?? false;
 
   // === PASS 2: Follow read-more links if content is still truncated ===
+  // (For BusinessLine premium articles, pass1.readMoreLinks holds the
+  // "READ MORE" CTA href — this is our "click" in a no-JS/static-fetch
+  // architecture: we follow the link instead of simulating a real click.)
   if (!fullContentFetched && pass1.readMoreLinks.length > 0) {
     for (const link of pass1.readMoreLinks) {
       try {
@@ -1139,6 +1329,7 @@ async function scrapeArticle(articleUrl: string): Promise<ArticleContent> {
         for (const img of pass2.images) {
           if (!images.includes(img)) images.push(img);
         }
+        premiumFlag = pass2.premium ?? premiumFlag;
 
         if (!isTruncated(pass2.paragraphs, html2)) {
           fullContentFetched = true;
@@ -1194,6 +1385,11 @@ async function scrapeArticle(articleUrl: string): Promise<ArticleContent> {
     favicon: meta.favicon,
     readingTime: estimateReadingTime(paragraphs),
     fullContentFetched,
+    // Only report premium if the READ MORE follow-through (PASS 2) genuinely
+    // failed to surface more content — if it did, fullContentFetched is true
+    // and we don't want to mislabel a successfully-expanded article.
+    premium: premiumFlag && !fullContentFetched,
+    isLiveBlog,
   };
 }
 
@@ -1235,6 +1431,67 @@ function isRealArticleUrl(candidate: string): boolean {
   }
 }
 
+// ── BusinessLine Case 1: Google News interstitial pages ──────────────────────
+// Some BusinessLine (and other publisher) links reached via Google News land
+// on a Google AMP-Viewer shell instead of the real article — a static page
+// whose only content is "This article is hosted on <Publisher>" and an
+// "OPEN ON <PUBLISHER>" link. Two ways this shell shows up, handled below:
+//   (a) The URL itself is a Google AMP-Viewer URL of the form
+//       https://google.com/amp/s/<real-domain>/<real-path> — the real
+//       article URL is embedded directly in the path, no network call needed.
+//   (b) The fetched HTML *content* matches the interstitial shell even though
+//       the URL didn't look Google-owned (e.g. after a redirect chain) — in
+//       that case we parse the shell's own "OPEN ON X" link out of the HTML.
+// Both helpers are generic (not BusinessLine-specific) so this protects any
+// source that comes in via a Google News link, per the requirement that this
+// fix shouldn't only apply to BusinessLine.
+
+/** Unwrap a Google AMP-Viewer URL (google.com/amp/s/<real-url>) to the real publisher URL. */
+function unwrapAmpViewerUrl(url: string): string | null {
+  try {
+    const u = new URL(url);
+    if (!GOOGLE_DOMAINS.test(u.hostname)) return null;
+    const m = u.pathname.match(/^\/amp\/s\/(.+)$/i);
+    if (!m) return null;
+    const real = 'https://' + decodeURIComponent(m[1]);
+    return isRealArticleUrl(real) ? real : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Detect a Google "This article is hosted on X" interstitial shell by its
+ * content and extract the real publisher URL from its "OPEN ON X" link.
+ * Returns null if the HTML doesn't look like this shell at all.
+ */
+function extractHostedOnInterstitialLink(html: string, pageUrl: string): string | null {
+  if (!/this\s+article\s+is\s+hosted\s+on/i.test(html)) return null;
+  try {
+    const root = parse(html, { lowerCaseTagName: false, comment: false });
+    const anchors = root.querySelectorAll('a');
+    // Prefer the anchor whose visible text is literally "OPEN ON <publisher>"
+    for (const a of anchors) {
+      const text = (a.text || '').trim();
+      const href = a.getAttribute('href') || '';
+      if (/^open\s+on\b/i.test(text) && href) {
+        const abs = absoluteUrl(href, pageUrl);
+        const candidate = unwrapAmpViewerUrl(abs) ?? abs;
+        if (isRealArticleUrl(candidate)) return candidate;
+      }
+    }
+    // Fall back to the first non-Google anchor on the shell page
+    for (const a of anchors) {
+      const href = a.getAttribute('href') || '';
+      if (!href) continue;
+      const abs = absoluteUrl(href, pageUrl);
+      const candidate = unwrapAmpViewerUrl(abs) ?? abs;
+      if (isRealArticleUrl(candidate)) return candidate;
+    }
+  } catch { /* ignore parse errors — treat as unresolvable */ }
+  return null;
+}
+
 /**
  * Resolve a news.google.com/rss/articles/... URL to the real publisher article URL.
  *
@@ -1249,6 +1506,12 @@ function isRealArticleUrl(candidate: string): boolean {
  *  8. Fall back to original URL
  */
 async function resolveGoogleNewsUrl(url: string): Promise<string> {
+  // BusinessLine Case 1: Google AMP-Viewer URLs (google.com/amp/s/...) carry
+  // the real publisher URL directly in the path — unwrap them with no
+  // network round-trip before falling through to the news.google.com logic.
+  const ampUnwrapped = unwrapAmpViewerUrl(url);
+  if (ampUnwrapped) return ampUnwrapped;
+
   if (!url.includes('news.google.com')) return url;
 
   const GNEWS_HEADERS = {
@@ -1372,9 +1635,13 @@ async function resolveGoogleNewsUrl(url: string): Promise<string> {
 
       // ── Strategy 5: <a href> links pointing off google.com ───────────────
       // Score candidates same as script URLs — avoid sharing widgets / CDN links.
+      // Also unwrap AMP-Viewer links (google.com/amp/s/...) found among the
+      // anchors, since a resolved-looking-Google href may still embed the
+      // real BusinessLine (or other publisher) URL in its path.
       const anchorCandidates: string[] = [];
       for (const [, href] of [...html.matchAll(/<a[^>]+href=["'](https?:\/\/[^"']+)["']/gi)]) {
-        const candidate = decodeGoogleUrl(href);
+        const decoded = decodeGoogleUrl(href);
+        const candidate = unwrapAmpViewerUrl(decoded) ?? decoded;
         if (isRealArticleUrl(candidate)) anchorCandidates.push(candidate);
       }
       const bestAnchor = anchorCandidates
@@ -1382,6 +1649,13 @@ async function resolveGoogleNewsUrl(url: string): Promise<string> {
         .filter(x => x.score > 0)
         .sort((a, b) => b.score - a.score)[0]?.u;
       if (bestAnchor) return bestAnchor;
+
+      // ── Strategy 6: "This article is hosted on X / OPEN ON X" shell ──────
+      // BusinessLine Case 1: covers the AMP-Viewer interstitial when none of
+      // the above strategies picked it up (e.g. its "OPEN ON X" link isn't
+      // the highest-scoring anchor by the generic slug heuristic above).
+      const interstitialLink = extractHostedOnInterstitialLink(html, tryUrl);
+      if (interstitialLink) return interstitialLink;
 
     } catch {
       // Network error — try next URL variant
