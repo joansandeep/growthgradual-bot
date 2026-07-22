@@ -1286,15 +1286,22 @@ async function scrapeArticle(articleUrl: string): Promise<ArticleContent> {
   // that didn't look Google-owned (e.g. after a redirect chain). Detect the
   // "This article is hosted on X / OPEN ON X" shell by its content and hop
   // to the real article before parsing — generic, so it protects every
-  // source reached via a Google News link, not just BusinessLine.
-  const interstitialLink = extractHostedOnInterstitialLink(primaryHtml, primaryUrl);
-  if (interstitialLink && interstitialLink !== primaryUrl) {
+  // source reached via a Google News link, not just BusinessLine. Looped
+  // (bounded) since the resolved link can itself occasionally be another
+  // shell before landing on the real publisher page.
+  for (let hop = 0; hop < MAX_GOOGLE_REDIRECT_DEPTH; hop++) {
+    const interstitialLink = await extractHostedOnInterstitialLink(primaryHtml, primaryUrl);
+    if (!interstitialLink || interstitialLink === primaryUrl) break;
     try {
-      log.info('Unwrapping Google interstitial shell → %s', interstitialLink);
+      const label = /thehindubusinessline\.com/i.test(interstitialLink)
+        ? 'BusinessLine'
+        : safeHostname(interstitialLink);
+      log.info('Fetching %s article: %s', label, interstitialLink);
       primaryHtml = await fetchHTML(interstitialLink, primaryUrl);
       primaryUrl = interstitialLink;
     } catch (e) {
       log.warn('Interstitial follow-through failed: %s — %s', interstitialLink, e);
+      break;
     }
   }
 
@@ -1446,6 +1453,13 @@ function isRealArticleUrl(candidate: string): boolean {
 // source that comes in via a Google News link, per the requirement that this
 // fix shouldn't only apply to BusinessLine.
 
+// Shared depth guard between extractHostedOnInterstitialLink and
+// resolveGoogleNewsUrl, which can call each other (the "OPEN ON X" link on
+// a hosted-page shell is sometimes itself another Google News URL that
+// needs a further round of resolution). Without this, a pathological chain
+// of shells could recurse forever.
+const MAX_GOOGLE_REDIRECT_DEPTH = 4;
+
 /** Unwrap a Google AMP-Viewer URL (google.com/amp/s/<real-url>) to the real publisher URL. */
 function unwrapAmpViewerUrl(url: string): string | null {
   try {
@@ -1463,33 +1477,81 @@ function unwrapAmpViewerUrl(url: string): string | null {
 /**
  * Detect a Google "This article is hosted on X" interstitial shell by its
  * content and extract the real publisher URL from its "OPEN ON X" link.
- * Returns null if the HTML doesn't look like this shell at all.
+ *
+ * IMPORTANT: the "OPEN ON X" href is frequently *another* Google News
+ * redirect URL, not the final publisher URL — Google's shell just proxies
+ * the click through another hop. Returning that href as-is (the old bug)
+ * sends the caller right back to the same hosted shell. So instead of
+ * returning the raw href, this function keeps resolving — recursing into
+ * resolveGoogleNewsUrl() — until it lands on an actual publisher URL (or
+ * gives up at MAX_GOOGLE_REDIRECT_DEPTH).
+ *
+ * Returns null if the HTML doesn't look like this shell at all, or if no
+ * publisher URL could be reached.
  */
-function extractHostedOnInterstitialLink(html: string, pageUrl: string): string | null {
+async function extractHostedOnInterstitialLink(
+  html: string,
+  pageUrl: string,
+  depth = 0
+): Promise<string | null> {
   if (!/this\s+article\s+is\s+hosted\s+on/i.test(html)) return null;
+  log.info('Hosted page detected (Google interstitial shell) at %s', pageUrl);
+
+  if (depth >= MAX_GOOGLE_REDIRECT_DEPTH) {
+    log.warn('Hosted-page redirect depth exceeded (%d) for %s — giving up', depth, pageUrl);
+    return null;
+  }
+
+  let href = '';
   try {
     const root = parse(html, { lowerCaseTagName: false, comment: false });
     const anchors = root.querySelectorAll('a');
     // Prefer the anchor whose visible text is literally "OPEN ON <publisher>"
     for (const a of anchors) {
       const text = (a.text || '').trim();
-      const href = a.getAttribute('href') || '';
-      if (/^open\s+on\b/i.test(text) && href) {
-        const abs = absoluteUrl(href, pageUrl);
-        const candidate = unwrapAmpViewerUrl(abs) ?? abs;
-        if (isRealArticleUrl(candidate)) return candidate;
+      const h = a.getAttribute('href') || '';
+      if (/^open\s+on\b/i.test(text) && h) { href = h; break; }
+    }
+    // Fall back to the first anchor with any href on the shell page
+    if (!href) {
+      for (const a of anchors) {
+        const h = a.getAttribute('href') || '';
+        if (h) { href = h; break; }
       }
     }
-    // Fall back to the first non-Google anchor on the shell page
-    for (const a of anchors) {
-      const href = a.getAttribute('href') || '';
-      if (!href) continue;
-      const abs = absoluteUrl(href, pageUrl);
-      const candidate = unwrapAmpViewerUrl(abs) ?? abs;
-      if (isRealArticleUrl(candidate)) return candidate;
-    }
-  } catch { /* ignore parse errors — treat as unresolvable */ }
-  return null;
+  } catch {
+    // ignore parse errors — treat as unresolvable
+  }
+
+  if (!href) return null;
+
+  const absHref = absoluteUrl(href, pageUrl);
+  log.info('OPEN ON href: %s', absHref);
+
+  // Case A: the href is an AMP-Viewer URL — unwrap it directly, no fetch needed.
+  let candidate = unwrapAmpViewerUrl(absHref) ?? absHref;
+
+  // Case B: the href is itself another Google News URL — this is the bug
+  // fix. Keep resolving instead of returning this Google URL as "done".
+  if (candidate.includes('news.google.com') || GOOGLE_DOMAINS.test(safeHostname(candidate))) {
+    log.info('Resolving Google redirect...');
+    candidate = await resolveGoogleNewsUrl(candidate, depth + 1);
+  }
+
+  // Final guard: never hand back a Google-owned URL (news.google.com,
+  // googleusercontent.com, gstatic.com, ampproject.org, etc.) as "resolved".
+  if (!isRealArticleUrl(candidate) || GOOGLE_DOMAINS.test(safeHostname(candidate))) {
+    log.warn('Could not resolve past Google hosted shell for %s', pageUrl);
+    return null;
+  }
+
+  log.info('Resolved publisher URL: %s', candidate);
+  return candidate;
+}
+
+/** Hostname of a URL, or '' if unparseable — avoids try/catch clutter at call sites. */
+function safeHostname(url: string): string {
+  try { return new URL(url).hostname; } catch { return ''; }
 }
 
 /**
@@ -1505,7 +1567,7 @@ function extractHostedOnInterstitialLink(html: string, pageUrl: string): string 
  *  7. All href attributes on <a> tags pointing off google.com
  *  8. Fall back to original URL
  */
-async function resolveGoogleNewsUrl(url: string): Promise<string> {
+async function resolveGoogleNewsUrl(url: string, depth = 0): Promise<string> {
   // BusinessLine Case 1: Google AMP-Viewer URLs (google.com/amp/s/...) carry
   // the real publisher URL directly in the path — unwrap them with no
   // network round-trip before falling through to the news.google.com logic.
@@ -1513,6 +1575,13 @@ async function resolveGoogleNewsUrl(url: string): Promise<string> {
   if (ampUnwrapped) return ampUnwrapped;
 
   if (!url.includes('news.google.com')) return url;
+
+  log.info('Google News URL detected: %s', url);
+
+  if (depth >= MAX_GOOGLE_REDIRECT_DEPTH) {
+    log.warn('Google News redirect depth exceeded (%d) for %s — giving up', depth, url);
+    return url;
+  }
 
   const GNEWS_HEADERS = {
     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
@@ -1654,7 +1723,7 @@ async function resolveGoogleNewsUrl(url: string): Promise<string> {
       // BusinessLine Case 1: covers the AMP-Viewer interstitial when none of
       // the above strategies picked it up (e.g. its "OPEN ON X" link isn't
       // the highest-scoring anchor by the generic slug heuristic above).
-      const interstitialLink = extractHostedOnInterstitialLink(html, tryUrl);
+      const interstitialLink = await extractHostedOnInterstitialLink(html, tryUrl, depth + 1);
       if (interstitialLink) return interstitialLink;
 
     } catch {
