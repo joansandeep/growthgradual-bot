@@ -242,7 +242,7 @@ export default function FeedPage({ category }: { category: Category }) {
                 fontWeight:600, transition:'all .15s',
               }}
               onMouseEnter={e => { if (!refreshing) { e.currentTarget.style.borderColor='#0d5c45'; e.currentTarget.style.background='rgba(13,92,69,0.05)'; }}}
-              onMouseLeave={e => { e.currentTarget.style.borderColor='#e4e8ef'; e.currentTarget.style.background='#fff'; }}
+              onMouseLeave={e => { e.currentTarget.style.borderColor='#e6e2d8'; e.currentTarget.style.background='#fff'; }}
             >
               {refreshing ? '↻ Fetching…' : '↻ Refresh'}
             </button>
@@ -260,7 +260,12 @@ export default function FeedPage({ category }: { category: Category }) {
             fontSize:'12px', color:'#991b1b', fontFamily:"'DM Sans',sans-serif",
           }}>
             ⚠ {error}
-            <button onClick={() => loadArticles(false)} style={{ marginLeft:'12px', background:'none', border:'none', color:'#0d5c45', cursor:'pointer', fontSize:'11px', fontFamily:"'DM Sans',sans-serif", textDecoration:'underline' }}>Retry</button>
+            <button
+              onClick={() => loadArticles(false)}
+              style={{ marginLeft:'12px', background:'none', border:'none', color:'#0d5c45', cursor:'pointer', fontSize:'11px', fontFamily:"'DM Sans',sans-serif", textDecoration:'underline', transition:'color .15s ease' }}
+              onMouseEnter={e => { e.currentTarget.style.color='#0a4a37'; }}
+              onMouseLeave={e => { e.currentTarget.style.color='#0d5c45'; }}
+            >Retry</button>
           </div>
         )}
 

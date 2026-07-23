@@ -73,11 +73,12 @@ export default function ArticleCard({ article, featured=false, compact=false }: 
     <div
       onClick={navigate}
       style={{
-        padding:'11px 14px',
+        padding:'11px 14px 11px 12px',
         borderBottom:'1px solid #eef0f5',
+        borderLeft:'2px solid transparent',
         cursor:'pointer',
         borderRadius:'6px',
-        transition:'background .15s',
+        transition:'background .18s cubic-bezier(.4,0,.2,1), border-color .18s cubic-bezier(.4,0,.2,1)',
         display:'flex', gap:'12px', alignItems:'flex-start',
       }}
       onMouseEnter={e => {
@@ -113,7 +114,7 @@ export default function ArticleCard({ article, featured=false, compact=false }: 
         background:'#fff', borderRadius:'12px', overflow:'hidden',
         cursor:'pointer', border:'1px solid #e4e8ef',
         boxShadow:'0 2px 12px rgba(15,23,42,0.06)',
-        transition:'box-shadow .2s,transform .2s',
+        transition:'box-shadow .22s cubic-bezier(.4,0,.2,1), transform .22s cubic-bezier(.4,0,.2,1)',
       }}
       onMouseEnter={e => {
         e.currentTarget.style.boxShadow='0 8px 32px rgba(13,92,69,0.12)';
@@ -180,7 +181,7 @@ export default function ArticleCard({ article, featured=false, compact=false }: 
         border:'1px solid #e4e8ef',
         boxShadow:'0 1px 6px rgba(15,23,42,0.05)',
         display:'flex', flexDirection:'column',
-        transition:'box-shadow .18s,transform .18s,border-color .18s',
+        transition:'box-shadow .2s cubic-bezier(.4,0,.2,1), transform .2s cubic-bezier(.4,0,.2,1), border-color .2s cubic-bezier(.4,0,.2,1)',
       }}
       onMouseEnter={e => {
         e.currentTarget.style.boxShadow='0 6px 24px rgba(13,92,69,0.1)';

@@ -22,14 +22,45 @@
   /* fluid sidebar columns */
   --col-left:  clamp(160px, 17vw, 230px);
   --col-right: clamp(180px, 18vw, 250px);
+  /* consistent radius + shadow + motion scale, layered on top of the
+     existing palette — no new colors, just shared sizing/easing tokens
+     so every card/button/pill draws from the same system */
+  --radius-sm: 6px;
+  --radius-md: 10px;
+  --radius-lg: 14px;
+  --radius-pill: 999px;
+  --shadow-xs: 0 1px 3px rgba(15,23,42,0.05);
+  --shadow-sm: 0 2px 10px rgba(15,23,42,0.06);
+  --shadow-md: 0 6px 22px rgba(15,23,42,0.10);
+  --shadow-lg: 0 10px 34px rgba(15,23,42,0.14);
+  --ease: cubic-bezier(.4,0,.2,1);
+  --ease-spring: cubic-bezier(.34,1.56,.64,1);
+  --sticky-top: 84px;
 }
 
-html { font-size: 16px; }
+html { font-size: 16px; scroll-behavior: smooth; }
 body {
   background: var(--cream);
   min-height: 100dvh;
   -webkit-font-smoothing: antialiased;
   color: var(--text);
+}
+
+/* ── Accessible focus ring — gold accent, only shown for keyboard nav ──── */
+:focus-visible {
+  outline: 2px solid var(--gold);
+  outline-offset: 2px;
+  border-radius: 4px;
+}
+
+/* ── Respect reduced-motion preference ──────────────────────────────────── */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+    scroll-behavior: auto !important;
+  }
 }
 
 /* ── Layout grid ─────────────────────────────────────────────────────────── */
@@ -40,6 +71,23 @@ body {
   align-items: start;
 }
 .page-grid > * { min-width: 0; overflow: hidden; }
+
+/* Both rails scroll with the page until they hit the navbar, then stay put —
+   standard financial-terminal behavior so live prices/related reading stay
+   visible while the center column is being read. */
+.page-grid > .stock-panel-left,
+.page-grid > .sidebar-right {
+  position: sticky;
+  top: var(--sticky-top);
+  max-height: calc(100dvh - var(--sticky-top) - 16px);
+  overflow-y: auto;
+  scrollbar-width: thin;
+  scrollbar-color: var(--border) transparent;
+}
+.page-grid > .stock-panel-left::-webkit-scrollbar,
+.page-grid > .sidebar-right::-webkit-scrollbar { width: 4px; }
+.page-grid > .stock-panel-left::-webkit-scrollbar-thumb,
+.page-grid > .sidebar-right::-webkit-scrollbar-thumb { background: var(--border); border-radius: 4px; }
 
 @media (max-width: 1100px) {
   .page-grid { grid-template-columns: clamp(140px,16vw,190px) 1fr; }
@@ -222,6 +270,7 @@ body {
   background: var(--surface);
   border-top: 1px solid var(--border);
   padding: 14px 12px 10px;
+  animation: fadeUp 0.2s var(--ease) forwards;
 }
 .mmb-section { margin-bottom: 14px; }
 .mmb-section:last-of-type { margin-bottom: 8px; }
@@ -240,8 +289,10 @@ body {
 .mmb-card {
   display: flex; flex-direction: column; gap: 3px; align-items: flex-start;
   background: var(--surface2); border: 1px solid var(--border2);
-  border-radius: 6px; padding: 8px 6px;
+  border-radius: var(--radius-sm); padding: 8px 6px;
+  transition: border-color .15s var(--ease), box-shadow .15s var(--ease), transform .15s var(--ease);
 }
+.mmb-card:hover { border-color: var(--border); box-shadow: var(--shadow-xs); transform: translateY(-1px); }
 .mmb-card-sym { font-size: 8px; font-weight: 600; color: #64748b; font-family: 'DM Sans', sans-serif; }
 .mmb-card-price { font-size: 11px; font-weight: 700; color: var(--navy); font-family: 'JetBrains Mono', monospace; }
 .mmb-card-chg { font-size: 8px; font-weight: 600; padding: 1px 4px; border-radius: 3px; font-family: 'JetBrains Mono', monospace; }
@@ -264,9 +315,13 @@ body {
 .mmb-close {
   width: 100%; margin-top: 4px; padding: 8px;
   background: var(--surface2); border: 1px solid var(--border);
-  border-radius: 6px; font-size: 10px; font-weight: 600; letter-spacing: 0.5px;
+  border-radius: var(--radius-sm); font-size: 10px; font-weight: 600; letter-spacing: 0.5px;
   color: #64748b; font-family: 'DM Sans', sans-serif; cursor: pointer;
+  transition: background .15s var(--ease), border-color .15s var(--ease), color .15s var(--ease);
 }
+.mmb-close:hover { background: var(--navy); border-color: var(--navy); color: #fff; }
+.mobile-market-strip-inner { transition: opacity .15s var(--ease); }
+.mobile-market-strip:hover .mobile-market-strip-inner { opacity: 0.92; }
 
 /* ── Scrollbar ───────────────────────────────────────────────────────────── */
 ::-webkit-scrollbar { width: 4px; height: 4px; }
@@ -298,11 +353,13 @@ body {
   max-height: 360px;
   width: auto;
   height: auto;
-  border-radius: 8px;
+  border-radius: var(--radius-sm);
   border: 1px solid var(--border2);
-  box-shadow: 0 2px 10px rgba(15,23,42,0.06);
+  box-shadow: var(--shadow-sm);
   object-fit: cover;
+  transition: box-shadow .2s var(--ease), transform .2s var(--ease);
 }
+.inline-report-image img:hover { box-shadow: var(--shadow-md); transform: translateY(-1px); }
 .inline-report-image figcaption {
   margin-top: 6px;
   font-size: 11px;

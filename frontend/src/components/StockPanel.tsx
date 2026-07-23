@@ -86,6 +86,31 @@ function Pulse({ color = '#22c55e' }: { color?: string }) {
   );
 }
 
+const SkeletonRow = () => (
+  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '7px 0', borderBottom: '1px solid #f8fafc' }}>
+    <div className="skeleton-shine" style={{ width: '58px', height: '10px', borderRadius: '3px' }} />
+    <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: '5px' }}>
+      <div className="skeleton-shine" style={{ width: '46px', height: '11px', borderRadius: '3px' }} />
+      <div className="skeleton-shine" style={{ width: '32px', height: '9px', borderRadius: '3px' }} />
+    </div>
+  </div>
+);
+
+const RowHover = ({ children, flashColor }: { children: React.ReactNode; flashColor?: string }) => {
+  const [hover, setHover] = useState(false);
+  return (
+    <div
+      onMouseEnter={() => setHover(true)}
+      onMouseLeave={() => setHover(false)}
+      style={{
+        margin: '0 -8px', padding: '0 8px', borderRadius: '6px',
+        background: flashColor ?? (hover ? '#faf9f6' : 'transparent'),
+        transition: 'background .3s ease',
+      }}
+    >{children}</div>
+  );
+};
+
 // ── Props kept for layout.tsx compatibility ────────────────────────────────
 // eslint-disable-next-line @typescript-eslint/no-unused-vars
 export default function StockPanel(_props: { stocks?: Stock[]; stats?: QuickStat[] }) {
@@ -184,30 +209,31 @@ export default function StockPanel(_props: { stocks?: Stock[]; stats?: QuickStat
           ⚡ NSE India · Live
         </p>
 
-        {indices.map(s => (
-          <div key={s.symbol} style={{
-            display: 'flex', justifyContent: 'space-between', alignItems: 'center',
-            padding: '7px 0', borderBottom: '1px solid #f8fafc',
-            transition: 'background 0.3s',
-            background: flash.has(s.symbol) ? (s.up ? '#f0fdf4' : '#fef2f2') : 'transparent',
-            borderRadius: '2px',
-          }}>
-            <span style={{
-              fontSize: '10px', fontWeight: 600, color: '#475569',
-              fontFamily: 'DM Sans, sans-serif', letterSpacing: '0.3px',
-            }}>{s.symbol}</span>
-            <div style={{ textAlign: 'right' }}>
-              <p style={{
-                fontSize: '11px', color: '#0f172a',
-                fontFamily: 'JetBrains Mono, monospace', fontWeight: 500,
-              }}>{loading ? '—' : s.price}</p>
-              <p style={{
-                fontSize: '9px',
-                color: s.change === '—' ? '#94a3b8' : (s.up ? '#15803d' : '#b91c1c'),
-                fontFamily: 'JetBrains Mono, monospace',
-              }}>{loading ? '—' : (s.change === '—' ? '—' : `${s.up ? '▲' : '▼'} ${s.change}`)}</p>
+        {loading ? (
+          Array.from({ length: 6 }).map((_, i) => <SkeletonRow key={i} />)
+        ) : indices.map(s => (
+          <RowHover key={s.symbol} flashColor={flash.has(s.symbol) ? (s.up ? '#f0fdf4' : '#fef2f2') : undefined}>
+            <div style={{
+              display: 'flex', justifyContent: 'space-between', alignItems: 'center',
+              padding: '7px 0', borderBottom: '1px solid #f8fafc',
+            }}>
+              <span style={{
+                fontSize: '10px', fontWeight: 600, color: '#475569',
+                fontFamily: 'DM Sans, sans-serif', letterSpacing: '0.3px',
+              }}>{s.symbol}</span>
+              <div style={{ textAlign: 'right' }}>
+                <p style={{
+                  fontSize: '11px', color: '#0f172a',
+                  fontFamily: 'JetBrains Mono, monospace', fontWeight: 500,
+                }}>{s.price}</p>
+                <p style={{
+                  fontSize: '9px',
+                  color: s.change === '—' ? '#94a3b8' : (s.up ? '#15803d' : '#b91c1c'),
+                  fontFamily: 'JetBrains Mono, monospace',
+                }}>{s.change === '—' ? '—' : `${s.up ? '▲' : '▼'} ${s.change}`}</p>
+              </div>
             </div>
-          </div>
+          </RowHover>
         ))}
       </Panel>
 
@@ -215,17 +241,24 @@ export default function StockPanel(_props: { stocks?: Stock[]; stats?: QuickStat
       <Panel>
         <SectionLabel>▲ Top Gainers</SectionLabel>
         {loading ? (
-          <div style={{ fontSize: '10px', color: '#cbd5e1', fontFamily: 'DM Sans, sans-serif' }}>Loading…</div>
+          Array.from({ length: 3 }).map((_, i) => (
+            <div key={i} style={{ display: 'flex', justifyContent: 'space-between', padding: '6px 0', borderBottom: '1px solid #f8fafc' }}>
+              <div className="skeleton-shine" style={{ width: '54px', height: '9px', borderRadius: '3px' }} />
+              <div className="skeleton-shine" style={{ width: '36px', height: '9px', borderRadius: '3px' }} />
+            </div>
+          ))
         ) : gainers.length === 0 ? (
           <div style={{ fontSize: '10px', color: '#cbd5e1', fontFamily: 'DM Sans, sans-serif' }}>No data</div>
         ) : gainers.map(s => (
-          <div key={s.symbol} style={{
-            display: 'flex', justifyContent: 'space-between', alignItems: 'center',
-            padding: '6px 0', borderBottom: '1px solid #f8fafc',
-          }}>
-            <span style={{ fontSize: '10px', color: '#64748b', fontFamily: 'DM Sans, sans-serif' }}>{s.symbol}</span>
-            <span style={{ fontSize: '10px', color: '#15803d', fontFamily: 'JetBrains Mono, monospace', fontWeight: 600 }}>{s.change}</span>
-          </div>
+          <RowHover key={s.symbol}>
+            <div style={{
+              display: 'flex', justifyContent: 'space-between', alignItems: 'center',
+              padding: '6px 0', borderBottom: '1px solid #f8fafc',
+            }}>
+              <span style={{ fontSize: '10px', color: '#64748b', fontFamily: 'DM Sans, sans-serif' }}>{s.symbol}</span>
+              <span style={{ fontSize: '10px', color: '#15803d', fontFamily: 'JetBrains Mono, monospace', fontWeight: 600 }}>{s.change}</span>
+            </div>
+          </RowHover>
         ))}
       </Panel>
 
@@ -233,17 +266,24 @@ export default function StockPanel(_props: { stocks?: Stock[]; stats?: QuickStat
       <Panel>
         <SectionLabel>▼ Top Losers</SectionLabel>
         {loading ? (
-          <div style={{ fontSize: '10px', color: '#cbd5e1', fontFamily: 'DM Sans, sans-serif' }}>Loading…</div>
+          Array.from({ length: 3 }).map((_, i) => (
+            <div key={i} style={{ display: 'flex', justifyContent: 'space-between', padding: '6px 0', borderBottom: '1px solid #f8fafc' }}>
+              <div className="skeleton-shine" style={{ width: '54px', height: '9px', borderRadius: '3px' }} />
+              <div className="skeleton-shine" style={{ width: '36px', height: '9px', borderRadius: '3px' }} />
+            </div>
+          ))
         ) : losers.length === 0 ? (
           <div style={{ fontSize: '10px', color: '#cbd5e1', fontFamily: 'DM Sans, sans-serif' }}>No data</div>
         ) : losers.map(s => (
-          <div key={s.symbol} style={{
-            display: 'flex', justifyContent: 'space-between', alignItems: 'center',
-            padding: '6px 0', borderBottom: '1px solid #f8fafc',
-          }}>
-            <span style={{ fontSize: '10px', color: '#64748b', fontFamily: 'DM Sans, sans-serif' }}>{s.symbol}</span>
-            <span style={{ fontSize: '10px', color: '#b91c1c', fontFamily: 'JetBrains Mono, monospace', fontWeight: 600 }}>{s.change}</span>
-          </div>
+          <RowHover key={s.symbol}>
+            <div style={{
+              display: 'flex', justifyContent: 'space-between', alignItems: 'center',
+              padding: '6px 0', borderBottom: '1px solid #f8fafc',
+            }}>
+              <span style={{ fontSize: '10px', color: '#64748b', fontFamily: 'DM Sans, sans-serif' }}>{s.symbol}</span>
+              <span style={{ fontSize: '10px', color: '#b91c1c', fontFamily: 'JetBrains Mono, monospace', fontWeight: 600 }}>{s.change}</span>
+            </div>
+          </RowHover>
         ))}
       </Panel>
 
@@ -274,21 +314,21 @@ export default function StockPanel(_props: { stocks?: Stock[]; stats?: QuickStat
       {/* ── Global Indicators ───────────────────────────────────────────── */}
       <Panel>
         <SectionLabel>Global Indicators</SectionLabel>
-        {data.stats.map(s => (
-          <div key={s.label} style={{
-            display: 'flex', justifyContent: 'space-between', alignItems: 'center',
-            padding: '7px 0', borderBottom: '1px solid #f8fafc',
-          }}>
-            <span style={{ fontSize: '10px', color: '#64748b', fontFamily: 'DM Sans, sans-serif' }}>{s.label}</span>
-            <div style={{ textAlign: 'right' }}>
-              <p style={{ fontSize: '11px', color: '#0f172a', fontFamily: 'JetBrains Mono, monospace', fontWeight: 500 }}>
-                {loading ? '—' : s.value}
-              </p>
-              <p style={{ fontSize: '9px', color: '#94a3b8', fontFamily: 'JetBrains Mono, monospace' }}>
-                {loading ? '' : s.sub}
-              </p>
+        {loading ? (
+          Array.from({ length: 5 }).map((_, i) => <SkeletonRow key={i} />)
+        ) : data.stats.map(s => (
+          <RowHover key={s.label}>
+            <div style={{
+              display: 'flex', justifyContent: 'space-between', alignItems: 'center',
+              padding: '7px 0', borderBottom: '1px solid #f8fafc',
+            }}>
+              <span style={{ fontSize: '10px', color: '#64748b', fontFamily: 'DM Sans, sans-serif' }}>{s.label}</span>
+              <div style={{ textAlign: 'right' }}>
+                <p style={{ fontSize: '11px', color: '#0f172a', fontFamily: 'JetBrains Mono, monospace', fontWeight: 500 }}>{s.value}</p>
+                <p style={{ fontSize: '9px', color: '#94a3b8', fontFamily: 'JetBrains Mono, monospace' }}>{s.sub}</p>
+              </div>
             </div>
-          </div>
+          </RowHover>
         ))}
       </Panel>
 

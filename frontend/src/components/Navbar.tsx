@@ -38,19 +38,20 @@ export default function Navbar() {
         @keyframes glow{0%,100%{box-shadow:0 0 6px rgba(34,197,94,0.4)}50%{box-shadow:0 0 14px rgba(34,197,94,0.7)}}
         .nav-link-item {
           display:flex;align-items:center;gap:5px;
-          padding:5px 13px;border-radius:3px;
+          padding:5px 13px;border-radius:6px 6px 0 0;
           font-size:10.5px;font-weight:500;
           font-family:'DM Sans',sans-serif;letter-spacing:0.7px;
           text-transform:uppercase;text-decoration:none;
           color:rgba(15,23,42,0.5);
           border-bottom:2px solid transparent;
-          transition:color .15s,border-color .15s,background .15s;
+          transition:color .18s cubic-bezier(.4,0,.2,1),border-color .18s cubic-bezier(.4,0,.2,1),background .18s cubic-bezier(.4,0,.2,1);
           white-space:nowrap;
         }
-        .nav-link-item:hover { color:rgba(15,23,42,0.85); background:rgba(15,23,42,0.04); }
+        .nav-link-item:hover { color:rgba(15,23,42,0.85); background:rgba(15,23,42,0.05); }
         .nav-link-item.active {
           color:#0f172a;font-weight:700;
           border-bottom-color:#c8922a;
+          background:rgba(200,146,42,0.06);
         }
         .mob-nav-item {
           display:flex;flex-direction:column;align-items:center;gap:3px;
@@ -58,6 +59,9 @@ export default function Navbar() {
           color:#94a3b8;transition:color .15s;
         }
         .mob-nav-item.active { color:#0d5c45; }
+        .mob-nav-item { border-radius:8px; }
+        .mob-nav-item:active { background:rgba(13,92,69,0.08); transform:scale(.96); }
+        .market-status-pill { transition:background .2s cubic-bezier(.4,0,.2,1),border-color .2s cubic-bezier(.4,0,.2,1); animation:fadeUp .25s cubic-bezier(.4,0,.2,1); }
       `}</style>
 
       <nav style={{
@@ -100,7 +104,7 @@ export default function Navbar() {
           <div style={{ display:'flex', alignItems:'center', gap:'12px' }}>
             {/* Market status pill */}
             {marketOpen !== null && (
-              <div style={{
+              <div className="market-status-pill" style={{
                 display:'flex', alignItems:'center', gap:'6px',
                 background: marketOpen ? 'rgba(34,197,94,0.08)' : 'rgba(15,23,42,0.05)',
                 border: `1px solid ${marketOpen ? 'rgba(34,197,94,0.25)' : 'rgba(15,23,42,0.12)'}`,

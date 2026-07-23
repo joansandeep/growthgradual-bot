@@ -573,7 +573,24 @@ function EmailModal({ onClose, onSend, sending, result, defaultSubject }: {
   return (
     <div style={{ position:'fixed', inset:0, zIndex:9999, background:'rgba(15,20,50,.55)', backdropFilter:'blur(4px)', display:'flex', alignItems:'center', justifyContent:'center', padding:20 }}
       onClick={e => { if (e.target === e.currentTarget) onClose(); }}>
-      <div style={{ background:'#fff', borderRadius:16, width:'100%', maxWidth:430, boxShadow:'0 20px 60px rgba(26,31,78,.25)', fontFamily:"'DM Sans',sans-serif", overflow:'hidden' }}>
+      <style>{`
+        .email-modal { animation: fadeUp .22s cubic-bezier(.4,0,.2,1); }
+        .email-modal-close { transition: background .15s ease, transform .15s ease; }
+        .email-modal-close:hover { background: rgba(255,255,255,.2); }
+        .email-modal-close:active { transform: scale(.92); }
+        .email-modal-filebtn { transition: background .15s ease, border-color .15s ease, box-shadow .15s ease; }
+        .email-modal-filebtn:hover:not(:disabled) { background:#eef1fb; border-color:#c7cfe8; box-shadow:0 2px 6px rgba(26,31,78,.08); }
+        .email-modal-removefile { transition: opacity .15s ease, background .15s ease; opacity:.7; border-radius:50%; }
+        .email-modal-removefile:hover { opacity:1; background:rgba(239,68,68,.12); }
+        .email-modal-cancel { transition: background .15s ease, border-color .15s ease; }
+        .email-modal-cancel:hover { background:#eef1fb; border-color:#c7cfe8; }
+        .email-modal-send { transition: box-shadow .18s ease, transform .18s ease, background .18s ease; }
+        .email-modal-send:not(:disabled):hover { box-shadow:0 6px 18px rgba(26,31,78,.3); transform:translateY(-1px); }
+        .email-modal-send:not(:disabled):active { transform:translateY(0); }
+        .email-modal-input { transition: border-color .15s ease, box-shadow .15s ease; }
+        .email-modal-input:focus { border-color:#1a1f4e; box-shadow:0 0 0 3px rgba(26,31,78,.08); }
+      `}</style>
+      <div className="email-modal" style={{ background:'#fff', borderRadius:16, width:'100%', maxWidth:430, boxShadow:'0 20px 60px rgba(26,31,78,.25)', fontFamily:"'DM Sans',sans-serif", overflow:'hidden' }}>
 
         {/* Header */}
         <div style={{ background:'#1a1f4e', padding:'16px 20px', display:'flex', alignItems:'center', justifyContent:'space-between' }}>
@@ -586,7 +603,7 @@ function EmailModal({ onClose, onSend, sending, result, defaultSubject }: {
               <div style={{ color:'rgba(255,255,255,.5)', fontSize:11 }}>Send via Growth Gradual SMTP</div>
             </div>
           </div>
-          <button onClick={onClose} style={{ background:'rgba(255,255,255,.1)', border:'none', borderRadius:8, width:28, height:28, color:'rgba(255,255,255,.7)', cursor:'pointer', display:'flex', alignItems:'center', justifyContent:'center' }}>
+          <button onClick={onClose} className="email-modal-close" style={{ background:'rgba(255,255,255,.1)', border:'none', borderRadius:8, width:28, height:28, color:'rgba(255,255,255,.7)', cursor:'pointer', display:'flex', alignItems:'center', justifyContent:'center' }}>
             <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round"><path d="M18 6L6 18M6 6l12 12"/></svg>
           </button>
         </div>
@@ -596,13 +613,13 @@ function EmailModal({ onClose, onSend, sending, result, defaultSubject }: {
 
           {fld('Subject', '📝', (
             <input type="text" value={subject} onChange={e => setSubject(e.target.value)}
-              disabled={sending} style={inputStyle} placeholder="Growth Gradual Research Report" />
+              disabled={sending} className="email-modal-input" style={inputStyle} placeholder="Growth Gradual Research Report" />
           ))}
 
           {fld('Recipients (emails, comma-separated)', '📬', (
             <textarea value={recipients} onChange={e => setRecipients(e.target.value)}
               disabled={sending} rows={3} placeholder="alice@example.com, bob@example.com"
-              style={{ ...inputStyle, resize:'vertical', lineHeight:1.5 }} />
+              className="email-modal-input" style={{ ...inputStyle, resize:'vertical', lineHeight:1.5 }} />
           ))}
 
           {/* CSV / Excel upload */}
@@ -611,14 +628,14 @@ function EmailModal({ onClose, onSend, sending, result, defaultSubject }: {
               📎 Or upload a CSV / Excel with an &quot;email&quot; column
             </label>
             <div style={{ display:'flex', alignItems:'center', gap:8 }}>
-              <button type="button" onClick={() => fileRef.current?.click()} disabled={sending}
+              <button type="button" onClick={() => fileRef.current?.click()} disabled={sending} className="email-modal-filebtn"
                 style={{ padding:'8px 14px', borderRadius:9, border:'1.5px solid #e2e6f0', background:'#f8f9fc', color:'#1a1f4e', fontSize:12, cursor:'pointer', fontFamily:"'DM Sans',sans-serif", fontWeight:600 }}>
                 {csvFile ? '📄 Change file' : '📂 Choose file'}
               </button>
               {csvFile && (
                 <span style={{ fontSize:12, color:'#15803d', fontWeight:600 }}>
                   ✓ {csvFile.name}
-                  <button onClick={() => setCsvFile(null)} style={{ marginLeft:6, background:'none', border:'none', color:'#ef4444', cursor:'pointer', fontSize:13 }}>✕</button>
+                  <button onClick={() => setCsvFile(null)} className="email-modal-removefile" style={{ marginLeft:6, width:18, height:18, border:'none', color:'#ef4444', cursor:'pointer', fontSize:13, background:'transparent' }}>✕</button>
                 </span>
               )}
               {!csvFile && <span style={{ fontSize:11, color:'#8b93b5' }}>.csv or .xlsx</span>}
@@ -641,10 +658,10 @@ function EmailModal({ onClose, onSend, sending, result, defaultSubject }: {
 
           {/* Actions */}
           <div style={{ display:'flex', gap:8, marginTop:2 }}>
-            <button onClick={onClose} style={{ flex:1, padding:'10px', borderRadius:9, border:'1.5px solid #e2e6f0', background:'#f8f9fc', color:'#4b5680', fontSize:13, cursor:'pointer', fontWeight:600, fontFamily:"'DM Sans',sans-serif" }}>
+            <button onClick={onClose} className="email-modal-cancel" style={{ flex:1, padding:'10px', borderRadius:9, border:'1.5px solid #e2e6f0', background:'#f8f9fc', color:'#4b5680', fontSize:13, cursor:'pointer', fontWeight:600, fontFamily:"'DM Sans',sans-serif" }}>
               Cancel
             </button>
-            <button onClick={() => onSend(subject, recipients, csvFile)} disabled={!hasRecipients || sending}
+            <button onClick={() => onSend(subject, recipients, csvFile)} disabled={!hasRecipients || sending} className="email-modal-send"
               style={{ flex:2, padding:'10px', borderRadius:9, border:'none',
                 background: !hasRecipients || sending ? '#8b93b5' : '#1a1f4e',
                 color:'#fff', fontSize:13, cursor: !hasRecipients || sending ? 'not-allowed' : 'pointer',
@@ -2062,7 +2079,7 @@ export default function GrowthGradualChat() {
         .chat-msgs::-webkit-scrollbar { width: 4px; }
         .chat-msgs::-webkit-scrollbar-thumb { background: #e2e6f0; border-radius: 4px; }
 
-        .msg-row { padding: clamp(3px,.5vh,7px) 0; display: flex; }
+        .msg-row { padding: clamp(3px,.5vh,7px) 0; display: flex; animation: fadeUp .25s cubic-bezier(.4,0,.2,1) backwards; }
         .msg-row--user { justify-content: flex-end; }
         .msg-row--bot  { justify-content: flex-start; }
 
@@ -2130,6 +2147,8 @@ export default function GrowthGradualChat() {
         .msg-text .md-th { background: linear-gradient(90deg,#0d4f3c,#1a1f4e); color: #fff; font-weight: 600; font-size: clamp(10px,.9vw,11px); text-transform: uppercase; letter-spacing: .04em; border: 1px solid #1a3a30; padding: clamp(4px,.6vh,7px) clamp(6px,.8vw,10px); text-align: left; }
         .msg-text .md-td { border: 1px solid #e2e6f0; padding: clamp(4px,.5vh,6px) clamp(6px,.8vw,10px); }
         .msg-text .md-table tbody tr:nth-child(even) td { background: #f8f9fc; }
+        .msg-text .md-table tbody tr { transition: background .12s ease; }
+        .msg-text .md-table tbody tr:hover td { background: #f0f3ff; }
 
         /* Status indicators */
         .searching {
@@ -2169,8 +2188,10 @@ export default function GrowthGradualChat() {
         .inline-charts-section .charts-grid { padding: 0 6px 8px; gap: 8px; }
         .inline-charts-section .chart-wrap { background: #fff; box-shadow: 0 1px 4px rgba(26,31,78,.06); }
         .dw-chart-wrap { padding: 6px 6px 4px !important; }
-        .report-btn { display:flex;align-items:center;gap:5px;background:linear-gradient(135deg,#0d4f3c,#1a1f4e);border:none;border-radius:7px;padding:6px 12px;font-size:clamp(10px,.9vw,11.5px);color:#fff;cursor:pointer;font-family:'DM Sans',sans-serif;transition:opacity .15s,box-shadow .15s;box-shadow:0 2px 8px rgba(13,79,60,.25); }
-        .report-btn:hover { opacity: .85; }
+        .report-btn { display:flex;align-items:center;gap:5px;background:linear-gradient(135deg,#0d4f3c,#1a1f4e);border:none;border-radius:7px;padding:6px 12px;font-size:clamp(10px,.9vw,11.5px);color:#fff;cursor:pointer;font-family:'DM Sans',sans-serif;transition:box-shadow .18s cubic-bezier(.4,0,.2,1),transform .18s cubic-bezier(.4,0,.2,1);box-shadow:0 2px 8px rgba(13,79,60,.25); }
+        .report-btn:hover:not(:disabled) { box-shadow:0 5px 16px rgba(13,79,60,.35); transform:translateY(-1px); }
+        .report-btn:active:not(:disabled) { transform:translateY(0); }
+        .report-btn:disabled { opacity:.75; cursor:not-allowed; }
         .report-context-toggle { position:relative;display:flex;align-items:center;gap:6px;cursor:pointer;user-select:none;font-family:'DM Sans',sans-serif; }
         .report-context-toggle input { position:absolute;opacity:0;width:0;height:0; }
         .report-context-track { position:relative;width:28px;height:16px;border-radius:999px;background:#d7dbea;transition:background .15s;flex-shrink:0; }
@@ -2179,7 +2200,7 @@ export default function GrowthGradualChat() {
         .report-context-toggle input:checked + .report-context-track .report-context-thumb { transform:translateX(12px); }
         .report-context-toggle input:focus-visible + .report-context-track { outline:2px solid #1a1f4e;outline-offset:2px; }
         .report-context-label { font-size:clamp(10px,.85vw,11px);color:#5a6178; }
-        .report-body { margin-top:8px;background:#f8f9fc;border:1px solid #e2e6f0;border-radius:12px;padding:clamp(10px,2vw,18px);max-height:clamp(280px,40vh,560px);overflow-y:auto; }
+        .report-body { margin-top:8px;background:#f8f9fc;border:1px solid #e2e6f0;border-radius:12px;padding:clamp(10px,2vw,18px);max-height:clamp(280px,40vh,560px);overflow-y:auto;animation:fadeUp .2s cubic-bezier(.4,0,.2,1); }
         .report-loading { display:flex;align-items:center;gap:8px;font-size:12px;color:#8b93b5;font-family:'DM Sans',sans-serif; }
         .dots { display:inline-flex;gap:4px; }
         .dots i { width:6px;height:6px;border-radius:50%;background:#8b93b5;animation:bd .9s ease-in-out infinite;display:block; }
@@ -2198,12 +2219,22 @@ export default function GrowthGradualChat() {
         /* Charts */
         .charts-grid { display:grid;grid-template-columns:repeat(auto-fit,minmax(min(240px,100%),1fr));gap:clamp(8px,1.2vw,16px);margin-bottom:clamp(10px,1.5vh,20px); }
         .key-stats-row { display:flex;gap:clamp(6px,.8vw,12px);flex-wrap:wrap;margin-bottom:clamp(10px,1.5vh,18px); }
-        .key-stat-card { background:#fff;border:1px solid #e2e6f0;border-radius:10px;padding:clamp(8px,1.2vh,14px) clamp(10px,1.4vw,18px);min-width:80px;flex:1; }
+        .key-stat-card {
+          background:#fff;border:1px solid #e2e6f0;border-radius:10px;
+          padding:clamp(8px,1.2vh,14px) clamp(10px,1.4vw,18px);min-width:80px;flex:1;
+          transition:box-shadow .2s cubic-bezier(.4,0,.2,1), transform .2s cubic-bezier(.4,0,.2,1), border-color .2s cubic-bezier(.4,0,.2,1);
+        }
+        .key-stat-card:hover { box-shadow:0 6px 18px rgba(26,31,78,.09); border-color:#d5dbe8; transform:translateY(-1px); }
         .key-stat-label { font-size:clamp(9px,.85vw,10.5px);text-transform:uppercase;letter-spacing:.07em;color:#8b93b5;margin-bottom:4px; }
         .key-stat-value { font-size:clamp(14px,1.5vw,18px);font-weight:700;color:#1a1f4e;line-height:1; }
         .key-stat-change { font-size:clamp(10px,.9vw,11.5px);margin-top:4px;font-weight:600; }
         .key-stat-change.pos { color:#16a34a; } .key-stat-change.neg { color:#dc2626; }
-        .chart-wrap { background:#fff;border:1px solid #e2e6f0;border-radius:10px;padding:clamp(10px,1.3vw,16px) clamp(10px,1.3vw,16px) 8px; }
+        .chart-wrap {
+          background:#fff;border:1px solid #e2e6f0;border-radius:10px;
+          padding:clamp(10px,1.3vw,16px) clamp(10px,1.3vw,16px) 8px;
+          transition:box-shadow .2s cubic-bezier(.4,0,.2,1);
+        }
+        .chart-wrap:hover { box-shadow:0 6px 18px rgba(26,31,78,.07); }
         .chart-title { font-size:clamp(10px,.9vw,11.5px);font-weight:600;color:#1a1f4e;font-family:'DM Sans',sans-serif;margin-bottom:8px; }
         .chart-legend { display:flex;flex-wrap:wrap;gap:8px;margin-top:6px; }
         .chart-leg { display:flex;align-items:center;gap:4px;font-size:10px;color:#4b5680;font-family:'DM Sans',sans-serif; }

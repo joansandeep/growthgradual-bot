@@ -72,10 +72,17 @@ export default function Sidebar({ related }: { related: Article[] }) {
 
       <SidePanel title="Active Sources">
         {['Moneycontrol','Economic Times','Livemint','NDTV Profit','Business Standard','Reuters India','Financial Express'].map((src,i) => (
-          <div key={src} style={{
-            display:'flex', justifyContent:'space-between', alignItems:'center',
-            padding:'6px 0', borderBottom: i < 6 ? '1px solid #f4f5f8' : 'none',
-          }}>
+          <div
+            key={src}
+            style={{
+              display:'flex', justifyContent:'space-between', alignItems:'center',
+              padding:'6px 6px', margin:'0 -6px', borderRadius:'6px',
+              borderBottom: i < 6 ? '1px solid #f4f5f8' : 'none',
+              transition:'background .15s ease',
+            }}
+            onMouseEnter={e => { e.currentTarget.style.background='#f7f8fa'; }}
+            onMouseLeave={e => { e.currentTarget.style.background='transparent'; }}
+          >
             <div style={{ display:'flex', alignItems:'center', gap:'7px' }}>
               <span style={{ width:'5px', height:'5px', borderRadius:'50%', background:'#22c55e', display:'inline-block', boxShadow:'0 0 4px rgba(34,197,94,0.5)' }}/>
               <span style={{ fontSize:'10.5px', color:'#334155', fontFamily:"'DM Sans',sans-serif", fontWeight:500 }}>{src}</span>
@@ -90,7 +97,11 @@ export default function Sidebar({ related }: { related: Article[] }) {
         background:'linear-gradient(135deg,#0d5c45,#0f172a)',
         border:'none', borderRadius:'10px', padding:'16px',
         boxShadow:'0 4px 18px rgba(13,92,69,0.22)',
-      }}>
+        transition:'box-shadow .2s ease, transform .2s ease',
+      }}
+      onMouseEnter={e => { e.currentTarget.style.boxShadow='0 8px 26px rgba(13,92,69,0.3)'; e.currentTarget.style.transform='translateY(-1px)'; }}
+      onMouseLeave={e => { e.currentTarget.style.boxShadow='0 4px 18px rgba(13,92,69,0.22)'; e.currentTarget.style.transform='translateY(0)'; }}
+      >
         <p style={{ fontSize:'10px', color:'rgba(255,255,255,0.55)', fontFamily:"'DM Sans',sans-serif", lineHeight:1.5 }}>
           Live prices · Web search · Document analysis
         </p>
