@@ -1624,7 +1624,10 @@ async function decodeGoogleNewsToken(url: string): Promise<string | null> {
     const sg = html.match(/data-n-a-sg="([^"]+)"/)?.[1];
     const ts = html.match(/data-n-a-ts="([^"]+)"/)?.[1];
     const id = html.match(/data-n-a-id="([^"]+)"/)?.[1] || idMatchFromUrl[1];
-    if (!sg || !ts) return null;
+    if (!sg || !ts) {
+      log.warn('No signed token (data-n-a-sg/ts) found on interim page for id=%s (sg=%s, ts=%s)', id, !!sg, !!ts);
+      return null;
+    }
 
     log.info('Decoding Google News signed token (id=%s)…', id);
 
@@ -1648,7 +1651,14 @@ async function decodeGoogleNewsToken(url: string): Promise<string | null> {
         signal: AbortSignal.timeout(10000),
       }
     );
+
+    if (!beRes.ok) {
+      log.warn('batchexecute HTTP %d for id=%s', beRes.status, id);
+      return null;
+    }
+
     const beText = (await beRes.text()).replace(/^\)\]\}'/, '');
+    log.info('batchexecute response (id=%s, %d chars): %s', id, beText.length, beText.slice(0, 300));
 
     // Response is newline-delimited, length-prefixed JSON chunks with the
     // real URL double-JSON-encoded somewhere inside. Rather than parse the
@@ -1656,9 +1666,14 @@ async function decodeGoogleNewsToken(url: string): Promise<string | null> {
     // every quoted https:// string and take the first that looks like a
     // real publisher article — same defensive approach used elsewhere in
     // this file for Google's script blobs.
-    for (const [, raw] of [...beText.matchAll(/"(https?:\/\/[^"\\]{10,})"/g)]) {
-      const candidate = decodeGoogleUrl(raw);
+    const allUrlMatches = [...beText.matchAll(/"(https?:\/\/[^"\\]{10,})"/g)].map(m => decodeGoogleUrl(m[1]));
+    for (const candidate of allUrlMatches) {
       if (isRealArticleUrl(candidate)) return candidate;
+    }
+    if (allUrlMatches.length > 0) {
+      log.warn('batchexecute returned %d URL(s) but none passed isRealArticleUrl: %s', allUrlMatches.length, allUrlMatches.slice(0, 5).join(' | '));
+    } else {
+      log.warn('batchexecute response contained no quoted https:// URLs at all for id=%s', id);
     }
     return null;
   } catch (e) {
