@@ -1661,12 +1661,16 @@ async function decodeGoogleNewsToken(url: string): Promise<string | null> {
     log.info('batchexecute response (id=%s, %d chars): %s', id, beText.length, beText.slice(0, 300));
 
     // Response is newline-delimited, length-prefixed JSON chunks with the
-    // real URL double-JSON-encoded somewhere inside. Rather than parse the
-    // exact (and Google-internal, subject to change) structure, pull out
-    // every quoted https:// string and take the first that looks like a
-    // real publisher article — same defensive approach used elsewhere in
-    // this file for Google's script blobs.
-    const allUrlMatches = [...beText.matchAll(/"(https?:\/\/[^"\\]{10,})"/g)].map(m => decodeGoogleUrl(m[1]));
+    // real URL embedded inside a *double*-JSON-encoded string — e.g.
+    // ...,\"garturlres\",\"https://real-site.com/...\",1,... — so the URL
+    // sits between ESCAPED quotes (\"), not plain ones. The previous regex
+    // required a literal closing `"` right after the URL and silently
+    // failed the instant it hit that escaping backslash instead, even
+    // though the URL was plainly present in the response. This version
+    // just captures a run of URL-safe characters bounded by whitespace,
+    // a quote, or a backslash on either side — works whether the quotes
+    // around it are escaped or not.
+    const allUrlMatches = [...beText.matchAll(/(https?:\/\/[^\s"'\\]{10,})/g)].map(m => decodeGoogleUrl(m[1]));
     for (const candidate of allUrlMatches) {
       if (isRealArticleUrl(candidate)) return candidate;
     }
