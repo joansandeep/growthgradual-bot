@@ -67,7 +67,7 @@ export default function NewsFAB() {
           justify-content: center;
           flex-direction: column;
           gap: 2px;
-          transition: transform .22s cubic-bezier(.34,1.56,.64,1), box-shadow .22s;
+          transition: transform .22s cubic-bezier(.34,1.56,.64,1), box-shadow .22s, opacity .2s;
           overflow: hidden;
         }
         .nfab:hover {
@@ -181,8 +181,20 @@ export default function NewsFAB() {
         }
       `}</style>
 
-      {/* FAB button */}
-      <button className="nfab" onClick={handleFabClick} aria-label={isChatPage ? 'Open latest news' : 'Back to chat'}>
+      {/* FAB button — hidden while the panel is open on the chat page, since
+          it otherwise sits (z-index 9999) on top of the panel's own content
+          in the bottom-left corner. The panel has its own X close button. */}
+      <button
+        className="nfab"
+        onClick={handleFabClick}
+        aria-label={isChatPage ? 'Open latest news' : 'Back to chat'}
+        aria-hidden={open && isChatPage}
+        style={
+          open && isChatPage
+            ? { opacity: 0, transform: 'scale(.6)', pointerEvents: 'none' }
+            : undefined
+        }
+      >
         {!open && isChatPage && <span className="nfab__ring" />}
         <span className="nfab__dot" />
         {isChatPage ? (

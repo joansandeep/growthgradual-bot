@@ -1567,6 +1567,106 @@ function safeHostname(url: string): string {
  *  7. All href attributes on <a> tags pointing off google.com
  *  8. Fall back to original URL
  */
+const GNEWS_HEADERS = {
+  'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+  'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
+  'Accept-Language': 'en-IN,en-US;q=0.9,en;q=0.8',
+  'Accept-Encoding': 'gzip, deflate, br',
+  'Cache-Control': 'no-cache',
+  'Referer': 'https://news.google.com/',
+  'Sec-Fetch-Dest': 'document',
+  'Sec-Fetch-Mode': 'navigate',
+  'Sec-Fetch-Site': 'none',
+  'Upgrade-Insecure-Requests': '1',
+};
+
+// Decode a URL string and clean escape sequences
+function decodeGoogleUrl(raw: string): string {
+  return raw
+    .replace(/\\u003d/gi, '=')
+    .replace(/\\u0026/gi, '&')
+    .replace(/\\u003a/gi, ':')
+    .replace(/\\u002f/gi, '/')
+    .replace(/\\x2f/gi, '/')
+    .replace(/\\\//g, '/')
+    .replace(/&amp;/g, '&');
+}
+
+/**
+ * BusinessLine Case 1 (real fix): Google's "hosted on X" interim page isn't
+ * a plain HTTP redirect — the final navigation is completed client-side by
+ * JavaScript, which signs a request with a per-article token (`data-n-a-id`
+ * / `data-n-a-ts` / `data-n-a-sg` embedded in that same interim page) and
+ * exchanges it via Google's internal `batchexecute` RPC endpoint for the
+ * real publisher URL. That's why a manual browser click resolves correctly
+ * but re-fetching the same interstitial URL server-side just returns the
+ * same shell again (no redirect ever happens without running that JS).
+ *
+ * This reproduces that token exchange with a plain HTTP POST — no browser
+ * needed. It's a best-effort implementation of Google's own (undocumented,
+ * reverse-engineered) protocol: if Google changes the RPC contract this can
+ * stop working, so it's tried first but every other existing strategy in
+ * resolveGoogleNewsUrl() still runs as a fallback if it fails.
+ */
+async function decodeGoogleNewsToken(url: string): Promise<string | null> {
+  const idMatchFromUrl = url.match(/\/articles\/([^?/]+)/);
+  if (!idMatchFromUrl) return null;
+
+  try {
+    const res = await fetch(url, {
+      method: 'GET',
+      redirect: 'follow',
+      headers: GNEWS_HEADERS,
+      signal: AbortSignal.timeout(10000),
+    });
+    const html = await res.text();
+
+    const sg = html.match(/data-n-a-sg="([^"]+)"/)?.[1];
+    const ts = html.match(/data-n-a-ts="([^"]+)"/)?.[1];
+    const id = html.match(/data-n-a-id="([^"]+)"/)?.[1] || idMatchFromUrl[1];
+    if (!sg || !ts) return null;
+
+    log.info('Decoding Google News signed token (id=%s)…', id);
+
+    const innerPayload = JSON.stringify([
+      'garturlreq',
+      [['X', 'X', ['X', 'X'], null, null, 1, 1, 'US:en', null, 1, null, null, null, null, null, 0, 1],
+        'X', 'X', 1, [1, 2, 3, 4, 8], 1, 1, null, 0, 0, null, 0],
+      id, Number(ts), sg,
+    ]);
+    const body = 'f.req=' + encodeURIComponent(JSON.stringify([[['Fbv4je', innerPayload, null, 'generic']]]));
+
+    const beRes = await fetch(
+      `https://news.google.com/_/DotsSplashUi/data/batchexecute?rpcids=Fbv4je&source-path=/rss/articles/${id}&hl=en-US`,
+      {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/x-www-form-urlencoded;charset=UTF-8',
+          'User-Agent': GNEWS_HEADERS['User-Agent'],
+        },
+        body,
+        signal: AbortSignal.timeout(10000),
+      }
+    );
+    const beText = (await beRes.text()).replace(/^\)\]\}'/, '');
+
+    // Response is newline-delimited, length-prefixed JSON chunks with the
+    // real URL double-JSON-encoded somewhere inside. Rather than parse the
+    // exact (and Google-internal, subject to change) structure, pull out
+    // every quoted https:// string and take the first that looks like a
+    // real publisher article — same defensive approach used elsewhere in
+    // this file for Google's script blobs.
+    for (const [, raw] of [...beText.matchAll(/"(https?:\/\/[^"\\]{10,})"/g)]) {
+      const candidate = decodeGoogleUrl(raw);
+      if (isRealArticleUrl(candidate)) return candidate;
+    }
+    return null;
+  } catch (e) {
+    log.warn('Google News token decode failed for %s — %s', url, e);
+    return null;
+  }
+}
+
 async function resolveGoogleNewsUrl(url: string, depth = 0): Promise<string> {
   // BusinessLine Case 1: Google AMP-Viewer URLs (google.com/amp/s/...) carry
   // the real publisher URL directly in the path — unwrap them with no
@@ -1583,29 +1683,11 @@ async function resolveGoogleNewsUrl(url: string, depth = 0): Promise<string> {
     return url;
   }
 
-  const GNEWS_HEADERS = {
-    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
-    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
-    'Accept-Language': 'en-IN,en-US;q=0.9,en;q=0.8',
-    'Accept-Encoding': 'gzip, deflate, br',
-    'Cache-Control': 'no-cache',
-    'Referer': 'https://news.google.com/',
-    'Sec-Fetch-Dest': 'document',
-    'Sec-Fetch-Mode': 'navigate',
-    'Sec-Fetch-Site': 'none',
-    'Upgrade-Insecure-Requests': '1',
-  };
-
-  // Helper: decode a URL string and clean escape sequences
-  function decodeGoogleUrl(raw: string): string {
-    return raw
-      .replace(/\\u003d/gi, '=')
-      .replace(/\\u0026/gi, '&')
-      .replace(/\\u003a/gi, ':')
-      .replace(/\\u002f/gi, '/')
-      .replace(/\\x2f/gi, '/')
-      .replace(/\\\//g, '/')
-      .replace(/&amp;/g, '&');
+  // ── Strategy -1: signed token exchange (the real fix — see decodeGoogleNewsToken) ─
+  const tokenResolved = await decodeGoogleNewsToken(url);
+  if (tokenResolved) {
+    log.info('Resolved publisher URL via signed token: %s', tokenResolved);
+    return tokenResolved;
   }
 
   // ── Strategy 0: HEAD redirect (fast path) ──────────────────────────────
