@@ -32,6 +32,87 @@ _OKF_BUCKET = "paperly-uploads"
 _OKF_PREFIX = "paperly-okf"
 
 
+def _indian_fy_quarter(d):
+    """Return (label, quarter_start, quarter_end) for date `d` under the
+    Indian fiscal year (April-March), e.g. July 2026 -> ('Q2 FY27', 2026-07-01, 2026-09-30).
+
+    This exists because leaving fiscal-quarter arithmetic to the LLM produces
+    inconsistent/wrong labels (seen: "Q2 FY27" used for two different
+    quarters in the same report, and for a period that should have been
+    Q1 FY27). Computing it here and handing the model the exact label removes
+    that arithmetic from its job entirely.
+    """
+    from datetime import date
+    import calendar
+    if d.month >= 4:
+        fy_end_year = d.year + 1
+        month_in_fy = d.month - 3  # Apr=1 .. Dec=9
+    else:
+        fy_end_year = d.year
+        month_in_fy = d.month + 9  # Jan=10 .. Mar=12
+    q_num = (month_in_fy - 1) // 3 + 1  # 1..4
+    fy_label = f"FY{str(fy_end_year)[-2:]}"
+    q_start_month_in_fy = (q_num - 1) * 3 + 1
+    q_start_month = q_start_month_in_fy + 3 if q_start_month_in_fy <= 9 else q_start_month_in_fy - 9
+    q_start_year = fy_end_year - 1 if q_start_month >= 4 else fy_end_year
+    q_start = date(q_start_year, q_start_month, 1)
+    q_end_month = q_start_month + 2
+    q_end_year = q_start_year
+    if q_end_month > 12:
+        q_end_month -= 12
+        q_end_year += 1
+    q_end = date(q_end_year, q_end_month, calendar.monthrange(q_end_year, q_end_month)[1])
+    return f"Q{q_num} {fy_label}", q_start, q_end
+
+
+def _past_n_quarters_anchor(question: str, today) -> str:
+    """
+    If the question references "past/last N quarters" (or "8 quarters" etc.),
+    pre-compute the exact Indian-FY quarter window and hand the model a
+    literal list of quarter labels with their calendar date ranges, instead
+    of relying on it to derive fiscal-quarter labels from the current date
+    itself -- that arithmetic is where mislabeled/inconsistent quarters (e.g.
+    "Q2 FY27" reused for two different periods) have come from.
+    Returns "" if the question has no such reference.
+    """
+    m = re.search(r"\b(?:past|last)\s+(\d{1,2})\s+quarters?\b", question.lower())
+    if not m:
+        return ""
+    n = int(m.group(1))
+
+    from datetime import timedelta
+    cur_label, cur_start, cur_end = _indian_fy_quarter(today)
+    # The current quarter is still in progress unless today is its last day;
+    # "past N quarters" of completed data should end at the last FULLY
+    # completed quarter, not the one still running.
+    if today < cur_end:
+        last_complete_end = cur_start - timedelta(days=1)
+    else:
+        last_complete_end = cur_end
+
+    labels = []
+    probe = last_complete_end
+    for _ in range(n):
+        label, q_start, q_end = _indian_fy_quarter(probe)
+        labels.append((label, q_start, q_end))
+        probe = q_start - timedelta(days=1)
+    labels.reverse()
+
+    lines = "\n".join(
+        f"  - {label}: {q_start.strftime('%b %d, %Y')} - {q_end.strftime('%b %d, %Y')}"
+        for label, q_start, q_end in labels
+    )
+    return (
+        f"\n\nQUARTER WINDOW (pre-computed -- use these exact labels and dates, do NOT "
+        f"recompute fiscal quarters yourself, and do not use any other quarter label "
+        f"anywhere in the report):\n{lines}\n"
+        f"The current quarter ({cur_label}, {cur_start.strftime('%b %d, %Y')} - "
+        f"{cur_end.strftime('%b %d, %Y')}) is still in progress as of {today.strftime('%B %d, %Y')} "
+        f"and is NOT part of the {n}-quarter window above unless it is already the last "
+        f"row shown.\n"
+    )
+
+
 def _normalize_filename(s: str) -> str:
     """Lowercase + strip punctuation/whitespace for fuzzy filename matching
     between OKF frontmatter titles and the raw filenames sent by the client
@@ -1644,7 +1725,9 @@ async def generate_report(request: Request):
     image_candidates_block = ""
 
     from datetime import date
-    today = date.today().strftime("%A, %B %d, %Y")
+    _today_date = date.today()
+    today = _today_date.strftime("%A, %B %d, %Y")
+    quarter_anchor = _past_n_quarters_anchor(question, _today_date)
 
     user_prompt = (
         f"Today's date is {today}. Resolve \"latest\", \"current\", \"this quarter/year\", "
@@ -1652,7 +1735,9 @@ async def generate_report(request: Request):
         f"question strictly against this date — never against your own training data or "
         f"internal sense of what the current date/quarter/year is. If the sources provided "
         f"below don't clearly establish which period is \"current\" as of {today}, say so "
-        f"rather than guessing.\n\n"
+        f"rather than guessing."
+        + quarter_anchor
+        + "\n\n"
         f"Research Question / Topic (this — and ONLY this — defines the report's title and subject): {question}\n"
         + (f"\nPRIMARY SOURCE — ANALYSE THIS FIRST (uploaded file data takes highest priority):{file_section}" if file_section else "")
         + conversation_section

@@ -584,15 +584,29 @@ def _clean_result_content(r: dict) -> dict:
 # Recency language → Tavily `time_range` value. Checked in order (most
 # specific/narrow first) so "latest quarter" doesn't get caught by a looser
 # pattern before the quarter-specific one runs.
+#
+# NOTE: bare "N months/quarters/years" placeholders are NOT given a fixed
+# bucket here, because the right bucket depends on N (6 months and 24 months
+# can't both map to "month"/"year"). Those are resolved numerically in
+# _detect_recency_time_range below instead. This list only handles the fixed,
+# N-less phrasings.
 _RECENCY_PATTERNS: list[tuple[str, str]] = [
     (r"\btoday\b|\bthis morning\b|\btonight\b", "day"),
     (r"\bthis week\b|\bpast week\b|\blast week\b|\bweekly\b", "week"),
-    (r"\bthis month\b|\bpast month\b|\blast month\b|\bpast \d+ months?\b", "month"),
+    (r"\bthis month\b|\bpast month\b|\blast month\b", "month"),
     (r"\blatest\b|\bcurrent(ly)?\b|\brecent(ly)?\b|\bnow\b|\bthis quarter\b|"
-     r"\bpast \d+ quarters?\b|\bthis year\b|\bytd\b|\byear[- ]to[- ]date\b|"
-     r"\bpast \d+ years?\b|\bup[- ]to[- ]date\b",
+     r"\bthis year\b|\bytd\b|\byear[- ]to[- ]date\b|\bup[- ]to[- ]date\b",
      "year"),
 ]
+
+# Tavily's widest time_range bucket is "year" (~365 days). Approximate day
+# counts per unit, used to figure out which bucket an explicit "past N <unit>"
+# phrase actually spans.
+_UNIT_DAYS = {"day": 1, "week": 7, "month": 30, "quarter": 91, "year": 365}
+
+_NUMERIC_RECENCY_RE = re.compile(
+    r"\bpast\s+(\d+)\s+(day|week|month|quarter|year)s?\b"
+)
 
 
 def _detect_recency_time_range(query: str) -> str | None:
@@ -603,8 +617,32 @@ def _detect_recency_time_range(query: str) -> str | None:
     plain relevance score rank old and new articles equally. Returns None for
     queries with no recency signal, so historical questions ("2019 results")
     are left unrestricted.
+
+    "past N <unit>" phrases are resolved by actual span rather than a blanket
+    bucket per unit: e.g. "past 8 quarters" (~24 months) is wider than
+    Tavily's largest bucket ("year", ~12 months), so restricting it to "year"
+    would silently truncate the older half of the requested window. In that
+    case we return None (unrestricted) rather than a bucket too narrow for
+    what was asked — the same behavior as before any recency filter existed.
     """
     q = query.lower()
+
+    m = _NUMERIC_RECENCY_RE.search(q)
+    if m:
+        n, unit = int(m.group(1)), m.group(2)
+        span_days = n * _UNIT_DAYS[unit]
+        if span_days <= _UNIT_DAYS["day"]:
+            return "day"
+        elif span_days <= _UNIT_DAYS["week"]:
+            return "week"
+        elif span_days <= _UNIT_DAYS["month"]:
+            return "month"
+        elif span_days <= _UNIT_DAYS["year"]:
+            return "year"
+        else:
+            # Span exceeds Tavily's widest bucket — don't clip history.
+            return None
+
     for pattern, time_range in _RECENCY_PATTERNS:
         if re.search(pattern, q):
             return time_range
