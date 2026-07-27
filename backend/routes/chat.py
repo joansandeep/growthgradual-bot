@@ -581,9 +581,40 @@ def _clean_result_content(r: dict) -> dict:
     return r
 
 
+# Recency language → Tavily `time_range` value. Checked in order (most
+# specific/narrow first) so "latest quarter" doesn't get caught by a looser
+# pattern before the quarter-specific one runs.
+_RECENCY_PATTERNS: list[tuple[str, str]] = [
+    (r"\btoday\b|\bthis morning\b|\btonight\b", "day"),
+    (r"\bthis week\b|\bpast week\b|\blast week\b|\bweekly\b", "week"),
+    (r"\bthis month\b|\bpast month\b|\blast month\b|\bpast \d+ months?\b", "month"),
+    (r"\blatest\b|\bcurrent(ly)?\b|\brecent(ly)?\b|\bnow\b|\bthis quarter\b|"
+     r"\bpast \d+ quarters?\b|\bthis year\b|\bytd\b|\byear[- ]to[- ]date\b|"
+     r"\bpast \d+ years?\b|\bup[- ]to[- ]date\b",
+     "year"),
+]
+
+
+def _detect_recency_time_range(query: str) -> str | None:
+    """
+    If the query contains recency language ("latest", "current", "past N
+    quarters", "this year", etc.), return the Tavily `time_range` value that
+    should bias the search toward recent sources instead of letting Tavily's
+    plain relevance score rank old and new articles equally. Returns None for
+    queries with no recency signal, so historical questions ("2019 results")
+    are left unrestricted.
+    """
+    q = query.lower()
+    for pattern, time_range in _RECENCY_PATTERNS:
+        if re.search(pattern, q):
+            return time_range
+    return None
+
+
 async def _tavily_one_call(
     key: str, query: str, domains: list[str] | None, max_results: int, qtype: str,
     country: str | None = "india", images_out: list | None = None,
+    time_range: str | None = None,
 ) -> list[dict]:
     """
     One Tavily SDK call on a single key. domains=None means no include_domains
@@ -595,11 +626,16 @@ async def _tavily_one_call(
     appended to it in-place as {"url": ..., "description": ...} dicts. Safe
     to share one list across several concurrent calls (asyncio is single-
     threaded, so list.append from each coroutine can't interleave/corrupt).
+
+    time_range: Tavily's freshness filter ("day"/"week"/"month"/"year"). When
+    set, search results are biased toward sources published within that
+    window instead of competing purely on relevance score. Pass None for no
+    freshness bias (the previous, default behaviour).
     """
     try:
         from tavily import AsyncTavilyClient
     except ImportError:
-        return await _tavily_search_httpx_fallback(query, max_results, domains or GENERAL_DOMAINS, qtype, images_out)
+        return await _tavily_search_httpx_fallback(query, max_results, domains or GENERAL_DOMAINS, qtype, images_out, time_range)
 
     if is_rate_limited(key):
         return []
@@ -623,6 +659,8 @@ async def _tavily_one_call(
             search_kwargs["include_domains"] = domains
         if qtype == "finance":
             search_kwargs["topic"] = "finance"
+        if time_range:
+            search_kwargs["time_range"] = time_range
 
         data = await client.search(**search_kwargs)
         raw_results = data.get("results") or []
@@ -719,14 +757,15 @@ async def tavily_search(
 
     qtype = classify_query(query)
     country = detect_country(query)
-    log.info("Tavily country resolved: %r (qtype=%s)", country, qtype)
+    time_range = _detect_recency_time_range(query)
+    log.info("Tavily country resolved: %r (qtype=%s, time_range=%r)", country, qtype, time_range)
     t0 = time.perf_counter()
 
     if qtype == "finance" and len(keys) >= 5:
         domain_keys, general_keys = keys[:3], keys[3:5]
 
         domain_lists = await asyncio.gather(*[
-            _tavily_one_call(domain_keys[i], query, TAVILY_CURATED_DOMAIN_GROUPS[i], max_results, qtype, country, images_out)
+            _tavily_one_call(domain_keys[i], query, TAVILY_CURATED_DOMAIN_GROUPS[i], max_results, qtype, country, images_out, time_range)
             for i in range(3)
         ])
 
@@ -744,7 +783,7 @@ async def tavily_search(
             log.info("Tavily curated groups returned %d (< min %d) — adding general fallback keys",
                       len(trusted), min_results)
             general_lists = await asyncio.gather(*[
-                _tavily_one_call(k, query, None, max_results, qtype, country, images_out) for k in general_keys
+                _tavily_one_call(k, query, None, max_results, qtype, country, images_out, time_range) for k in general_keys
             ])
             for res in general_lists:
                 for r in res:
@@ -765,7 +804,7 @@ async def tavily_search(
               query[:60], qtype, max_results)
 
     for key in round_robin(keys):
-        results = await _tavily_one_call(key, query, domains, max_results, qtype, country, images_out)
+        results = await _tavily_one_call(key, query, domains, max_results, qtype, country, images_out, time_range)
         if results:
             results = await _enrich_thin_results(results)
             elapsed = (time.perf_counter() - t0) * 1000
@@ -773,11 +812,12 @@ async def tavily_search(
             return results
 
     log.error("Tavily: all keys exhausted or failed — trying httpx fallback")
-    return await _tavily_search_httpx_fallback(query, max_results, domains, qtype, images_out)
+    return await _tavily_search_httpx_fallback(query, max_results, domains, qtype, images_out, time_range)
 
 
 async def _tavily_search_httpx_fallback(
     query: str, max_results: int, domains: list[str], qtype: str, images_out: list | None = None,
+    time_range: str | None = None,
 ) -> list[dict]:
     """Raw httpx fallback if tavily-python SDK is unavailable."""
     keys = get_tavily_keys()
@@ -801,6 +841,8 @@ async def _tavily_search_httpx_fallback(
                 }
                 if qtype == "finance":
                     body["topic"] = "finance"
+                if time_range:
+                    body["time_range"] = time_range
                 res = await client.post("https://api.tavily.com/search", json=body)
                 if res.status_code == 429:
                     mark_rate_limited(key, 60_000)

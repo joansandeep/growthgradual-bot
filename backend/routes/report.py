@@ -1643,7 +1643,16 @@ async def generate_report(request: Request):
     image_candidates: list[dict] = []
     image_candidates_block = ""
 
+    from datetime import date
+    today = date.today().strftime("%A, %B %d, %Y")
+
     user_prompt = (
+        f"Today's date is {today}. Resolve \"latest\", \"current\", \"this quarter/year\", "
+        f"\"past N quarters/months/years\", and any other relative time reference in the "
+        f"question strictly against this date — never against your own training data or "
+        f"internal sense of what the current date/quarter/year is. If the sources provided "
+        f"below don't clearly establish which period is \"current\" as of {today}, say so "
+        f"rather than guessing.\n\n"
         f"Research Question / Topic (this — and ONLY this — defines the report's title and subject): {question}\n"
         + (f"\nPRIMARY SOURCE — ANALYSE THIS FIRST (uploaded file data takes highest priority):{file_section}" if file_section else "")
         + conversation_section
@@ -1699,6 +1708,17 @@ async def generate_report(request: Request):
     # — not just "any comma".
     _NEXT_FIELD_RE = re.compile(r'^\s*,\s*"(title|report|charts|images|keyStats|summary)"\s*:')
     _OBJ_CLOSE_RE = re.compile(r'^\s*\}')
+    # Handles the case where Gemini drops BOTH the closing quote of the
+    # current field AND the comma before the next key, so a single quote
+    # character ends up doing double duty as the closing delimiter of this
+    # value and the opening delimiter of the next key's string
+    # (e.g. `"title": "Q3 Report — Deep Dive"report": "..."`, no `,` and
+    # no second `"`). _NEXT_FIELD_RE requires a leading comma so it never
+    # matches this shape, which is why the scanner used to treat that quote
+    # as internal and kept escaping/consuming everything after it —
+    # swallowing charts/images/keyStats into the title string and leaving
+    # the JSON unterminated.
+    _NEXT_FIELD_SHARED_QUOTE_RE = re.compile(r'^(title|report|charts|images|keyStats|summary)"\s*:')
 
     def _repair_string_value(text: str, field: str) -> str:
         """Find "field": "<value>" and escape any bare internal double-quotes."""
@@ -1741,6 +1761,18 @@ async def generate_report(request: Request):
                     # Genuine closing delimiter — emit and keep the rest verbatim
                     out.append(ch)
                     out.append(text[i + 1:])
+                    return ''.join(out)
+                m_shared = _NEXT_FIELD_SHARED_QUOTE_RE.match(rest)
+                if m_shared:
+                    # This quote is the model's dropped closing delimiter,
+                    # fused directly onto the next key with no comma.
+                    # Split it back into close-quote + comma + open-quote
+                    # so the next key parses as its own field instead of
+                    # being swallowed into this string.
+                    field_start_abs = i + 1 + m_shared.start(1)
+                    out.append('"')
+                    out.append(', "')
+                    out.append(text[field_start_abs:])
                     return ''.join(out)
                 # Internal bare quote — escape it and keep scanning
                 out.append('\\')
