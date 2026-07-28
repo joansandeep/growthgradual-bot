@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import AsyncGenerator
 
 import httpx
+from urllib.parse import urlparse
 from fastapi import APIRouter
 from fastapi.requests import Request
 from fastapi.responses import JSONResponse, StreamingResponse
@@ -246,57 +247,45 @@ async def _store_image_extractions(
                 except Exception as exc:
                     log.warning("Supabase _store_image_extractions upsert failed: %s", exc)
 
-# ─── Domain lists ──────────────────────────────────────────────────────────────
-# Curated 60-source list, split into 3 groups of 20 — one group per Tavily key
-# (TAVILY_API_KEY env var, keys[0:3]). Each group is searched in parallel with
-# include_domains restricted to just that group, so 3 keys × 20 results = up to
-# 60 trusted results per query. keys[3:5] are reserved as a general/unrestricted
-# fallback — see tavily_search() below.
-TAVILY_DOMAIN_GROUP_1 = [
-    "moneycontrol.com", "valueresearchonline.com", "mutualfundssahihai.com",
-    "thehindubusinessline.com", "livemint.com", "icicipruamc.com",
-    "mutualfund.adityabirlacapital.com", "mf.nipponindiaim.com", "dspim.com",
-    "cmie.com", "crisil.com", "careedge.in",
-    "investing.com", "tradingeconomics.com", "equitymaster.com",
-    "screener.in", "trendlyne.com", "tickertape.in",
-    "economictimes.indiatimes.com", "financialexpress.com",
+# ─── Domain filtering ────────────────────────────────────────────────────────
+# Previously this searched only inside a fixed, hand-curated list of ~60
+# "approved" finance domains via Tavily's include_domains. That meant results
+# were only ever as good as the list — anything genuinely relevant that
+# wasn't on it got excluded, and (per production logs) include_domains isn't
+# reliably enforced by Tavily when topic="finance" is also set, so off-list
+# junk (dictionary sites, YouTube, Facebook) leaked in anyway and got
+# mislabeled "trusted" since the code assumed the restriction had worked.
+#
+# Sources are now chosen dynamically per query — Tavily's own relevance
+# ranking (plus topic="finance"/country="india" biasing) decides what's
+# actually relevant to what was asked, instead of a static allow-list.
+#
+# The one thing still filtered out is a small denylist of domains that are
+# never a legitimate source for *any* query here — dictionaries, video/
+# social platforms, forums. This is a category exclusion, not a finance
+# allow-list: it doesn't grant trust to any domain, it just removes the
+# specific kinds of noise that caused the original bug.
+_JUNK_DOMAIN_SUFFIXES = [
+    # dictionaries / language-learning — never a market/finance source
+    "merriam-webster.com", "dictionary.com", "cambridge.org",
+    "oxfordlearnersdictionaries.com", "langeek.co", "vocabulary.com",
+    "thesaurus.com", "wiktionary.org",
+    # video / social — never a citable primary source for a research report
+    "youtube.com", "youtu.be", "facebook.com", "instagram.com",
+    "tiktok.com", "x.com", "twitter.com", "reddit.com", "pinterest.com",
+    "quora.com",
 ]
 
-TAVILY_DOMAIN_GROUP_2 = [
-    "bloomberg.com", "reuters.com", "finance.yahoo.com",
-    "marketwatch.com", "morningstar.in", "bseindia.com",
-    "nseindia.com", "sebi.gov.in", "rbi.org.in",
-    "investopedia.com", "livecharts.co.uk", "stockedge.com",
-    "simplywall.st", "macrotrends.net", "tradingview.com",
-    "zerodha.com", "groww.in", "upstox.com",
-    "angelone.in", "kotaksecurities.com",
-]
 
-TAVILY_DOMAIN_GROUP_3 = [
-    "hdfcsec.com", "motilaloswal.com", "sharekhan.com",
-    "icicidirect.com", "moneylife.in", "dsij.in",
-    "seekingalpha.com", "gurufocus.com", "finology.in",
-    "alphaspread.com", "koyfin.com", "fred.stlouisfed.org",
-    "worldbank.org", "imf.org", "oecd.org",
-    "statista.com", "rediff.com", "indiainfoline.com",
-    "indiabudget.gov.in",
-]
-
-TAVILY_CURATED_DOMAIN_GROUPS = [
-    TAVILY_DOMAIN_GROUP_1, TAVILY_DOMAIN_GROUP_2, TAVILY_DOMAIN_GROUP_3,
-]
-
-# Kept for the non-finance / <5-key fallback path (see tavily_search)
-FINANCE_DOMAINS = TAVILY_DOMAIN_GROUP_1 + TAVILY_DOMAIN_GROUP_2 + TAVILY_DOMAIN_GROUP_3
-
-GENERAL_DOMAINS = [
-    "reuters.com", "apnews.com", "bbc.com", "theguardian.com", "nytimes.com",
-    "thehindu.com", "ndtv.com", "hindustantimes.com", "timesofindia.indiatimes.com",
-    "indianexpress.com", "scroll.in", "thewire.in", "livemint.com",
-    "techcrunch.com", "theverge.com", "wired.com", "arstechnica.com",
-    "scientificamerican.com", "nature.com", "wikipedia.org",
-    "forbes.com", "businessinsider.com", "economist.com",
-]
+def _is_junk_domain(url: str) -> bool:
+    """True if url's host falls in the never-a-source denylist above."""
+    try:
+        host = (urlparse(url).hostname or "").lower()
+    except Exception:
+        return False
+    if not host:
+        return False
+    return any(host == d or host.endswith("." + d) for d in _JUNK_DOMAIN_SUFFIXES)
 
 FINANCE_TERMS = [
     # Indices & exchanges
@@ -432,7 +421,7 @@ def classify_query(msg: str) -> str:
 # (which is what most queries here use). We still set it on every call so it
 # takes effect for non-finance queries, and so geographic bias is correct if
 # Tavily lifts that restriction later. For finance-topic queries, geographic
-# relevance still comes from which curated TAVILY_DOMAIN_GROUP gets hit.
+# relevance still comes from Tavily's own query-driven ranking.
 GLOBAL_TERMS = [
     "globally", "global", "worldwide", "world", "international",
     "around the world", "across the world", "all countries", "every country",
@@ -650,15 +639,17 @@ def _detect_recency_time_range(query: str) -> str | None:
 
 
 async def _tavily_one_call(
-    key: str, query: str, domains: list[str] | None, max_results: int, qtype: str,
+    key: str, query: str, max_results: int, qtype: str,
     country: str | None = "india", images_out: list | None = None,
     time_range: str | None = None,
 ) -> list[dict]:
     """
-    One Tavily SDK call on a single key. domains=None means no include_domains
-    restriction (used for the 2 general/fallback keys). country=None means no
-    geographic boost (used for "globally"/"world" style queries). Returns []
-    on any failure — caller decides what to do with a thin/empty result.
+    One Tavily SDK call on a single key. No include_domains restriction —
+    which domains actually show up is decided per-query by Tavily's own
+    relevance ranking (biased by topic="finance"/country when applicable),
+    not by a fixed allow-list. country=None means no geographic boost (used
+    for "globally"/"world" style queries). Returns [] on any failure —
+    caller decides what to do with a thin/empty result.
 
     images_out: if provided, any images Tavily returns for this query are
     appended to it in-place as {"url": ..., "description": ...} dicts. Safe
@@ -673,7 +664,7 @@ async def _tavily_one_call(
     try:
         from tavily import AsyncTavilyClient
     except ImportError:
-        return await _tavily_search_httpx_fallback(query, max_results, domains or GENERAL_DOMAINS, qtype, images_out, time_range)
+        return await _tavily_search_httpx_fallback(query, max_results, qtype, images_out, time_range)
 
     if is_rate_limited(key):
         return []
@@ -693,8 +684,6 @@ async def _tavily_one_call(
         }
         if country:
             search_kwargs["country"] = country
-        if domains:
-            search_kwargs["include_domains"] = domains
         if qtype == "finance":
             search_kwargs["topic"] = "finance"
         if time_range:
@@ -702,6 +691,15 @@ async def _tavily_one_call(
 
         data = await client.search(**search_kwargs)
         raw_results = data.get("results") or []
+
+        before = len(raw_results)
+        raw_results = [r for r in raw_results if not _is_junk_domain(r.get("url", ""))]
+        dropped = before - len(raw_results)
+        if dropped:
+            log.info(
+                "Tavily key ...%s: dropped %d junk-domain result(s) (dictionary/social/video) "
+                "for query %r", key[-4:], dropped, query[:60],
+            )
 
         if images_out is not None:
             for img in (data.get("images") or []):
@@ -762,19 +760,23 @@ async def tavily_search(
     query: str, max_results: int = 20, min_results: int = 10, images_out: list | None = None,
 ) -> list[dict]:
     """
-    5-key fan-out search.
+    NOTE: min_results is accepted for call-site compatibility but no longer
+    changes behaviour — with the domain allow-list removed there's no
+    "trusted vs. general" tier to top up, so every configured key is always
+    queried. Kept as a parameter so existing callers don't need updating.
 
-    keys[0:3] — one call each, restricted to TAVILY_DOMAIN_GROUP_1/2/3
-                (curated trusted-source list, 20 domains each). Run in
-                parallel → up to 60 deduped "trusted_source": True results.
-    keys[3:5] — unrestricted/general web search, used only when the trusted
-                group didn't clear `min_results`. Their results are tagged
-                "trusted_source": False so the report layer can flag them as
-                outside the curated list rather than silently mixing them in.
+    Multi-key fan-out search — every available Tavily key is queried in
+    parallel with the *same* query (no per-key domain restriction), results
+    are deduped by URL, and each result that isn't in the junk-domain
+    denylist (see _JUNK_DOMAIN_SUFFIXES) is kept and tagged
+    "trusted_source": True. What comes back is entirely a function of the
+    query itself — Tavily's relevance ranking (plus topic="finance" and
+    country biasing) decides which sites are relevant, rather than a fixed
+    curated list deciding it up front.
 
-    Falls back to the old single-key round-robin behaviour (one call, one
-    domain list) if fewer than 5 keys are configured, or for non-finance
-    queries where the curated finance source list doesn't apply.
+    Falls back to the old single-key round-robin behaviour if only one key
+    is configured, or continues to the httpx fallback if the SDK path fails
+    entirely.
 
     images_out: if provided, images Tavily found for this query (deduped by
     the caller) are appended to it as {"url", "description"} dicts. Only the
@@ -799,50 +801,33 @@ async def tavily_search(
     log.info("Tavily country resolved: %r (qtype=%s, time_range=%r)", country, qtype, time_range)
     t0 = time.perf_counter()
 
-    if qtype == "finance" and len(keys) >= 5:
-        domain_keys, general_keys = keys[:3], keys[3:5]
-
-        domain_lists = await asyncio.gather(*[
-            _tavily_one_call(domain_keys[i], query, TAVILY_CURATED_DOMAIN_GROUPS[i], max_results, qtype, country, images_out, time_range)
-            for i in range(3)
+    if len(keys) > 1:
+        result_lists = await asyncio.gather(*[
+            _tavily_one_call(k, query, max_results, qtype, country, images_out, time_range)
+            for k in keys
         ])
 
         seen_urls: set[str] = set()
-        trusted: list[dict] = []
-        for res in domain_lists:
+        combined_results: list[dict] = []
+        for res in result_lists:
             for r in res:
                 if r["url"] and r["url"] not in seen_urls:
                     seen_urls.add(r["url"])
                     r["trusted_source"] = True
-                    trusted.append(r)
+                    combined_results.append(r)
 
-        general: list[dict] = []
-        if len(trusted) < min_results:
-            log.info("Tavily curated groups returned %d (< min %d) — adding general fallback keys",
-                      len(trusted), min_results)
-            general_lists = await asyncio.gather(*[
-                _tavily_one_call(k, query, None, max_results, qtype, country, images_out, time_range) for k in general_keys
-            ])
-            for res in general_lists:
-                for r in res:
-                    if r["url"] and r["url"] not in seen_urls:
-                        seen_urls.add(r["url"])
-                        r["trusted_source"] = False
-                        general.append(r)
-
-        combined = await _enrich_thin_results(trusted + general)
+        combined = await _enrich_thin_results(combined_results)
         elapsed = (time.perf_counter() - t0) * 1000
-        log.info("Tavily 5-key fan-out done: %d trusted + %d general = %d total in %.0fms",
-                  len(trusted), len(general), len(combined), elapsed)
+        log.info("Tavily %d-key fan-out done: %d results in %.0fms",
+                  len(keys), len(combined), elapsed)
         return combined
 
-    # ── Fallback: <5 keys configured, or non-finance query ──────────────────
-    domains = FINANCE_DOMAINS if qtype == "finance" else GENERAL_DOMAINS
-    log.info("Tavily search (single-key fallback): query=%r  type=%s  max_results=%d",
+    # ── Fallback: only one key configured ────────────────────────────────
+    log.info("Tavily search (single-key): query=%r  type=%s  max_results=%d",
               query[:60], qtype, max_results)
 
     for key in round_robin(keys):
-        results = await _tavily_one_call(key, query, domains, max_results, qtype, country, images_out, time_range)
+        results = await _tavily_one_call(key, query, max_results, qtype, country, images_out, time_range)
         if results:
             results = await _enrich_thin_results(results)
             elapsed = (time.perf_counter() - t0) * 1000
@@ -850,11 +835,11 @@ async def tavily_search(
             return results
 
     log.error("Tavily: all keys exhausted or failed — trying httpx fallback")
-    return await _tavily_search_httpx_fallback(query, max_results, domains, qtype, images_out, time_range)
+    return await _tavily_search_httpx_fallback(query, max_results, qtype, images_out, time_range)
 
 
 async def _tavily_search_httpx_fallback(
-    query: str, max_results: int, domains: list[str], qtype: str, images_out: list | None = None,
+    query: str, max_results: int, qtype: str, images_out: list | None = None,
     time_range: str | None = None,
 ) -> list[dict]:
     """Raw httpx fallback if tavily-python SDK is unavailable."""
@@ -872,7 +857,6 @@ async def _tavily_search_httpx_fallback(
                     "max_results": max_results,
                     "include_answer": False,
                     "include_raw_content": True,
-                    "include_domains": domains,
                     "include_images": images_out is not None,
                     "include_image_descriptions": images_out is not None,
                     "country": "india",
@@ -909,6 +893,7 @@ async def _tavily_search_httpx_fallback(
                         "published": r.get("published_date"),
                     }
                     for r in (data.get("results") or [])
+                    if not _is_junk_domain(r.get("url", ""))
                 ]
                 elapsed = (time.perf_counter() - t0) * 1000
                 log.info("Tavily httpx fallback: %d results in %.0fms", len(results), elapsed)
