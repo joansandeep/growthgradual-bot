@@ -1082,6 +1082,13 @@ async def stream_groq(system_prompt: str, messages: list[dict]) -> AsyncGenerato
                         "stream": True,
                         "max_tokens": 2048,
                         "temperature": 0.5,
+                        # Without these, a numerically-dense context (lots of
+                        # search results full of percentages/index levels)
+                        # can push some Llama models into a repetition-loop
+                        # collapse — output degenerates into short repeated
+                        # tokens like "6: 6: 6: 6:" instead of real text.
+                        "frequency_penalty": 0.4,
+                        "presence_penalty": 0.3,
                     },
                 )
                 res = await client.send(req, stream=True)
@@ -1273,6 +1280,15 @@ async def gemini_sse(system_prompt: str, messages: list[dict]) -> AsyncGenerator
 # chunk ending in "[" and the next starting with "1]") still gets caught.
 _CITATION_RE = re.compile(r"\[\s*\d+(?:\s*,\s*\d+)*\s*\]")
 
+# A repetition-loop collapse streams as a long run of short chunks that are
+# purely digits/punctuation ("6", ": ", "6:", "-") with no letters at all —
+# real prose never looks like this even mid-word. 10 in a row is well past
+# anything a normal response would produce (numbers in real text are always
+# interleaved with words), so it's a safe threshold for catching a genuine
+# collapse without false-triggering on a report full of percentages.
+_DEGENERATE_TOKEN_RE = re.compile(r"^[\d\s:,.\-]{1,6}$")
+_DEGENERATE_WINDOW = 10
+
 
 class _CitationStripper:
     _MAX_HOLD = 24  # generous upper bound for something like "[12, 34, 56]"
@@ -1312,9 +1328,19 @@ async def _sanitize_and_forward(raw_gen, assistant_chunks: list[str]) -> AsyncGe
     text as it streams, and yield clean `data: {...}\\n\\n` bytes shaped the
     way the frontend expects. Also appends the cleaned text to
     `assistant_chunks` so the saved transcript matches exactly what the user saw.
+
+    Also guards against a repetition-loop collapse (seen with Groq's Llama
+    models on numerically-dense, search-heavy context): output degenerates
+    into short repeated tokens like "6: 6: 6: 6:" instead of real text. We
+    hold back a small window of chunks before flushing them downstream, so a
+    collapse can be caught and the whole stream aborted (the caller already
+    falls back Groq→Gemini on any exception here) BEFORE the garbage ever
+    reaches the client — rather than the user watching it stream in live.
     """
     stripper = _CitationStripper()
     leftover = ""
+    pending: list[str] = []
+    degenerate_streak = 0
     async for chunk in raw_gen:
         raw = chunk if isinstance(chunk, str) else chunk.decode(errors="replace")
         leftover += raw
@@ -1339,9 +1365,29 @@ async def _sanitize_and_forward(raw_gen, assistant_chunks: list[str]) -> AsyncGe
             if not content:
                 continue
             cleaned = stripper.feed(content)
-            if cleaned:
-                assistant_chunks.append(cleaned)
-                yield f"data: {json.dumps({'choices': [{'delta': {'content': cleaned}}]})}\n\n".encode()
+            if not cleaned:
+                continue
+
+            degenerate_streak = degenerate_streak + 1 if _DEGENERATE_TOKEN_RE.match(cleaned) else 0
+            if degenerate_streak >= _DEGENERATE_WINDOW:
+                log.warning(
+                    "Chat: detected repetition-loop collapse (%d numeric/punct-only "
+                    "chunks in a row) — aborting before it reaches the client",
+                    degenerate_streak,
+                )
+                raise RuntimeError("degenerate repetition-loop output detected")
+
+            pending.append(cleaned)
+            # Only flush once a chunk has survived past the detection window,
+            # so a collapse caught above never includes content already sent.
+            if len(pending) > _DEGENERATE_WINDOW:
+                flushed = pending.pop(0)
+                assistant_chunks.append(flushed)
+                yield f"data: {json.dumps({'choices': [{'delta': {'content': flushed}}]})}\n\n".encode()
+
+    for flushed in pending:
+        assistant_chunks.append(flushed)
+        yield f"data: {json.dumps({'choices': [{'delta': {'content': flushed}}]})}\n\n".encode()
     tail = stripper.flush()
     if tail:
         assistant_chunks.append(tail)

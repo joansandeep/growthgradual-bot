@@ -1647,7 +1647,12 @@ async def generate_report(request: Request):
     # for any question that clearly concerns index levels we fetch real
     # quotes and prepend them as an authoritative source the model is told
     # to prefer over anything else for those exact numbers. ──
-    if re.search(r"\b(nifty|sensex|bse|nse|bank nifty|index|indices)\b", question, re.IGNORECASE):
+    if re.search(
+        r"\b(nifty|sensex|bse|nse|bank nifty|index|indices|"
+        r"indian stock market|indian equity|indian share market|"
+        r"sector rotation|stock markets? in india)\b",
+        question, re.IGNORECASE,
+    ):
         try:
             quotes = await fetch_index_quotes()
             quote_source = format_quotes_as_source(quotes)
