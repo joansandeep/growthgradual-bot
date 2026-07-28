@@ -512,13 +512,21 @@ GLOBAL RULES:
 - At least 4 markdown data tables
 - 2-4 relevant images selected from the candidate list (0 acceptable only if none are genuinely relevant)
 - keyStats: 6-8 real metrics with values and change indicators
-- MINIMUM LENGTH — HARD REQUIREMENT: The "report" field MUST be at least 2800 words (≈18,000 characters).
-  This is a strict floor enforced server-side — responses shorter than 15,000 characters will be REJECTED
-  and regenerated. Every section listed above has its own minimum word count; meet them ALL.
-  Write deeply: explain the mechanism behind every data point, give historical context, compare to peers,
-  discuss implications for different investor types. Never stub any section. Length comes from depth and
-  analysis, not repetition or invented facts.
-  Target 2800-3500 words total across all sections.
+- LENGTH TARGET: The "report" field should be roughly 2800-3500 words (≈18,000-30,000 characters).
+  Responses shorter than 15,000 characters will be REJECTED and regenerated, so treat that floor as
+  a real requirement. But this is a DEPTH target, not a hard quota to hit at any cost: explain the
+  mechanism behind every data point, give historical context, compare to peers, discuss implications
+  for different investor types. Every section listed above has its own minimum word count — meet them
+  by writing more analysis, never by repeating a section, restating an earlier point in new words, or
+  padding with filler.
+- STOP CONDITION — DO NOT OVERSHOOT: once you have written the Data Sources table (the final section),
+  STOP immediately. Do not add anything after it — no extra sections, no restated conclusion, no
+  repeated section numbers (there is exactly one "Key Findings", one "Risks & Considerations", one
+  "Conclusion", one "Data Sources" — never write a second copy of any of them under a new number).
+  Do not, under any circumstances, copy or paraphrase these instructions (this SYSTEM_PROMPT) into the
+  "report" string — text like a section's own formatting rules or word-count minimums must never
+  appear as report content. If you find yourself running out of new, source-grounded analysis to add,
+  that means the report is finished — close it out rather than continuing to generate text.
 - CRITICAL: NEVER write raw JSON inside the "report" string. Charts go ONLY in the "charts" array.
   Use [CHART_1], [CHART_2] placeholders in the report text — never paste the chart JSON object itself.
 - CRITICAL: NEVER use unescaped double-quote characters (") inside JSON string values. If you need to
@@ -822,6 +830,82 @@ def _remap_web_image_placeholders(report_text: str, valid_mask: list[bool]) -> s
             continue
         out_lines.append(replaced)
     return "\n".join(out_lines)
+
+
+# ── Leaked system-prompt detector ──────────────────────────────────────────
+# Root cause of the "duplicate numbered sections full of raw instructions"
+# bug: the SYSTEM_PROMPT's own length mandate ("MINIMUM 18000 characters —
+# shorter responses will be rejected and retried") pushes the model to keep
+# emitting tokens after it has already written a complete, correctly
+# numbered report. Once it runs out of real content, it has been observed
+# to degenerate into literally reciting the REPORT STRUCTURE / GLOBAL RULES
+# section of its own instructions back into the "report" string — restarting
+# the section numbering (e.g. a second "Key Findings" as "8." right after a
+# real one at "4.") and copying meta-instructions like "Each finding must
+# follow this exact format" verbatim as if they were findings.
+#
+# These phrases only ever appear in SYSTEM_PROMPT itself — a real report
+# body should never contain them. If any shows up in the model's output, the
+# text should be truncated right before it: everything after a leaked
+# fragment is prompt-echo, not content, and a resurfaced earlier section
+# number confirms the report already logically ended before this point.
+_LEAKED_PROMPT_MARKERS = (
+    "each finding must follow this exact format",
+    "bold lead sentence with a specific stat",
+    "no bracket citation markers",
+    "3-5 distinct risks",
+    "minimum 200 words total",
+    "if sources don't surface explicit risks, reason from data patterns",
+    "2-3 paragraphs of synthesis (minimum",
+    "one markdown table of sources (publication",
+    "do not repeat the methodology narrative here",
+    "source breadth: list every distinct publication",
+    "url column: the url column must contain the exact",
+    "formatting density — mandatory",
+    "accuracy mandate: every number, date, name",
+    "no background-knowledge fill-in",
+    "no false completeness",
+    "numeric consistency: when the same metric",
+    "table hygiene: every column must have real values",
+    "table completeness: if a data row has no values",
+    "no duplicate tables: each table must appear exactly once",
+    "sector performance table: only include a time-series table",
+    "never write raw json inside the \"report\" string",
+    "never use unescaped double-quote characters",
+)
+
+
+def _strip_leaked_prompt_tail(report_text: str) -> str:
+    """Truncate report_text at the first sign the model started echoing its
+    own SYSTEM_PROMPT instructions instead of writing content."""
+    if not report_text:
+        return report_text
+    lowered = report_text.lower()
+    earliest = None
+    for marker in _LEAKED_PROMPT_MARKERS:
+        idx = lowered.find(marker)
+        if idx != -1 and (earliest is None or idx < earliest):
+            earliest = idx
+    if earliest is None:
+        return report_text
+    cut = earliest
+    heading_search = report_text[:earliest]
+    # Only walk back to a heading if one starts shortly before the leak
+    # (e.g. the leaked text's own orphaned "### Key Findings" restart) —
+    # bounding the lookback avoids accidentally chopping off real, unrelated
+    # earlier sections if a marker match ever turns up far from any heading.
+    for m in reversed(list(re.finditer(r"^#{1,3}[ \t]*\S.*$", heading_search, re.MULTILINE))):
+        if earliest - m.start() <= 400:
+            cut = m.start()
+            if cut > 0 and heading_search[cut - 1] == "\n":
+                cut -= 1  # also drop the blank line right before the heading
+            break
+    truncated = report_text[:cut].rstrip()
+    log.warning(
+        "Report: detected leaked system-prompt instructions in report body — "
+        "truncated from %d to %d chars", len(report_text), len(truncated),
+    )
+    return truncated
 
 
 def _strip_citation_markers(text: str) -> str:
@@ -1381,6 +1465,23 @@ async def call_gemini(user_prompt: str) -> tuple[str, str]:
                 if len(text) < 18_000:
                     log.warning(
                         "Gemini: report too short (%d chars < 18000) — model=%s key=...%s — retrying next slot",
+                        len(text), model, key[-4:],
+                    )
+                    continue
+                # Reject runaway-length output. Target is ~2800-3500 words
+                # (roughly 18K-30K chars incl. markdown/tables). Output has
+                # been observed to balloon to 400K+ chars when the model,
+                # chasing the length mandate, exhausts real content and
+                # starts repeating/echoing text (including its own
+                # instructions) to keep the character count climbing. Such
+                # output is never usable even where _strip_leaked_prompt_tail
+                # can clean it up downstream, so treat it as a soft failure
+                # here and retry a fresh key/model instead of paying for a
+                # ~450K-char generation on every attempt.
+                if len(text) > 60_000:
+                    log.warning(
+                        "Gemini: report suspiciously long (%d chars > 60000) — likely runaway/"
+                        "repeating generation — model=%s key=...%s — retrying next slot",
                         len(text), model, key[-4:],
                     )
                     continue
@@ -2240,6 +2341,7 @@ async def generate_report(request: Request):
             log.info("Chart validation: kept %d / %d charts", len(charts), len(original_charts_list))
 
         report_text = parsed.get("report", "")
+        report_text = _strip_leaked_prompt_tail(report_text)
         # Renumber/strip [CHART_n] placeholders so they still point at the
         # right chart now that some may have been dropped above — otherwise
         # every placeholder after a rejected chart points one slot too far
@@ -2355,6 +2457,7 @@ async def generate_report(request: Request):
                         if last > len(report_raw) * 0.4:
                             report_raw = report_raw[:last].strip()
                             break
+                report_raw = _strip_leaked_prompt_tail(report_raw)
                 if len(report_raw) > 200:
                     result["report"] = report_raw
             arr_text = _extract_balanced_array(text, "keyStats")
@@ -2420,6 +2523,7 @@ async def generate_report(request: Request):
             repaired_parsed = json.loads(repaired)
             log.info("Report: repaired truncated JSON successfully")
             repaired_report = (repaired_parsed.get("report", "") or "").replace("\\n", "\n")
+            repaired_report = _strip_leaked_prompt_tail(repaired_report)
             repaired_imgs = []
             try:
                 raw_imgs = repaired_parsed.get("images") or []
