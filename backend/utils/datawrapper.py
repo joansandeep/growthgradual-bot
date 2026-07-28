@@ -313,6 +313,21 @@ async def publish_chart(client: httpx.AsyncClient, spec: dict) -> dict | None:
             metadata["visualize"]["value-label-format"] = "0.0%"
         elif unit in ("Cr", "₹", "Rs"):
             metadata["visualize"]["value-label-format"] = "0,0"
+        elif dw_type in ("d3-pies", "d3-donuts"):
+            # Pie/donut charts are the one case where leaving this unset is
+            # actively dangerous rather than merely suboptimal: Datawrapper's
+            # own default for these chart types applies a percent-style
+            # suffix to whatever raw number is in the data — NOT a genuine
+            # share-of-total calculation — whenever `unit` doesn't match one
+            # of the branches above. That's how a real ₹1,35,000 crore value
+            # ends up rendered as the meaningless "135000.0%" instead of a
+            # plain formatted number (this exact bug shipped in a published
+            # report: a bar→pie auto-converted "Promoter Selling Channels"
+            # chart with an unset/non-matching unit). Any non-percentage
+            # unit reaching this branch (blank, "crore", "₹ Cr", etc.) gets
+            # an explicit plain-number format instead of Datawrapper's
+            # unpredictable default.
+            metadata["visualize"]["value-label-format"] = "0,0"
 
         if dw_type == "tables":
             # _format_table_cell() (in _spec_to_csv) already turns every raw
