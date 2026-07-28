@@ -20,7 +20,10 @@ from utils.keys import (
 
 from utils.rag_client import rag_report as _rag_report
 from utils.datawrapper import attach_datawrapper_charts
-from utils.market_data import fetch_index_quotes, format_quotes_as_source
+from utils.market_data import (
+    fetch_index_quotes, format_quotes_as_source,
+    fetch_historical_index_quotes, format_historical_quotes_as_source,
+)
 
 router = APIRouter()
 log = logging.getLogger("report")
@@ -478,6 +481,17 @@ GLOBAL RULES:
   from sources" for that cell/row or omit it — never reconstruct it from what you already know about the
   company.
 - NEVER invent any number, date, name, or statistic
+- NO FALSE COMPLETENESS: if the question asks for an "exhaustive"/"complete"/"all X" list of discrete
+  real-world events (e.g. every promoter stake sale, every deal, every filing) and the sources are
+  ordinary news-search results rather than a structured dataset (an exchange disclosure feed, a
+  regulator's database, an official registry), do NOT present the list as if it were the full set.
+  News search surfaces whichever events got covered, not every event that happened — treat row count
+  in your table as "notable instances found in available sources," never as "all instances," and say
+  so explicitly in the surrounding prose (e.g. "the sources below are the block/bulk deals that
+  received press coverage, not a complete registry of every promoter transaction in the period").
+  This applies even if the retrieved sources include an aggregate total (e.g. "352 deals worth ₹X" from
+  a single report) — citing that aggregate is fine, but it does not license listing individual rows as
+  if they summed to the aggregate unless every one of those individual rows was itself found in a source.
 - NUMERIC CONSISTENCY: when the same metric appears in more than one place (a chart, a table, keyStats, and/or the prose), it MUST use the exact same figure and precision everywhere — e.g. if a source gives 6.6%, write "6.6" in the chart, the table, and the text; never round it to "7" in one spot and "6.6" in another. Copy the figure once from the source, then reuse that exact string everywhere it recurs.
 - TABLE HYGIENE: every column must have real values for EVERY row. If a column would
   be "-" or empty for some rows (e.g. indices like NIFTY 50/NIFTY BANK have no market cap),
@@ -1701,12 +1715,13 @@ async def generate_report(request: Request):
     # for any question that clearly concerns index levels we fetch real
     # quotes and prepend them as an authoritative source the model is told
     # to prefer over anything else for those exact numbers. ──
-    if re.search(
+    _is_index_question = bool(re.search(
         r"\b(nifty|sensex|bse|nse|bank nifty|index|indices|"
         r"indian stock market|indian equity|indian share market|"
         r"sector rotation|stock markets? in india)\b",
         question, re.IGNORECASE,
-    ):
+    ))
+    if _is_index_question:
         try:
             quotes = await fetch_index_quotes()
             quote_source = format_quotes_as_source(quotes)
@@ -1715,6 +1730,23 @@ async def generate_report(request: Request):
                 log.info("Report: prepended verified index quotes (%d symbols)", len(quotes))
         except Exception as e:
             log.warning("Report: index quote fetch failed, continuing without it: %s", e)
+
+        # A question that ALSO carries historical/quarter-over-quarter intent
+        # (the same signal _augment_query_for_historical_data already used to
+        # steer the Tavily query) needs a real closing-price series, not just
+        # today's snapshot — Tavily search can't reliably surface a clean
+        # multi-quarter data table (see: the sector-rotation report that fell
+        # back to generic business-cycle theory instead of actual numbers).
+        # Fetch it directly and prepend as its own authoritative source.
+        if _HISTORICAL_INTENT_RE.search(question):
+            try:
+                hist_series = await fetch_historical_index_quotes()
+                hist_source = format_historical_quotes_as_source(hist_series)
+                if hist_source:
+                    sources = [hist_source] + sources
+                    log.info("Report: prepended verified historical index series (%d symbols)", len(hist_series))
+            except Exception as e:
+                log.warning("Report: historical index fetch failed, continuing without it: %s", e)
 
     async def enrich(src: dict, idx: int) -> dict:
         if src.get("url", "").startswith("internal://"):

@@ -313,6 +313,32 @@ async def publish_chart(client: httpx.AsyncClient, spec: dict) -> dict | None:
             metadata["visualize"]["value-label-format"] = "0.0%"
         elif unit in ("Cr", "₹", "Rs"):
             metadata["visualize"]["value-label-format"] = "0,0"
+
+        if dw_type == "tables":
+            # _format_table_cell() (in _spec_to_csv) already turns every raw
+            # numeric cell into a correctly-signed, fixed-decimal STRING
+            # ("-0.58%", "+3.32%", "23,985") before it ever reaches this CSV.
+            # But Datawrapper's Tables chart type still runs its own
+            # column-type auto-detection on import — it sees a "%"-suffixed,
+            # numeric-looking string, decides the column is a number column
+            # anyway, and re-parses + re-formats it with ITS OWN default
+            # format (0 decimals, sign sometimes dropped). That silently
+            # turned "-0.58%" into "-0" and "+3.32%" into "3" in published
+            # reports even though the CSV cell was already correct — the
+            # cell-level fix alone can't stop Datawrapper from reformatting
+            # it a second time on its end.
+            #
+            # Fix: explicitly force every column to type "text" via
+            # metadata.data.column-format (confirmed key from Datawrapper's
+            # chart-properties schema — NOT metadata.visualize). A column
+            # marked "text" is rendered byte-for-byte as given, so our
+            # pre-formatted strings finally survive unchanged.
+            table_columns = spec.get("columns") or []
+            metadata["data"] = {
+                "column-format": {
+                    col: {"type": "text"} for col in table_columns
+                }
+            }
         await client.patch(
             f"{API_BASE}/charts/{chart_id}",
             headers=_headers({"Content-Type": "application/json"}),
