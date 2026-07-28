@@ -363,6 +363,25 @@ STEP 2 — ONLY create a chart if ALL conditions are met:
     for banks WITH market cap data; Chart 2: P/E ratio bar chart for banks WITH P/E data;
     Chart 3: Net Profit bar chart. Each chart stands alone.
 
+  AGGREGATE-ONLY DATA — DON'T FORCE A CHART, USE A TABLE INSTEAD:
+  When sources name multiple entities together but only give ONE combined/aggregate
+  figure for all of them (e.g. "IndiGo, Vedanta, and Whirlpool saw combined promoter
+  sales of Rs.12,000 crore" — three companies, one number), that is NOT a 3-item bar
+  chart — it's a single data point wearing three names. Charting it will be silently
+  dropped server-side (need ≥3 DISTINCT values, not ≥3 names sharing one value), wasting
+  a chart slot you could have used elsewhere. Instead:
+  → FIRST, actively re-scan the sources for each entity's INDIVIDUAL figure — company-specific
+    press coverage often gives per-entity numbers even when a summary sentence combines them.
+    If you find 3+ individual values, THAT is your real bar chart.
+  → If individual figures genuinely aren't in the sources, do NOT chart it at all — present
+    it instead as a markdown table (e.g. columns: Company/Entity | Transaction Type | Value |
+    Period | Primary Beneficiary), using "Significant"/"Substantial" for the value column where
+    only the combined figure is known. Tables render as a visual in the final PDF just like
+    charts do, so this still adds to your 5-8 visual target — it just isn't a fabricated chart.
+  → This applies any time you catch yourself about to write a chart series where every entity
+    would share the exact same value — that's the tell that it's one aggregate number, not
+    real per-item data.
+
 STEP 3 — Place [CHART_n] inline in the report markdown right after the paragraph AND bullet list whose data it shows.
   charts[0] = [CHART_1], charts[1] = [CHART_2], etc.
   IMPORTANT: Never place [CHART_n] immediately after just 1-2 sentences — always ensure at least one full
