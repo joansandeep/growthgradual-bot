@@ -20,6 +20,7 @@ from utils.keys import (
 
 from utils.rag_client import rag_report as _rag_report
 from utils.datawrapper import attach_datawrapper_charts
+from utils.market_data import fetch_index_quotes, format_quotes_as_source
 
 router = APIRouter()
 log = logging.getLogger("report")
@@ -1459,6 +1460,28 @@ def _build_followup_search_query(question: str, conversation_context: str) -> st
     return f"{question} — context: {last_assistant[:300]}"
 
 
+_HISTORICAL_INTENT_RE = re.compile(
+    r"\b(quarter|qtr|q[1-4]\b|quarterly|past \d+ (?:quarters?|months?|years?)|"
+    r"yoy|qoq|year[- ]on[- ]year|trend|historical|history|over time|"
+    r"last \d+ (?:quarters?|months?|years?))\b",
+    re.IGNORECASE,
+)
+
+
+def _augment_query_for_historical_data(query: str) -> str:
+    """When the question implies a time-series/quarter-over-quarter ask
+    (e.g. "sector rotation past 8 quarters"), a bare Tavily search tends to
+    surface today's-snapshot pages (day movers, current closing levels)
+    rather than actual period-over-period data — the source site usually has
+    both, but the plain query doesn't steer toward the right one. Append an
+    explicit hint so the search leans toward quarter-comparison / historical
+    tables instead of only the daily view.
+    """
+    if _HISTORICAL_INTENT_RE.search(query):
+        return f"{query} quarter-wise comparison historical data table"
+    return query
+
+
 @router.post("")
 async def generate_report(request: Request):
     t0 = time.perf_counter()
@@ -1567,7 +1590,9 @@ async def generate_report(request: Request):
             # Question implies it wants more than just the file (e.g. asks for
             # market context, comparisons, recent news) — supplement with web data.
             log.info("Report: file-first mode — supplementing with web search")
-            search_query = _build_followup_search_query(question, conversation_context)
+            search_query = _augment_query_for_historical_data(
+                _build_followup_search_query(question, conversation_context)
+            )
             searched = await _tavily_search(search_query, max_results=20, min_results=10)
             sources = [
                 {"title": r["title"], "url": r["url"],
@@ -1582,10 +1607,12 @@ async def generate_report(request: Request):
     elif not sources:
         log.info("Report: no sources — running own Tavily search for %r", question[:60])
         from routes.chat import tavily_search as _tavily_search, _looks_like_ai_overview
-        search_query = _build_followup_search_query(question, conversation_context)
+        search_query = _augment_query_for_historical_data(
+            _build_followup_search_query(question, conversation_context)
+        )
         if search_query != question:
-            log.info("Report: search query enriched with prior context (%d → %d chars)",
-                      len(question), len(search_query))
+            log.info("Report: search query enriched (%d → %d chars): %r",
+                      len(question), len(search_query), search_query[:150])
         searched = await _tavily_search(search_query, max_results=20)
         sources = [
             {"title": r["title"], "url": r["url"],
@@ -1600,7 +1627,24 @@ async def generate_report(request: Request):
         log.warning("Report: still no sources after self-search")
         return JSONResponse({"report": "Could not retrieve data for this topic. Please try again.", "charts": [], "keyStats": [], "summary": "", "title": ""})
 
+    # ── Verified index data: scraped sources are hit-or-miss on precise
+    # Nifty/Sensex/Bank Nifty levels (stale snippets, wrong page, etc.), so
+    # for any question that clearly concerns index levels we fetch real
+    # quotes and prepend them as an authoritative source the model is told
+    # to prefer over anything else for those exact numbers. ──
+    if re.search(r"\b(nifty|sensex|bse|nse|bank nifty|index|indices)\b", question, re.IGNORECASE):
+        try:
+            quotes = await fetch_index_quotes()
+            quote_source = format_quotes_as_source(quotes)
+            if quote_source:
+                sources = [quote_source] + sources
+                log.info("Report: prepended verified index quotes (%d symbols)", len(quotes))
+        except Exception as e:
+            log.warning("Report: index quote fetch failed, continuing without it: %s", e)
+
     async def enrich(src: dict, idx: int) -> dict:
+        if src.get("url", "").startswith("internal://"):
+            return src
         if _looks_like_ai_overview(src.get("snippet", "")):
             src = {**src, "snippet": ""}
         if _looks_like_ai_overview(src.get("fullContent", "")):
@@ -2021,10 +2065,25 @@ async def generate_report(request: Request):
                     return False
         return True
 
+    def _recover_thin_bar_as_pie(ch: dict) -> dict:
+        """A single-series bar chart with exactly 2 items fails the ≥3-item
+        bar rule but is a perfectly legitimate pie (the rules already allow
+        2-slice pies, e.g. "FII vs DII"). Rather than dropping a chart the
+        model clearly had valid data for, convert it in place. Only touches
+        bar charts — anything else (including bars with ≥3 items, which are
+        fine as bars) passes through untouched."""
+        if ch.get("type") != "bar":
+            return ch
+        series = ch.get("series") or []
+        if len(series) == 1 and len(series[0].get("data") or []) == 2:
+            log.info("Chart auto-converted bar→pie (2 items): %s", ch.get("title", "?"))
+            return {**ch, "type": "pie"}
+        return ch
+
     try:
         parsed = json.loads(clean)
 
-        original_charts_list = parsed.get("charts") or []
+        original_charts_list = [_recover_thin_bar_as_pie(c) for c in (parsed.get("charts") or [])]
         valid_mask = [_is_plausible_chart(c) for c in original_charts_list]
         charts = [c for c, keep in zip(original_charts_list, valid_mask) if keep]
         if len(charts) < len(original_charts_list):
