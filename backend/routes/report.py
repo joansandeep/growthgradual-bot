@@ -994,6 +994,55 @@ _NON_CHART_HEADING_RE = re.compile(
 )
 
 
+def _normalize_label(s: str) -> str:
+    return re.sub(r"[^a-z0-9]+", "", s.strip().lower())
+
+
+def _chart_label_set(ch: dict) -> set[str]:
+    """All row/category labels a chart already covers, normalized for
+    loose comparison (case/punctuation/whitespace-insensitive)."""
+    if ch.get("type") == "table":
+        rows = ch.get("rows") or []
+        return {_normalize_label(row[0]) for row in rows if row}
+    labels: set[str] = set()
+    for s in ch.get("series") or []:
+        for pt in s.get("data") or []:
+            lbl = pt.get("label")
+            if lbl:
+                labels.add(_normalize_label(str(lbl)))
+    return labels
+
+
+def _table_duplicates_existing_chart(header_cells: list[str], rows: list[list[str]], existing_charts: list) -> bool:
+    """
+    True if this markdown table's row labels are (near-)identical to a
+    chart that's already in existing_charts — e.g. the model writes a
+    "NIFTY 50 / SENSEX / NIFTY BANK / NIFTY IT" table in the report body
+    AND already charted that exact same index data as a bar chart earlier
+    in its JSON. Converting the table into a second Datawrapper "chart"
+    in that case just repeats the same 4 numbers a second time as an
+    inert table sitting next to the real chart — readers see one chart's
+    worth of information padded out to look like two.
+    """
+    if not existing_charts or not rows:
+        return False
+    table_labels = {_normalize_label(row[0]) for row in rows if row}
+    if not table_labels:
+        return False
+    for ch in existing_charts:
+        chart_labels = _chart_label_set(ch)
+        if not chart_labels:
+            continue
+        overlap = table_labels & chart_labels
+        # Near-identical label sets (allowing for the table listing a
+        # superset/subset, e.g. an extra footnote row) — same underlying
+        # data being shown twice.
+        smaller = min(len(table_labels), len(chart_labels))
+        if smaller and len(overlap) / smaller >= 0.75:
+            return True
+    return False
+
+
 def _extract_markdown_tables(report_text: str, existing_charts: list) -> tuple[str, list]:
     """Find markdown pipe-tables (header row + |---|---| separator + data rows)
     in the report body, turn each into a {"type": "table", ...} chart-spec so
@@ -1032,7 +1081,8 @@ def _extract_markdown_tables(report_text: str, existing_charts: list) -> tuple[s
                 j += 1
 
             is_metadata_table = bool(_NON_CHART_HEADING_RE.search(last_heading))
-            if len(header_cells) >= 2 and len(rows) >= 2 and not is_metadata_table:
+            is_duplicate_of_chart = _table_duplicates_existing_chart(header_cells, rows, charts)
+            if len(header_cells) >= 2 and len(rows) >= 2 and not is_metadata_table and not is_duplicate_of_chart:
                 # Defensive scrub: if a column is literally a URL/Link column,
                 # blank any cell that isn't an actual http(s) link rather than
                 # let placeholder/descriptive text (e.g. an LLM echoing a
@@ -1056,8 +1106,12 @@ def _extract_markdown_tables(report_text: str, existing_charts: list) -> tuple[s
                 out.append(f"[CHART_{len(charts)}]")
                 i = j
                 continue
-            # Too small, or a Sources/Methodology-style metadata table —
+            # Too small, a Sources/Methodology-style metadata table, or a
+            # near-duplicate of data already shown in an existing chart —
             # leave it as plain markdown rather than charting it.
+            if is_duplicate_of_chart:
+                log.info("Skipped charting markdown table %r — duplicates an existing chart's data",
+                          (last_heading or "Data Table")[:60])
 
         out.append(line)
         i += 1
