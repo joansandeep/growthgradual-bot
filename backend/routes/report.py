@@ -255,7 +255,12 @@ STEP 1 — AGGRESSIVELY SCAN sources for ANY chartable numbers:
   • Time-series: quarterly results, monthly data, weekly prices → line chart
   • Allocation/composition (sector weights, portfolio mix) → pie chart
   • Comparisons: 1yr vs 3yr vs 5yr returns of same fund → bar chart
-  • FII/DII flows by date → line or bar chart
+  • FII/DII flows by date → line chart if 3+ dates given. For a single-day FII vs
+    DII comparison (one net-buy figure, one net-sell figure — opposite signs),
+    use a 2-bar chart, NOT a pie: a pie slice can't represent a negative outflow,
+    so plotting FII (e.g. -735 Cr) against DII (e.g. +705 Cr) as pie shares
+    produces a meaningless percentage. Only use pie for genuinely non-negative
+    share-of-whole splits (e.g. green vs red IPO listings, both counts ≥0).
   • Category-wise RETURNS (large cap vs mid cap vs small cap performance) → bar chart
   • Category-wise AUM/asset totals (how much money sits in each PMS/fund category,
     sector, or AMC out of the whole) → this is composition, not ranking — use a
@@ -276,6 +281,16 @@ STEP 1 — AGGRESSIVELY SCAN sources for ANY chartable numbers:
              {"label":"Jun 19","value":24013},{"label":"Jun 30","value":23866}]}]
   → Do this for ANY index/benchmark/rate the sources track across multiple dated
     points, not only when the question explicitly asks for a "trend" or "chart".
+  → NEVER build a line chart from just 2 known values (e.g. "Q4 2025: 880.18" and
+    "Q1 2026: 880.52") even if you're tempted to space them across a date axis —
+    a straight line across many gridlines between 2 points implies daily/weekly
+    data that doesn't exist. With only 2 real values, use a bar chart instead (or
+    state the before/after figures in text), not a line.
+  → NEVER plot different TYPES of % change (previous session %, past-month %,
+    past-year %, etc.) as if they were sequential points on a timeline — they
+    describe different, non-chronological periods, and a line through them draws
+    a fake trend. Use a bar chart with each period as its own labeled bar instead
+    (e.g. "Sensex — % Change By Period": bars for "1 Day", "1 Month", "1 Year").
 
   COMPARISON TOPICS (X vs Y, A vs B) — MANDATORY MULTI-SERIES CHART:
   When the question compares TWO OR MORE assets (e.g. "Gold vs Silver",
@@ -2020,6 +2035,15 @@ async def generate_report(request: Request):
         if chart_type in ("bar", "pie") and n_series == 1:
             n_labels = len(series[0].get("data") or [])
             min_labels = 2 if chart_type == "pie" else 3
+            if chart_type == "bar" and n_labels == 2:
+                vals = [pt.get("value", 0) for pt in series[0].get("data") or []]
+                is_diverging = len(vals) == 2 and (vals[0] > 0) != (vals[1] > 0)
+                if is_diverging:
+                    # e.g. FII outflow (-735) vs DII inflow (+705) — a genuine
+                    # 2-way diverging comparison, not a "thin" chart. Can't be
+                    # a pie (negative values aren't representable as slices),
+                    # so it's allowed through as a bar despite the usual ≥3 rule.
+                    min_labels = 2
             if n_labels < min_labels:
                 log.warning("Chart rejected — only %d distinct items (need ≥%d for %s chart): %s",
                             n_labels, min_labels, chart_type, ch.get("title", "?"))
@@ -2067,23 +2091,58 @@ async def generate_report(request: Request):
 
     def _recover_thin_bar_as_pie(ch: dict) -> dict:
         """A single-series bar chart with exactly 2 items fails the ≥3-item
-        bar rule but is a perfectly legitimate pie (the rules already allow
-        2-slice pies, e.g. "FII vs DII"). Rather than dropping a chart the
-        model clearly had valid data for, convert it in place. Only touches
-        bar charts — anything else (including bars with ≥3 items, which are
-        fine as bars) passes through untouched."""
+        bar rule but is a perfectly legitimate pie IF both values are a genuine
+        non-negative share-of-whole (e.g. "IPO listings: green vs red" 12 vs 8).
+        A pie can't represent a negative value, so signed/diverging pairs (e.g.
+        FII outflow -735 vs DII inflow +705) are deliberately left as bars —
+        the validator's diverging-bar rule allows those through directly."""
         if ch.get("type") != "bar":
             return ch
         series = ch.get("series") or []
         if len(series) == 1 and len(series[0].get("data") or []) == 2:
-            log.info("Chart auto-converted bar→pie (2 items): %s", ch.get("title", "?"))
-            return {**ch, "type": "pie"}
+            vals = [pt.get("value", 0) for pt in series[0].get("data") or []]
+            if all(v >= 0 for v in vals):
+                log.info("Chart auto-converted bar→pie (2 items): %s", ch.get("title", "?"))
+                return {**ch, "type": "pie"}
+        return ch
+
+    _RELATIVE_PERIOD_RE = re.compile(
+        r"\b(previous|past|last|recent|current)\s+(session|day|week|month|quarter|year)\b|\btoday\b",
+        re.IGNORECASE,
+    )
+
+    def _recover_pseudo_trend_line_as_bar(ch: dict) -> dict:
+        """A single-series line chart is only a real 'trend' if it has several
+        points along an actual chronological axis. Two failure patterns show
+        up otherwise: (1) exactly 2 data points stretched across a dense
+        multi-week date axis, implying daily granularity that doesn't exist
+        (e.g. a gold-reserves figure known only for Q4 and Q1, drawn as a
+        smooth line across 15 weekly gridlines); (2) labels that are
+        heterogeneous relative-period phrases — "Previous Session", "Past
+        Month", "Past Year" — plotted as if they were sequential time points,
+        which draws a misleading trend line out of unrelated stats. Both are
+        really a discrete comparison, not a time series — convert to bar."""
+        if ch.get("type") != "line":
+            return ch
+        series = ch.get("series") or []
+        if len(series) != 1:
+            return ch  # multi-series comparisons (e.g. Gold vs Silver) are fine as-is
+        data = series[0].get("data") or []
+        labels = [str(pt.get("label", "")) for pt in data]
+        too_few_points = len(data) == 2
+        heterogeneous_labels = any(_RELATIVE_PERIOD_RE.search(l) for l in labels)
+        if too_few_points or heterogeneous_labels:
+            log.info("Chart auto-converted line→bar (pseudo-trend): %s", ch.get("title", "?"))
+            return {**ch, "type": "bar"}
         return ch
 
     try:
         parsed = json.loads(clean)
 
-        original_charts_list = [_recover_thin_bar_as_pie(c) for c in (parsed.get("charts") or [])]
+        original_charts_list = [
+            _recover_pseudo_trend_line_as_bar(_recover_thin_bar_as_pie(c))
+            for c in (parsed.get("charts") or [])
+        ]
         valid_mask = [_is_plausible_chart(c) for c in original_charts_list]
         charts = [c for c, keep in zip(original_charts_list, valid_mask) if keep]
         if len(charts) < len(original_charts_list):
