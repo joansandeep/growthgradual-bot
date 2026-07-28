@@ -2494,7 +2494,10 @@ async def generate_report(request: Request):
             # common reason PDFs came back with zero charts even though the
             # model had actually generated good ones (or good table data) —
             # skipping this pipeline on the salvage path silently threw them away.
-            _raw_charts = salvaged.get("charts") or []
+            _raw_charts = [
+                _recover_pseudo_trend_line_as_bar(_recover_thin_bar_as_pie(c))
+                for c in (salvaged.get("charts") or [])
+            ]
             _valid_mask = [_is_plausible_chart(c) for c in _raw_charts]
             _salv_charts = [c for c, keep in zip(_raw_charts, _valid_mask) if keep]
             if len(_salv_charts) < len(_raw_charts):
@@ -2533,7 +2536,10 @@ async def generate_report(request: Request):
                 pass
             repaired_imgs, _ = _force_fallback_images(repaired_imgs, image_candidates, model_used)
             repaired_imgs, _ = _top_up_images(repaired_imgs, image_candidates, model_used)
-            _raw_charts = repaired_parsed.get("charts") or []
+            _raw_charts = [
+                _recover_pseudo_trend_line_as_bar(_recover_thin_bar_as_pie(c))
+                for c in (repaired_parsed.get("charts") or [])
+            ]
             _valid_mask = [_is_plausible_chart(c) for c in _raw_charts]
             _rep_charts = [c for c, keep in zip(_raw_charts, _valid_mask) if keep]
             if len(_rep_charts) < len(_raw_charts):
