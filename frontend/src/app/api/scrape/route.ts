@@ -26,11 +26,17 @@ export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 
 /**
- * Proxy to the Python scraper backend.
- * Fallback: built-in parallel RSS scraper when Python is unavailable.
+ * Built-in parallel RSS scraper (Node/Next.js — runs directly in this route).
+ *
+ * NOTE: this used to proxy to a separate Python scraper backend first and only
+ * fall back to the code below on failure. That Python service (backend/scraper.py)
+ * was never wired into the deployed FastAPI app (main.py never imported it) and
+ * depended on packages (selenium, undetected-chromedriver, bs4) that aren't even
+ * in requirements.txt, so the proxy call failed on every single request — wasting
+ * up to 3s per feed load before falling back to this scraper. The Python scraper
+ * files were removed; this scraper is now the primary (and only) path.
  */
 
-const PYTHON_API = process.env.SCRAPE_API_URL || 'http://localhost:8000';
 const CACHE_PATH = path.join(process.cwd(), 'growth_gradual_cache.json');
 const CACHE_TTL_MS = 6 * 60 * 60 * 1000; // 6 hours
 
@@ -724,7 +730,7 @@ async function scrapeAllFeeds(): Promise<{ articles: ScrapedArticle[]; sources: 
   return { articles: unique, sources };
 }
 
-async function fallbackScrape(): Promise<NextResponse> {
+async function handleScrape(): Promise<NextResponse> {
   // Serve cache if it exists and is fresh (complete or partial but has articles)
   try {
     const raw = await fs.readFile(CACHE_PATH, 'utf8');
@@ -765,26 +771,21 @@ async function fallbackScrape(): Promise<NextResponse> {
 
 // ── Route handlers ────────────────────────────────────────────────────────────
 
-async function proxyRequest(method: 'GET' | 'POST') {
+export async function GET() {
   const t0 = performance.now();
-  try {
-    const res = await fetch(`${PYTHON_API}/api/scrape`, {
-      method,
-      headers: { 'Content-Type': 'application/json' },
-      signal: AbortSignal.timeout(3_000),
-    });
-    if (!res.ok) throw new Error(`Python backend responded ${res.status}`);
-    const data = await res.json();
-    log.info('← %s /api/scrape  %d  %.0fms  (python backend)', method, res.status, performance.now() - t0);
-    return NextResponse.json(data);
-  } catch (err) {
-    log.warn('Python backend unavailable — using built-in fallback: %s', err);
-    return fallbackScrape();
-  }
+  const res = await handleScrape();
+  log.info('← GET /api/scrape  %.0fms', performance.now() - t0);
+  return res;
 }
 
-export async function GET()  { return proxyRequest('GET');  }
-export async function POST() { return proxyRequest('POST'); }
+export async function POST() {
+  // Force-refresh: clear cache first so handleScrape() re-scrapes instead of serving stale data
+  try { await fs.unlink(CACHE_PATH); } catch { /* no cache to clear */ }
+  const t0 = performance.now();
+  const res = await handleScrape();
+  log.info('← POST /api/scrape  %.0fms', performance.now() - t0);
+  return res;
+}
 
 /** DELETE /api/scrape — clears the local cache so next GET triggers a fresh scrape */
 export async function DELETE() {

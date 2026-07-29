@@ -153,6 +153,14 @@ function renderMd(text: string): string {
         return `<table class="md-table"><tbody>${cleanFirst}${cleanRest}<\/tbody><\/table>`;
       }
     )
+    // Collapse blank line(s) sitting between two consecutive bullet-list
+    // lines into a single line break. LLM output commonly separates list
+    // items with a blank line; left as-is, each bullet ends up wrapped in
+    // its own separate <ul> (with a stray paragraph gap between them),
+    // which is what produces the large visible gap between list points.
+    // Collapsing here lets every consecutive bullet line merge into one
+    // continuous <ul> in the conversion below.
+    .replace(/^([ \t]*[-*+][ \t]+.+)\n{2,}(?=[ \t]*[-*+][ \t]+)/gm, '$1\n')
     .replace(/^\s*[-*+]\s+(.+)$/gm, '<li class="md-li">$1</li>')
     .replace(/(<li[\s\S]*?<\/li>\n?)+/g, m => `<ul class="md-ul">${m}</ul>`)
     .replace(/\[(\d+)\]/g, '<sup class="md-ref">[$1]</sup>')
@@ -2206,11 +2214,11 @@ export default function GrowthGradualChat() {
         .dots i { width:6px;height:6px;border-radius:50%;background:#8b93b5;animation:bd .9s ease-in-out infinite;display:block; }
         .dots i:nth-child(2){animation-delay:.15s;} .dots i:nth-child(3){animation-delay:.3s;}
         .report-content { font-size:clamp(12px,1.1vw,13.5px);line-height:1.65;color:#1a1f4e;font-family:'DM Sans',sans-serif; }
-        .report-content .md-p{margin:0 0 10px;}
+        .report-content .md-p{margin:0 0 10px;text-align:justify;}
         .report-content .md-h1,.report-content .md-h2,.report-content .md-h3{font-family:'Playfair Display',serif;color:#1a1f4e;margin:14px 0 6px;}
         .report-content .md-h1{font-size:clamp(15px,1.6vw,18px);} .report-content .md-h2{font-size:clamp(13px,1.3vw,15px);} .report-content .md-h3{font-size:clamp(12px,1.1vw,13px);}
         .report-content .md-ul{margin:4px 0 10px 16px;list-style:disc;}
-        .report-content .md-li{margin:3px 0;}
+        .report-content .md-li{margin:3px 0;text-align:justify;}
         .report-content .md-table{border-collapse:collapse;margin:10px 0;width:100%;font-size:clamp(11px,.95vw,12.5px);display:block;overflow-x:auto;}
         .report-content .md-th{background:linear-gradient(90deg,#0d4f3c,#1a1f4e);color:#fff;font-weight:600;font-size:clamp(10px,.85vw,11px);text-transform:uppercase;letter-spacing:.04em;border:1px solid #1a3a30;padding:clamp(5px,.7vh,8px) clamp(7px,.9vw,11px);text-align:left;}
         .report-content .md-td{border:1px solid #e2e6f0;padding:clamp(5px,.6vh,7px) clamp(7px,.9vw,11px);}

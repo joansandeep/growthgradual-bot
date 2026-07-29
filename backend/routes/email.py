@@ -167,14 +167,14 @@ def _md_to_html(md: str) -> str:
         if re.match(r"^[-*+]\s+", s):
             if in_ol: out.append("</ol>"); in_ol = False
             if not in_ul: out.append('<ul style="margin:8px 0 8px 20px;padding:0;">'); in_ul = True
-            out.append(f'<li style="margin:3px 0;color:#2d3561;">{inline(re.sub(r"^[-*+]\s+", "", s))}</li>'); i += 1; continue
+            out.append(f'<li style="margin:3px 0;color:#2d3561;text-align:justify;">{inline(re.sub(r"^[-*+]\s+", "", s))}</li>'); i += 1; continue
         if re.match(r"^\d+\.\s+", s):
             if in_ul: out.append("</ul>"); in_ul = False
             if not in_ol: out.append('<ol style="margin:8px 0 8px 20px;padding:0;">'); in_ol = True
-            out.append(f'<li style="margin:3px 0;color:#2d3561;">{inline(re.sub(r"^\d+\.\s+", "", s))}</li>'); i += 1; continue
+            out.append(f'<li style="margin:3px 0;color:#2d3561;text-align:justify;">{inline(re.sub(r"^\d+\.\s+", "", s))}</li>'); i += 1; continue
         if in_ul: out.append("</ul>"); in_ul = False
         if in_ol: out.append("</ol>"); in_ol = False
-        if s: out.append(f'<p style="margin:6px 0;line-height:1.65;color:#2d3561;">{inline(s)}</p>')
+        if s: out.append(f'<p style="margin:6px 0;line-height:1.65;color:#2d3561;text-align:justify;">{inline(s)}</p>')
         i += 1
 
     if in_ul: out.append("</ul>")
@@ -198,7 +198,7 @@ def _build_html(title: str, summary: str, key_stats: list[dict], report_md: str,
 
     summary_block = ""
     if summary:
-        summary_block = f'<div style="background:{LIGHT};border-left:4px solid {GOLD};border-radius:0 8px 8px 0;padding:14px 18px;margin:18px 0;"><div style="font-size:10px;color:{GOLD};text-transform:uppercase;font-weight:600;letter-spacing:.5px;margin-bottom:5px;">Executive Summary</div><p style="margin:0;color:{NAVY};line-height:1.65;font-size:14px;">{html_module.escape(summary)}</p></div>'
+        summary_block = f'<div style="background:{LIGHT};border-left:4px solid {GOLD};border-radius:0 8px 8px 0;padding:14px 18px;margin:18px 0;"><div style="font-size:10px;color:{GOLD};text-transform:uppercase;font-weight:600;letter-spacing:.5px;margin-bottom:5px;">Executive Summary</div><p style="margin:0;color:{NAVY};line-height:1.65;font-size:14px;text-align:justify;">{html_module.escape(summary)}</p></div>'
 
     return f"""<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8"><title>{html_module.escape(title or 'Report')}</title></head>
 <body style="margin:0;padding:0;background:#eef0f8;font-family:'Segoe UI',Arial,sans-serif;">

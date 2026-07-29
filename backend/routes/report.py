@@ -1626,13 +1626,10 @@ def _build_followup_search_query(question: str, conversation_context: str) -> st
     """
     Follow-up report questions (e.g. "what about its peers", "and the risks")
     are often meaningless to a search engine on their own — they only make
-    sense alongside the prior turn. Fold in the most recent assistant
-    response (and the user question that produced it) so the search engine
-    gets real grounding instead of a bare pronoun-heavy fragment.
-
-    This deliberately makes the query longer than `question` alone — that's
-    fine, tavily_search() truncates to Tavily's 400-char API limit on a word
-    boundary before it ever hits the wire.
+    sense alongside the prior turn. Fold in a short topical hint from the
+    most recent assistant response so the search engine gets grounding,
+    without injecting a paragraph of prior answer text into the query — a
+    search engine needs a topic phrase, not 300 characters of prose.
     """
     if not conversation_context.strip():
         return question
@@ -1660,12 +1657,17 @@ def _build_followup_search_query(question: str, conversation_context: str) -> st
     if is_smalltalk(last_user):
         return question
 
-    return f"{question} — context: {last_assistant[:300]}"
+    # Minimal topic only — first clause of the prior answer, capped short —
+    # enough to ground a pronoun ("its peers") without injecting prose.
+    topic = re.split(r"[.\n]", last_assistant, maxsplit=1)[0].strip()[:60]
+    return f"{question} {topic}".strip() if topic else question
 
 
 _HISTORICAL_INTENT_RE = re.compile(
     r"\b(quarter|qtr|q[1-4]\b|quarterly|past \d+ (?:quarters?|months?|years?)|"
-    r"yoy|qoq|year[- ]on[- ]year|trend|historical|history|over time|"
+    r"since (?:19|20)\d{2}|yoy|qoq|year[- ]on[- ]year|year[- ]over[- ]year|"
+    r"quarter[- ]on[- ]quarter|quarter[- ]over[- ]quarter|trend|historical|history|"
+    r"over time|comparison|compare[ds]?|"
     r"last \d+ (?:quarters?|months?|years?))\b",
     re.IGNORECASE,
 )
@@ -1796,7 +1798,10 @@ async def generate_report(request: Request):
             search_query = _augment_query_for_historical_data(
                 _build_followup_search_query(question, conversation_context)
             )
-            searched = await _tavily_search(search_query, max_results=20, min_results=10)
+            searched = await _tavily_search(
+                search_query, max_results=20, min_results=10,
+                historical_intent=bool(_HISTORICAL_INTENT_RE.search(question)),
+            )
             sources = [
                 {"title": r["title"], "url": r["url"],
                  "snippet": r["snippet"], "fullContent": r.get("fullContent", "")}
@@ -1816,7 +1821,10 @@ async def generate_report(request: Request):
         if search_query != question:
             log.info("Report: search query enriched (%d → %d chars): %r",
                       len(question), len(search_query), search_query[:150])
-        searched = await _tavily_search(search_query, max_results=20)
+        searched = await _tavily_search(
+            search_query, max_results=20,
+            historical_intent=bool(_HISTORICAL_INTENT_RE.search(question)),
+        )
         sources = [
             {"title": r["title"], "url": r["url"],
              "snippet": r["snippet"], "fullContent": r.get("fullContent", "")}
@@ -2481,13 +2489,16 @@ async def generate_report(request: Request):
                     result["report"] = report_raw
             arr_text = _extract_balanced_array(text, "keyStats")
             if arr_text:
-                try: result["keyStats"] = json.loads(arr_text)
-                except Exception: pass
+                try:
+                    result["keyStats"] = json.loads(arr_text)
+                except Exception as e:
+                    log.debug("Report salvage: keyStats array failed to parse (%s)", e)
             arr_text = _extract_balanced_array(text, "charts")
             if arr_text:
                 try:
                     result["charts"] = json.loads(arr_text)
-                except Exception: pass
+                except Exception as e:
+                    log.debug("Report salvage: charts array failed to parse (%s)", e)
             # Also try to salvage images array from truncated JSON
             arr_text = _extract_balanced_array(text, "images")
             if arr_text:
@@ -2496,8 +2507,8 @@ async def generate_report(request: Request):
                     if image_candidates and raw_imgs:
                         validated, _ = _validate_image_selections(raw_imgs, image_candidates)
                         result["images"] = validated
-                except Exception:
-                    pass
+                except Exception as e:
+                    log.debug("Report salvage: images array failed to parse/validate (%s)", e)
             return result if result.get("report") else None
 
         salvaged = _try_extract_fields(clean)
@@ -2551,8 +2562,8 @@ async def generate_report(request: Request):
                 raw_imgs = repaired_parsed.get("images") or []
                 if image_candidates and raw_imgs:
                     repaired_imgs, _ = _validate_image_selections(raw_imgs, image_candidates)
-            except Exception:
-                pass
+            except Exception as e:
+                log.debug("Report repair: image validation failed, continuing without images (%s)", e)
             repaired_imgs, _ = _force_fallback_images(repaired_imgs, image_candidates, model_used)
             repaired_imgs, _ = _top_up_images(repaired_imgs, image_candidates, model_used)
             _raw_charts = [
@@ -2578,8 +2589,8 @@ async def generate_report(request: Request):
                 "summary":    repaired_parsed.get("summary", ""),
                 "fileImages": embedded_file_images,
             })
-        except Exception:
-            pass
+        except Exception as e:
+            log.warning("Report: JSON repair attempt failed (%s)", e)
 
         log.error("Report: could not salvage JSON — returning error message")
         return JSONResponse({

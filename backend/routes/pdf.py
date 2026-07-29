@@ -180,16 +180,16 @@ def _load_logo_bytes(logo_b64: str = "") -> bytes | None:
     if logo_b64:
         try:
             return base64.b64decode(logo_b64)
-        except Exception:
-            pass
+        except Exception as e:
+            log.debug("Logo: request-supplied base64 failed to decode (%s)", e)
 
     # 2. Environment variable (set once at deploy time)
     b64 = os.environ.get("LOGO_B64", "")
     if b64:
         try:
             return base64.b64decode(b64)
-        except Exception:
-            pass
+        except Exception as e:
+            log.debug("Logo: LOGO_B64 env var failed to decode (%s)", e)
 
     # 2b. Explicit path override via env var (most reliable for non-monorepo deploys)
     logo_path_env = os.environ.get("LOGO_PATH", "")
@@ -198,8 +198,8 @@ def _load_logo_bytes(logo_b64: str = "") -> bytes | None:
         if p.exists():
             try:
                 return p.read_bytes()
-            except Exception:
-                pass
+            except Exception as e:
+                log.debug("Logo: LOGO_PATH file failed to read (%s)", e)
 
     # 3. Filesystem search — covers local dev and various deploy layouts
     _here = Path(__file__).resolve().parent          # routes/
@@ -359,16 +359,51 @@ def _parse_inline_bold(text: str) -> list:
     return result
 
 
-def _draw_rich_line(c, x, y, text, regular_font, bold_font, size, color, max_w):
-    """Draw a line with inline **bold** support. Returns width drawn."""
+def _draw_rich_line(c, x, y, text, regular_font, bold_font, size, color, max_w, justify=False):
+    """Draw a line with inline **bold** support. Returns width drawn.
+
+    justify=True distributes the line's slack evenly between word gaps so
+    its right edge lands on x+max_w — standard justified-paragraph
+    behaviour. Callers should only pass justify=True for lines that aren't
+    the last line of their paragraph/bullet/numbered item: the final line
+    of a justified paragraph conventionally stays left-aligned/ragged
+    rather than being stretched, since a short last line stretched to full
+    width reads as a spacing bug, not "justified" text.
+    """
     segments = _parse_inline_bold(text)
-    cx = x
+    # Flatten segments into a per-word list (still tagged bold/not-bold) so
+    # justification spacing can be computed across bold/regular boundaries —
+    # a bold run is still just words for spacing purposes.
+    words: list[tuple[bool, str]] = []
     for is_bold, seg in segments:
+        for w in seg.split(" "):
+            if w:
+                words.append((is_bold, w))
+
+    if not words:
+        return 0
+
+    space_w = c.stringWidth(" ", regular_font, size)
+
+    if justify and len(words) > 1:
+        natural_w = sum(
+            c.stringWidth(w, bold_font if is_bold else regular_font, size)
+            for is_bold, w in words
+        ) + space_w * (len(words) - 1)
+        extra = max_w - natural_w
+        gap = space_w + (extra / (len(words) - 1)) if extra > 0 else space_w
+    else:
+        gap = space_w
+
+    cx = x
+    for idx, (is_bold, w) in enumerate(words):
         font = bold_font if is_bold else regular_font
         c.setFont(font, size)
         c.setFillColorRGB(*color)
-        c.drawString(cx, y, seg)
-        cx += c.stringWidth(seg, font, size)
+        c.drawString(cx, y, w)
+        cx += c.stringWidth(w, font, size)
+        if idx < len(words) - 1:
+            cx += gap
     return cx - x
 
 
@@ -935,8 +970,8 @@ def build_pdf(report: str, title: str, question: str, summary: str,
                 summary = summary or _inner.get("summary", "")
                 key_stats = key_stats or _inner.get("keyStats", [])
                 charts    = charts    or _inner.get("charts", [])
-        except Exception:
-            pass
+        except Exception as e:
+            log.debug("PDF: report field is not double-encoded JSON, using as-is (%s)", e)
 
     from reportlab.lib.pagesizes import A4
     from reportlab.pdfgen import canvas as rl_canvas
@@ -1466,7 +1501,8 @@ def build_pdf(report: str, title: str, question: str, summary: str,
                 if li == 0:
                     c.setFillColorRGB(*accent())
                     c.circle(MARGIN + 5, y[0] + 3.5, 2.5, fill=1, stroke=0)
-                _draw_rich_line(c, MARGIN + 15, y[0], ln, "Helvetica", "Helvetica-Bold", 10, BODY_TXT, CW - 15)
+                _draw_rich_line(c, MARGIN + 15, y[0], ln, "Helvetica", "Helvetica-Bold", 10, BODY_TXT, CW - 15,
+                                 justify=(li < len(wlines) - 1))
                 nl(15)
             continue
 
@@ -1481,7 +1517,8 @@ def build_pdf(report: str, title: str, question: str, summary: str,
                 if li == 0:
                     c.setFillColorRGB(*accent()); c.setFont("Helvetica-Bold", 10)
                     c.drawString(MARGIN, y[0], f"{num}.")
-                _draw_rich_line(c, MARGIN + indent, y[0], ln, "Helvetica", "Helvetica-Bold", 10, BODY_TXT, CW - indent)
+                _draw_rich_line(c, MARGIN + indent, y[0], ln, "Helvetica", "Helvetica-Bold", 10, BODY_TXT, CW - indent,
+                                 justify=(li < len(wlines) - 1))
                 nl(15)
             continue
 
@@ -1500,9 +1537,10 @@ def build_pdf(report: str, title: str, question: str, summary: str,
             if any(h in _tlow for h in _DATA_NOTE_HINTS):
                 continue
             wlines = _wrap(c, plain_text, "Helvetica", 10, CW)
-            for ln in wlines:
+            for li, ln in enumerate(wlines):
                 need(15, current_section[0])
-                _draw_rich_line(c, MARGIN, y[0], ln, "Helvetica", "Helvetica-Bold", 10, BODY_TXT, CW)
+                _draw_rich_line(c, MARGIN, y[0], ln, "Helvetica", "Helvetica-Bold", 10, BODY_TXT, CW,
+                                 justify=(li < len(wlines) - 1))
                 nl(15)
             nl(6); continue
 
@@ -1604,8 +1642,8 @@ async def generate_pdf(request: Request):
                     key_stats = inner.get("keyStats", [])
                 if not charts:
                     charts = inner.get("charts", [])
-        except Exception:
-            pass
+        except Exception as e:
+            log.debug("PDF: report field is not double-encoded JSON, using as-is (%s)", e)
 
     # Unescape any literal \n sequences
     if "\\n" in report:
@@ -1644,8 +1682,8 @@ async def generate_pdf(request: Request):
                             if decoded[:4] == b"\x89PNG":
                                 dw["pngBytes"] = decoded
                                 return  # valid PNG bytes decoded from base64 — done
-                        except Exception:
-                            pass
+                        except Exception as e:
+                            log.debug("PDF: chart pngBytes base64 decode failed, will re-fetch (%s)", e)
                         dw["pngBytes"] = None  # invalid base64 — re-fetch below
                     elif isinstance(existing, (bytes, bytearray)) and existing[:4] == b"\x89PNG":
                         return  # already valid raw bytes — skip re-fetch

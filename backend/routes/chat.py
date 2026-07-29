@@ -27,6 +27,8 @@ from utils.keys import (
 router = APIRouter()
 log = logging.getLogger("chat")
 from datetime import datetime as _dt
+from datetime import timezone as _tz
+from email.utils import parsedate_to_datetime as _parse_rfc2822
 from utils.rag_client import rag_query as _rag_query
 
 # ─── Supabase persistence ──────────────────────────────────────────────────────
@@ -351,20 +353,245 @@ _FOLLOWUP_RE = re.compile(
     re.IGNORECASE,
 )
 
-async def rewrite_query_for_search(last_msg: str, history: list[dict]) -> str:
+# ─── Deterministic Tavily query optimizer (no LLM call) ────────────────────
+# Converts a verbose prompt into one or more concise, Google-style search
+# queries. Only genuinely ambiguous conversational follow-ups still use the
+# Groq rewrite further below — everything else goes through here.
+
+_FILLER_PHRASES = [
+    # multi-word phrases listed first so they're stripped whole
+    "support with data",
+    "easy to understand",
+    "detailed analysis",
+    "in detail",
+    "explain",
+    "analyze",
+    "analyse",
+    "compare",
+    "detailed",
+    "report",
+    "reports",
+    "charts",
+    "chart",
+    "uhni",
+    "reasoning",
+]
+_FILLER_RE = re.compile(
+    r"\b(" + "|".join(re.escape(p) for p in _FILLER_PHRASES) + r")\b",
+    re.IGNORECASE,
+)
+
+# Split "A and B" into two independent queries by default — EXCEPT when the
+# phrase ends in a word that ties both halves into one combined ask (a
+# comparison, or a shared trailing noun that describes both entities
+# together). That's the signal that distinguishes:
+#   "Promoter exits and sector rotation"      -> 2 independent topics, split
+#   "FTAs and exports"                        -> 2 independent topics, split
+#   "Reliance and Tata Motors comparison"     -> 1 joint comparison, no split
+#   "Infosys and TCS financial results"       -> 1 joint ask, no split
+#   "Nifty IT and Banking sectors"            -> 1 joint ask, no split
+_MULTI_INTENT_SPLIT_RE = re.compile(r"^(.*?)\s+and\s+(.*)$", re.IGNORECASE)
+
+_JOINT_SUFFIX_RE = re.compile(
+    r"\b(comparison|compared to|vs\.?|versus|financial results|results|"
+    r"performance|earnings|outlook|sector|sectors|stocks|shares|"
+    r"valuation|review)\s*$",
+    re.IGNORECASE,
+)
+
+# Only these words justify adding "latest" — don't add it speculatively.
+_EXPLICIT_RECENCY_RE = re.compile(
+    r"\b(latest|recent|recently|current|currently|now|today)\b", re.IGNORECASE,
+)
+_HAS_LATEST_RE = re.compile(r"\blatest\b", re.IGNORECASE)
+_THIS_YEAR_RE = re.compile(r"\b(this year|current year)\b", re.IGNORECASE)
+_THIS_WEEK_RE = re.compile(r"\b(this week|past week|last week)\b", re.IGNORECASE)
+_THIS_MONTH_RE = re.compile(r"\b(this month|past month|last month)\b", re.IGNORECASE)
+
+# Same signal as report.py's _HISTORICAL_INTENT_RE, duplicated locally to
+# avoid a circular import (report.py already imports from chat.py).
+_QUERY_HISTORICAL_RE = re.compile(
+    r"\b(quarter|qtr|q[1-4]\b|quarterly|past \d+ (?:quarters?|months?|years?)|"
+    r"since (?:19|20)\d{2}|yoy|qoq|year[- ]on[- ]year|year[- ]over[- ]year|"
+    r"quarter[- ]on[- ]quarter|quarter[- ]over[- ]quarter|trend|historical|history|"
+    r"over time|comparison|compare[ds]?|"
+    r"last \d+ (?:quarters?|months?|years?))\b",
+    re.IGNORECASE,
+)
+
+_MAX_QUERY_LEN = 120
+_HISTORICAL_SUFFIX = " quarter-wise comparison historical data"
+
+
+def _clean_query_text(text: str) -> str:
+    """Strip filler words/phrases and collapse leftover whitespace/punctuation."""
+    cleaned = _FILLER_RE.sub(" ", text)
+    cleaned = re.sub(r"\s{2,}", " ", cleaned).strip(" .,:;-")
+    return cleaned
+
+
+def _finalize_query(text: str, current_year: int | None = None) -> str:
+    """Apply latest/year/historical-suffix rules and enforce the length budget."""
+    cleaned = _clean_query_text(text) or text.strip()
+
+    if _THIS_YEAR_RE.search(text):
+        year = current_year or _dt.now().year
+        cleaned = (
+            _THIS_YEAR_RE.sub(str(year), cleaned)
+            if _THIS_YEAR_RE.search(cleaned) else f"{cleaned} {year}"
+        )
+
+    if _EXPLICIT_RECENCY_RE.search(text) and not _HAS_LATEST_RE.search(cleaned):
+        cleaned = f"{cleaned} latest"
+
+    if _QUERY_HISTORICAL_RE.search(text) and "historical" not in cleaned.lower():
+        cleaned = f"{cleaned}{_HISTORICAL_SUFFIX}"
+
+    if len(cleaned) > _MAX_QUERY_LEN:
+        cleaned = cleaned[:_MAX_QUERY_LEN].rsplit(" ", 1)[0]
+
+    return cleaned
+
+
+def optimize_search_query(text: str, current_year: int | None = None) -> list[str]:
     """
-    If `last_msg` looks like a pronoun-heavy follow-up, use the last 4 turns
-    of conversation history to rewrite it into a self-contained search query.
-    Falls back to the original message on any error.
+    Deterministic, LLM-free conversion of a user prompt into one or more
+    concise Tavily-style search queries.
+
+    - Strips instructional filler (explain, analyze, compare, detailed,
+      report, support with data, charts, UHNI, reasoning, easy to
+      understand). Entities (companies, sectors, countries, years, quarters,
+      financial terms) are untouched since none overlap the filler list.
+    - Adds "latest" only when the ORIGINAL text explicitly said
+      latest/recent/current/now/today.
+    - Replaces "this year"/"current year" with the actual year.
+    - Appends a short historical-comparison hint when quarter/YoY/"past N
+      quarters"-style language is present.
+    - Targets 50-120 chars; truncates on a word boundary if it runs long
+      (never pads a short query just to hit a floor).
+    - Splits "A and B" into two queries UNLESS the phrase ends in a shared
+      trailing word/phrase (comparison, results, sectors, vs, etc.) that
+      ties both halves into one combined ask — that's the difference
+      between "Promoter exits and sector rotation" (2 independent topics)
+      and "Reliance and Tata Motors comparison" (1 joint comparison).
+
+    NOTE: being rule-based, this won't paraphrase/reorder as fluently as an
+    LLM would (e.g. it won't expand "FTAs" to "free trade agreements" or
+    reorder "List FTAs signed by India" into "India free trade agreements
+    signed") — it only removes filler and applies the rules above. That
+    trade-off is the point: it's free and instant instead of a Groq call.
     """
-    # Only rewrite if it's short AND contains ambiguous references
-    if len(last_msg) > 180 or not _FOLLOWUP_RE.search(last_msg):
-        return last_msg
+    text = text.strip()
+    if not text:
+        return [text]
+
+    stripped_end = text.rstrip(" ?.!")
+    m = _MULTI_INTENT_SPLIT_RE.match(text)
+    if m and not _JOINT_SUFFIX_RE.search(stripped_end):
+        first, second = m.group(1).strip(), m.group(2).strip()
+        if first and second:
+            return [
+                _finalize_query(first, current_year),
+                _finalize_query(second, current_year),
+            ]
+
+    return [_finalize_query(text, current_year)]
+
+
+# Only these short, context-dependent follow-ups justify the extra Groq
+# call — a normal prompt (however long) should never match this.
+_AMBIGUOUS_FOLLOWUP_PHRASES_RE = re.compile(
+    r"^\s*(what about|how about|what changed|what's changed|any update|"
+    r"what next|what happened)\b",
+    re.IGNORECASE,
+)
+
+
+def _is_ambiguous_followup(msg: str) -> bool:
+    """
+    True only for short, context-dependent follow-ups such as "What about
+    Infosys?", "How about its competitors?", "What changed?" — these can't
+    be turned into a standalone query by rule-based cleanup because the
+    actual subject lives in the prior turn, not in this message.
+    """
+    if len(msg) > 100 or len(msg.split()) > 10:
+        return False
+    return bool(_AMBIGUOUS_FOLLOWUP_PHRASES_RE.match(msg) or _FOLLOWUP_RE.search(msg))
+
+
+# ─── Freshness: sort newer sources first ────────────────────────────────────
+# Recency filtering now happens at search time via Tavily's `time_range`
+# param (see _detect_recency_time_range below), so results are no longer
+# discarded here just for being older than a fixed cutoff — that risked
+# dropping perfectly relevant results whenever the query's recency intent
+# wasn't caught by the pre-filter, or whenever a source's date was simply
+# stale-parsed. Post-processing is now sort-only.
+
+
+def _parse_published_date(value: str | None):
+    """Best-effort parse of Tavily's `published_date` field. Never raises —
+    returns None for missing/unrecognized formats, which callers treat as
+    'unknown age', not 'old'."""
+    if not value:
+        return None
+    for parser in (_parse_rfc2822, _dt.fromisoformat):
+        try:
+            dt = parser(value)
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=_tz.utc)
+            return dt
+        except Exception:
+            continue
+    return None
+
+
+def _sort_and_filter_by_freshness(results: list[dict], keep_old: bool = True) -> list[dict]:
+    """
+    Sort results newest-first by published date. Results are never dropped
+    for being old — actual recency filtering happens upstream via Tavily's
+    `time_range` param (see _detect_recency_time_range), which is a more
+    precise signal than an arbitrary fixed-age cutoff applied after the
+    fact. Results with no parseable date are kept (unknown age isn't
+    treated as "old") and placed after the dated ones, in their original
+    order.
+
+    `keep_old` is accepted for call-site compatibility (existing callers
+    pass historical_intent here) but no longer changes behaviour — it's
+    kept purely so callers don't need updating.
+    """
+    dated: list[tuple] = []
+    undated: list[dict] = []
+    for r in results:
+        published_at = _parse_published_date(r.get("published"))
+        if published_at is None:
+            undated.append(r)
+            continue
+        dated.append((published_at, r))
+    dated.sort(key=lambda pair: pair[0], reverse=True)
+    return [r for _, r in dated] + undated
+
+
+async def rewrite_query_for_search(last_msg: str, history: list[dict]) -> list[str]:
+    """
+    Turns `last_msg` into one or more Tavily-ready search queries.
+
+    - Genuinely ambiguous conversational follow-ups ("What about Infosys?",
+      "How about its competitors?", "What changed?") get a single
+      lightweight Groq call, grounded in the last 4 turns of history — the
+      ONLY case that costs an extra LLM call.
+    - Everything else (a normal prompt, however long) is handled
+      deterministically by optimize_search_query() — no LLM call, and no
+      change in per-request latency/cost from before.
+
+    Falls back to optimize_search_query(last_msg) on any error.
+    """
+    if not _is_ambiguous_followup(last_msg):
+        return optimize_search_query(last_msg)
 
     # Build a compact context from the last 4 turns (2 user + 2 assistant)
     recent = [m for m in history if m.get("role") in ("user", "assistant")][-4:]
     if not recent:
-        return last_msg
+        return optimize_search_query(last_msg)
 
     context_lines = "\n".join(
         f"{m['role'].upper()}: {str(m['content'])[:300]}" for m in recent
@@ -383,7 +610,7 @@ async def rewrite_query_for_search(last_msg: str, history: list[dict]) -> str:
     # Use Groq (fast, cheap) for this lightweight rewrite task
     keys = get_groq_keys()
     if not keys:
-        return last_msg
+        return optimize_search_query(last_msg)
 
     key = keys[0]
     try:
@@ -402,12 +629,12 @@ async def rewrite_query_for_search(last_msg: str, history: list[dict]) -> str:
         if res.is_success:
             rewritten = res.json()["choices"][0]["message"]["content"].strip().strip('"').strip("'")
             if rewritten and len(rewritten) > 3:
-                log.info("Query rewrite: %r → %r", last_msg[:60], rewritten[:80])
-                return rewritten
+                log.info("Query rewrite (LLM, ambiguous follow-up): %r → %r", last_msg[:60], rewritten[:80])
+                return [rewritten]
     except Exception as exc:
         log.debug("Query rewrite failed (non-critical): %s", exc)
 
-    return last_msg
+    return optimize_search_query(last_msg)
 
 
 def classify_query(msg: str) -> str:
@@ -570,71 +797,44 @@ def _clean_result_content(r: dict) -> dict:
     return r
 
 
-# Recency language → Tavily `time_range` value. Checked in order (most
-# specific/narrow first) so "latest quarter" doesn't get caught by a looser
-# pattern before the quarter-specific one runs.
+# ─── Intent-aware time_range selection ──────────────────────────────────────
+# Maps recency language straight to Tavily's own `time_range` param
+# ("day"/"week"/"month"/"year") so Tavily does the recency filtering at
+# search time, instead of unrestricted results being fetched and then
+# discarded by age in post-processing. Reuses the same regex constants as
+# the query-rewriting/historical-suffix logic above (_EXPLICIT_RECENCY_RE,
+# _THIS_YEAR_RE, _QUERY_HISTORICAL_RE) so "recent"/"historical" mean the
+# same thing everywhere in this file.
 #
-# NOTE: bare "N months/quarters/years" placeholders are NOT given a fixed
-# bucket here, because the right bucket depends on N (6 months and 24 months
-# can't both map to "month"/"year"). Those are resolved numerically in
-# _detect_recency_time_range below instead. This list only handles the fixed,
-# N-less phrasings.
-_RECENCY_PATTERNS: list[tuple[str, str]] = [
-    (r"\btoday\b|\bthis morning\b|\btonight\b", "day"),
-    (r"\bthis week\b|\bpast week\b|\blast week\b|\bweekly\b", "week"),
-    (r"\bthis month\b|\bpast month\b|\blast month\b", "month"),
-    (r"\blatest\b|\bcurrent(ly)?\b|\brecent(ly)?\b|\bnow\b|\bthis quarter\b|"
-     r"\bthis year\b|\bytd\b|\byear[- ]to[- ]date\b|\bup[- ]to[- ]date\b",
-     "year"),
-]
-
-# Tavily's widest time_range bucket is "year" (~365 days). Approximate day
-# counts per unit, used to figure out which bucket an explicit "past N <unit>"
-# phrase actually spans.
-_UNIT_DAYS = {"day": 1, "week": 7, "month": 30, "quarter": 91, "year": 365}
-
-_NUMERIC_RECENCY_RE = re.compile(
-    r"\bpast\s+(\d+)\s+(day|week|month|quarter|year)s?\b"
-)
-
-
+# Rules, checked in this order (most specific / highest-priority first):
+#   1. Historical / time-series language (quarters, "since 2019", "trend",
+#      "YoY", "QoQ", "comparison", "over time", "last N quarters", ...)
+#      -> None. These queries want the full history, so time_range is left
+#      unset and Tavily returns its normal, unrestricted relevance ranking.
+#      This always wins even if a recency word also appears in the same
+#      query (e.g. "current trend" is still historical/unrestricted).
+#   2. this week / past week / last week          -> "week"
+#   3. this month / past month / last month        -> "month"
+#   4. this year / current year                    -> "year"
+#   5. latest / recent / current / today (and the
+#      close synonyms "recently"/"currently"/"now") -> "day"
 def _detect_recency_time_range(query: str) -> str | None:
     """
-    If the query contains recency language ("latest", "current", "past N
-    quarters", "this year", etc.), return the Tavily `time_range` value that
-    should bias the search toward recent sources instead of letting Tavily's
-    plain relevance score rank old and new articles equally. Returns None for
-    queries with no recency signal, so historical questions ("2019 results")
-    are left unrestricted.
-
-    "past N <unit>" phrases are resolved by actual span rather than a blanket
-    bucket per unit: e.g. "past 8 quarters" (~24 months) is wider than
-    Tavily's largest bucket ("year", ~12 months), so restricting it to "year"
-    would silently truncate the older half of the requested window. In that
-    case we return None (unrestricted) rather than a bucket too narrow for
-    what was asked — the same behavior as before any recency filter existed.
+    Return the Tavily `time_range` value that matches the query's recency
+    intent, or None if there isn't one / the query is historical in nature.
+    Only post-processing left downstream is sorting by publication date —
+    this is what actually restricts *which* results Tavily returns.
     """
-    q = query.lower()
-
-    m = _NUMERIC_RECENCY_RE.search(q)
-    if m:
-        n, unit = int(m.group(1)), m.group(2)
-        span_days = n * _UNIT_DAYS[unit]
-        if span_days <= _UNIT_DAYS["day"]:
-            return "day"
-        elif span_days <= _UNIT_DAYS["week"]:
-            return "week"
-        elif span_days <= _UNIT_DAYS["month"]:
-            return "month"
-        elif span_days <= _UNIT_DAYS["year"]:
-            return "year"
-        else:
-            # Span exceeds Tavily's widest bucket — don't clip history.
-            return None
-
-    for pattern, time_range in _RECENCY_PATTERNS:
-        if re.search(pattern, q):
-            return time_range
+    if _QUERY_HISTORICAL_RE.search(query):
+        return None
+    if _THIS_WEEK_RE.search(query):
+        return "week"
+    if _THIS_MONTH_RE.search(query):
+        return "month"
+    if _THIS_YEAR_RE.search(query):
+        return "year"
+    if _EXPLICIT_RECENCY_RE.search(query):
+        return "day"
     return None
 
 
@@ -758,6 +958,7 @@ async def _enrich_thin_results(results: list[dict]) -> list[dict]:
 
 async def tavily_search(
     query: str, max_results: int = 20, min_results: int = 10, images_out: list | None = None,
+    historical_intent: bool = False,
 ) -> list[dict]:
     """
     NOTE: min_results is accepted for call-site compatibility but no longer
@@ -782,6 +983,12 @@ async def tavily_search(
     the caller) are appended to it as {"url", "description"} dicts. Only the
     callers that actually want images (report generation) need to pass this —
     everyone else gets the exact same behaviour as before.
+
+    historical_intent: accepted for call-site compatibility. Results are no
+    longer dropped by age here — recency is now enforced upstream via
+    Tavily's `time_range` param (see _detect_recency_time_range) rather than
+    a fixed-age post-filter, so this flag no longer changes what comes back;
+    results are always sorted newest-first with unknown-date results kept.
     """
     keys = get_tavily_keys()
     if not keys:
@@ -817,6 +1024,7 @@ async def tavily_search(
                     combined_results.append(r)
 
         combined = await _enrich_thin_results(combined_results)
+        combined = _sort_and_filter_by_freshness(combined, keep_old=historical_intent)
         elapsed = (time.perf_counter() - t0) * 1000
         log.info("Tavily %d-key fan-out done: %d results in %.0fms",
                   len(keys), len(combined), elapsed)
@@ -830,12 +1038,50 @@ async def tavily_search(
         results = await _tavily_one_call(key, query, max_results, qtype, country, images_out, time_range)
         if results:
             results = await _enrich_thin_results(results)
+            results = _sort_and_filter_by_freshness(results, keep_old=historical_intent)
             elapsed = (time.perf_counter() - t0) * 1000
             log.info("Tavily fallback done: %d results in %.0fms", len(results), elapsed)
             return results
 
     log.error("Tavily: all keys exhausted or failed — trying httpx fallback")
-    return await _tavily_search_httpx_fallback(query, max_results, qtype, images_out, time_range)
+    fallback_results = await _tavily_search_httpx_fallback(query, max_results, qtype, images_out, time_range)
+    return _sort_and_filter_by_freshness(fallback_results, keep_old=historical_intent)
+
+
+async def tavily_search_multi(
+    queries: list[str], max_results: int = 20, min_results: int = 10,
+    images_out: list | None = None, historical_intent: bool = False,
+) -> list[dict]:
+    """
+    Runs tavily_search() once per query (in parallel) and merges the
+    results, deduped by URL. Used whenever query optimization produces more
+    than one distinct search intent from a single prompt — one long combined
+    query is worse for Tavily than several focused ones.
+    Single-query input is a no-op passthrough to tavily_search() — no change
+    in behavior for the common case.
+    """
+    if len(queries) == 1:
+        return await tavily_search(
+            queries[0], max_results=max_results, min_results=min_results,
+            images_out=images_out, historical_intent=historical_intent,
+        )
+
+    result_lists = await asyncio.gather(*[
+        tavily_search(
+            q, max_results=max_results, min_results=min_results,
+            images_out=images_out, historical_intent=historical_intent,
+        )
+        for q in queries
+    ])
+
+    seen_urls: set[str] = set()
+    merged: list[dict] = []
+    for res in result_lists:
+        for r in res:
+            if r.get("url") and r["url"] not in seen_urls:
+                seen_urls.add(r["url"])
+                merged.append(r)
+    return merged
 
 
 async def _tavily_search_httpx_fallback(
@@ -915,8 +1161,8 @@ async def load_headlines(limit: int = 30) -> str:
             raw = p.read_text(encoding="utf-8")
             log.debug("Headlines loaded from %s", p)
             break
-        except Exception:
-            pass
+        except Exception as e:
+            log.debug("Headlines cache not found at %s (%s)", p, e)
     if not raw:
         log.debug("No headline cache found — skipping headlines injection")
         return ""
@@ -1595,19 +1841,25 @@ async def chat(request: Request):
         and not file_context and not file_images and not has_rag
     )
 
-    # ── Query rewrite: expand pronoun-heavy follow-ups into self-contained queries ──
-    # Run only when search or RAG will actually use the query (saves a Groq call otherwise)
-    search_query = last_user_msg
+    # ── Query optimization: deterministic rules for normal prompts, LLM
+    # rewrite reserved for genuinely ambiguous follow-ups (see
+    # rewrite_query_for_search / _is_ambiguous_followup) ──
+    # Run only when search or RAG will actually use the query (saves work otherwise)
+    search_queries = [last_user_msg]
     if do_search or has_rag:
         # Pass history excluding the current (last) user message so context is prior turns
         prior_history = messages[:-1] if messages and messages[-1].get("role") == "user" else messages
-        search_query = await rewrite_query_for_search(last_user_msg, prior_history)
+        search_queries = await rewrite_query_for_search(last_user_msg, prior_history)
+    search_query = search_queries[0]  # representative query, used for RAG + logging
 
     log.info(
         "Chat request: msg=%r  search_query=%r  search=%s  type=%s  file_ctx=%s  rag=%s  smalltalk=%s  session=%s",
         last_user_msg[:80], search_query[:80] if search_query != last_user_msg else "(unchanged)",
         do_search, qtype, bool(file_context), has_rag, is_smalltalk_msg, session_id or "none",
     )
+    if len(search_queries) > 1:
+        log.info("Chat: multi-intent prompt split into %d queries: %r",
+                  len(search_queries), [q[:60] for q in search_queries])
 
     # Upsert the session row upfront (fire-and-forget — don't block the stream)
     if session_id:
@@ -1619,8 +1871,12 @@ async def chat(request: Request):
     async def _no_headlines() -> str:
         return ""
 
+    _historical_intent = bool(_QUERY_HISTORICAL_RE.search(last_user_msg))
     search_results, headlines = await asyncio.gather(
-        tavily_search(search_query, max_results=20, min_results=10) if do_search else _no_search(),
+        tavily_search_multi(
+            search_queries, max_results=20, min_results=10,
+            historical_intent=_historical_intent,
+        ) if do_search else _no_search(),
         load_headlines(30) if not is_smalltalk_msg else _no_headlines(),
     )
 

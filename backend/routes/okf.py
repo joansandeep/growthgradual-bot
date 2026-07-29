@@ -60,8 +60,8 @@ async def generate_okf(request: Request):
                     key_stats = inner.get("keyStats", [])
                 if not charts:
                     charts = inner.get("charts", [])
-        except Exception:
-            pass
+        except Exception as e:
+            log.debug("OKF: report field is not double-encoded JSON, using as-is (%s)", e)
 
     if "\\n" in report:
         report = report.replace("\\n", "\n")

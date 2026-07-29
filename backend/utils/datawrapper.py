@@ -70,8 +70,8 @@ def _looks_like_composition(series: list[dict]) -> bool:
             lbl = str(pt.get("label", ""))
             try:
                 by_label[lbl] = by_label.get(lbl, 0.0) + abs(float(pt.get("value", 0)))
-            except (TypeError, ValueError):
-                pass
+            except (TypeError, ValueError) as e:
+                log.debug("Composition check: skipping non-numeric value %r (%s)", pt.get("value"), e)
     if not by_label:
         return False
     near100 = sum(1 for total in by_label.values() if 90 <= total <= 110)
