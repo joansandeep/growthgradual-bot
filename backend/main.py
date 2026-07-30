@@ -83,14 +83,23 @@ async def _keepalive_rag():
 
     while True:
         try:
-            async with httpx.AsyncClient(timeout=httpx.Timeout(15)) as c:
+            # 15s was too tight for a Space that's actually cold (boot can take
+            # 60-90s) — this ping's whole purpose is to catch that case, so it
+            # needs to outlast it rather than time out and get logged as a
+            # generic failure.
+            async with httpx.AsyncClient(timeout=httpx.Timeout(connect=15, read=90)) as c:
                 res = await c.get(ping_url)
             if res.is_success:
                 log.info("RAG keepalive ✓  %s  →  %s", ping_url, res.json())
             else:
                 log.warning("RAG keepalive HTTP %d", res.status_code)
         except Exception as exc:
-            log.warning("RAG keepalive failed: %s", exc)
+            # httpx timeout exceptions carry no message (str(exc) == ''), so
+            # bare "%s" % exc silently logs nothing after the colon. Always
+            # include the exception type so a timeout is distinguishable from
+            # a DNS failure, connection refusal, etc.
+            msg = str(exc) or "no message — likely a connect/read timeout"
+            log.warning("RAG keepalive failed: %s: %s", type(exc).__name__, msg)
         await asyncio.sleep(interval)
 
 

@@ -24,8 +24,24 @@ RAG_URL = os.environ.get(
     "https://sandy31-paperly-rag-service.hf.space",
 ).rstrip("/")
 
-# HF Spaces cold-start can be slow — generous timeout
-_TIMEOUT = httpx.Timeout(connect=15, read=60, write=30, pool=10)
+# HF Spaces cold-start can take 60-90s to come up from a sleeping state.
+# connect=15 was too tight for that (the TCP handshake itself can stall
+# while the Space container is still booting) and read=60 was cutting it
+# close too — both bumped with headroom below.
+_TIMEOUT = httpx.Timeout(connect=30, read=90, write=30, pool=10)
+
+
+def _exc_str(exc: Exception) -> str:
+    """
+    httpx's timeout exceptions (ConnectTimeout, ReadTimeout, PoolTimeout) are
+    raised with NO message — str(exc) is just ''. Every "...failed: %s"
+    log line hit by one of these ends up with nothing after the colon,
+    which makes it impossible to tell a timeout apart from any other error
+    at a glance. Always include the exception type so the log is never
+    silently blank.
+    """
+    msg = str(exc)
+    return f"{type(exc).__name__}: {msg}" if msg else f"{type(exc).__name__} (no message — likely a connect/read timeout, e.g. HF Space cold start)"
 
 
 async def rag_index(session_id: str, documents: list[dict]) -> dict:
@@ -47,7 +63,7 @@ async def rag_index(session_id: str, documents: list[dict]) -> dict:
         log.warning("RAG index HTTP %d: %s", res.status_code, res.text[:200])
         return {"error": f"HTTP {res.status_code}", "chunks_added": 0}
     except Exception as exc:
-        log.warning("RAG index failed (non-critical): %s", exc)
+        log.warning("RAG index failed (non-critical): %s", _exc_str(exc))
         return {"error": str(exc), "chunks_added": 0}
 
 
@@ -79,7 +95,7 @@ async def rag_query(
         log.warning("RAG query HTTP %d: %s", res.status_code, res.text[:200])
         return {"has_content": False, "system_prompt": "", "context": "", "retrieved": 0, "source_files": []}
     except Exception as exc:
-        log.warning("RAG query failed (non-critical): %s", exc)
+        log.warning("RAG query failed (non-critical): %s", _exc_str(exc))
         return {"has_content": False, "system_prompt": "", "context": "", "retrieved": 0, "source_files": []}
 
 
@@ -106,7 +122,7 @@ async def rag_report(
         log.warning("RAG report HTTP %d: %s", res.status_code, res.text[:200])
         return {"has_content": False, "system_prompt": "", "context": "", "retrieved": 0, "source_files": []}
     except Exception as exc:
-        log.warning("RAG report failed (non-critical): %s", exc)
+        log.warning("RAG report failed (non-critical): %s", _exc_str(exc))
         return {"has_content": False, "system_prompt": "", "context": "", "retrieved": 0, "source_files": []}
 
 
@@ -117,7 +133,7 @@ async def rag_delete_session(session_id: str) -> None:
             await c.delete(f"{RAG_URL}/session/{session_id}")
         log.info("RAG session deleted: %s", session_id[:8])
     except Exception as exc:
-        log.debug("RAG delete session (non-critical): %s", exc)
+        log.debug("RAG delete session (non-critical): %s", _exc_str(exc))
 
 
 async def rag_health() -> bool:
