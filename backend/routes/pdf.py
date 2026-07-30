@@ -67,7 +67,7 @@ SECTION_ACCENTS = [GOLD, TEAL, GREEN, OLIVE, RED, SLATE]
 
 def fmt_inr(value_str: str) -> str:
     """Format a numeric string into Indian number format with Rs. prefix.
-    E.g. '1224826.38' -> 'Rs. 12,24,826' (crore label added by caller).
+    E.g. '1224826.38' -> '12,24,826.38' (crore label added by caller).
     Leaves non-numeric strings untouched.
     """
     if not value_str:
@@ -87,10 +87,20 @@ def fmt_inr(value_str: str) -> str:
         num = float(cleaned)
     except (ValueError, TypeError):
         return s  # not a number — return as-is
-    # Indian format: last 3 digits, then groups of 2
     is_negative = num < 0
     num = abs(num)
-    int_part = int(num)
+    # Preserve decimal precision whenever the source value actually had a
+    # fractional part — dropping it isn't a style choice, it's data loss.
+    # This matters most for sub-$10 figures (e.g. stock prices like
+    # "1.592667" or "2.364667") where the bare integer part ("1", "2")
+    # discards the entire meaningful number, not just its formatting.
+    had_decimal = "." in cleaned
+    num_rounded = round(num, 2) if had_decimal else num
+    int_part = int(num_rounded)
+    frac_cents = round((num_rounded - int_part) * 100)
+    if frac_cents >= 100:  # rounding carried over (e.g. 4.999 -> 5.00)
+        int_part += 1
+        frac_cents = 0
     # Format integer part in Indian style
     s_int = str(int_part)
     if len(s_int) <= 3:
@@ -105,6 +115,8 @@ def fmt_inr(value_str: str) -> str:
         if rest:
             groups.append(rest)
         formatted = ",".join(reversed(groups)) + "," + last3
+    if had_decimal:
+        formatted += f".{frac_cents:02d}"
     if is_negative:
         formatted = "-" + formatted
     return formatted
