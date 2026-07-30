@@ -16,8 +16,10 @@ Fixes in v2:
 
 import os
 import re
+import time
 import logging
 import threading
+import asyncio
 from typing import List, Dict, Any, Tuple
 
 import numpy as np
@@ -47,6 +49,18 @@ class SessionIndex:
         self.lock       = threading.Lock()
         # Dynamically extracted entity names from indexed text
         self._entities: set = set()
+        # Wall-clock time of last access — used by RAGEngine's idle-session
+        # reaper. Without this, every session_id ever seen (one per browser
+        # profile, since sessions aren't shared across browsers) stays in
+        # this process's memory forever, since the only other removal path
+        # is an explicit "new chat" delete call the frontend doesn't always
+        # make. That's an unbounded memory leak on a long-running process —
+        # exactly what would eventually force an OOM crash-and-restart on a
+        # memory-constrained free-tier Space.
+        self.last_active: float = time.time()
+
+    def touch(self):
+        self.last_active = time.time()
 
     def add(self, vectors: np.ndarray, chunks: List[Dict]):
         with self.lock:
@@ -112,7 +126,9 @@ class RAGEngine:
         with self._lock:
             if sid not in self._sessions:
                 self._sessions[sid] = SessionIndex(self._dim)
-            return self._sessions[sid]
+            sess = self._sessions[sid]
+        sess.touch()
+        return sess
 
     def list_sessions(self) -> List[str]:
         with self._lock:
@@ -136,6 +152,27 @@ class RAGEngine:
             self._sessions.pop(sid, None)
         await okf_store.delete_session_bundle(sid)
         log.info(f"Deleted FAISS index for session {sid[:8]}")
+
+    def evict_idle_sessions(self, max_idle_seconds: float) -> int:
+        """
+        Drop any session untouched for longer than max_idle_seconds. Unlike
+        delete_session(), this is a pure in-memory cleanup with no Supabase
+        call — OKF concept files for evicted sessions are simply left as-is
+        in storage (they're small, durable, and harmless to leave behind;
+        they'll just no longer be retrievable via this session's FAISS
+        index in this process). Called periodically by a background task
+        in main.py so this process's memory doesn't grow without bound
+        across every browser/session that's ever connected.
+        """
+        cutoff = time.time() - max_idle_seconds
+        with self._lock:
+            idle = [sid for sid, sess in self._sessions.items() if sess.last_active < cutoff]
+            for sid in idle:
+                del self._sessions[sid]
+        if idle:
+            log.info("Evicted %d idle session(s) (idle > %.0fs): %s",
+                      len(idle), max_idle_seconds, [s[:8] for s in idle])
+        return len(idle)
 
     # ── Indexing ────────────────────────────────────────────────
 
@@ -173,7 +210,13 @@ class RAGEngine:
                 }
                 for i, chunk in enumerate(raw)
             ]
-            vecs = self._embed([m["text"] for m in metas])
+            # _embed() runs SentenceTransformer.encode() on CPU — a blocking,
+            # CPU-bound call. Running it inline here (as before) freezes the
+            # single-threaded asyncio event loop for its entire duration,
+            # so nothing else — not even a trivial /ping health check —
+            # can be served until it finishes. Offload it to a thread so
+            # concurrent requests keep flowing.
+            vecs = await asyncio.to_thread(self._embed, [m["text"] for m in metas])
             sess.add(vecs, metas)
             sess.register_doc(doc_id, name)
             # Extract and register entity names from this document's text
@@ -213,6 +256,7 @@ class RAGEngine:
         sess = self._sessions.get(session_id)
         if not sess or sess.total == 0:
             return self._no_content(question, "no_index", "No documents indexed for this session.")
+        sess.touch()
 
         scope_info = self._detect_scope(question, sess)
         # Always let scope detection drive top_k — caller's value is just a floor
@@ -290,6 +334,7 @@ class RAGEngine:
         if not sess or sess.total == 0:
             return self._no_content(report_spec, "no_index",
                 "No documents indexed. Upload files before generating a report.")
+        sess.touch()
 
         # For reports: retrieve ALL chunks (no threshold) sorted by doc order
         all_chunks = sorted(
