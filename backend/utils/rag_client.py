@@ -11,6 +11,7 @@ Endpoints used:
   DELETE /session/{id} — clean up on new chat
 """
 
+import asyncio
 import logging
 import os
 from typing import Any
@@ -28,7 +29,7 @@ RAG_URL = os.environ.get(
 # connect=15 was too tight for that (the TCP handshake itself can stall
 # while the Space container is still booting) and read=60 was cutting it
 # close too — both bumped with headroom below.
-_TIMEOUT = httpx.Timeout(connect=30, read=90, write=30, pool=10)
+_TIMEOUT = httpx.Timeout(connect=30, read=90, write=90, pool=10)
 
 
 def _exc_str(exc: Exception) -> str:
@@ -44,11 +45,47 @@ def _exc_str(exc: Exception) -> str:
     return f"{type(exc).__name__}: {msg}" if msg else f"{type(exc).__name__} (no message — likely a connect/read timeout, e.g. HF Space cold start)"
 
 
+async def _wake_rag_service(max_wait: float = 100.0, poll_interval: float = 5.0) -> bool:
+    """
+    A sleeping HF Space's wake-up proxy will accept a TCP connection for the
+    *real* request (e.g. /index) but not hand it to the container until the
+    container has finished booting — so the real call just sits there and
+    eventually hits a write/read timeout with nothing logged on either side
+    (confirmed: the RAG service's own container log had no entry at all for
+    a request that timed out from our side after 30+s).
+
+    Rather than let every cold-start request burn its full write/read
+    timeout budget blind, poll the cheap /ping endpoint first with a short
+    per-attempt timeout. Each attempt is logged, so if this *is* a cold
+    start you'll see it waking up in real time in this service's own logs
+    instead of a single opaque timeout 30-90s later. Returns True once
+    /ping responds, False if it never comes up within max_wait.
+    """
+    deadline = asyncio.get_event_loop().time() + max_wait
+    attempt = 0
+    while True:
+        attempt += 1
+        try:
+            async with httpx.AsyncClient(timeout=httpx.Timeout(connect=10, read=10, write=10, pool=10)) as c:
+                res = await c.get(f"{RAG_URL}/ping")
+            if res.is_success:
+                if attempt > 1:
+                    log.info("RAG service woke up after %d ping(s)", attempt)
+                return True
+        except Exception as exc:
+            log.info("RAG wake-up ping %d failed (%s) — Space likely still booting", attempt, _exc_str(exc))
+        if asyncio.get_event_loop().time() >= deadline:
+            log.warning("RAG service did not wake within %.0fs after %d ping(s)", max_wait, attempt)
+            return False
+        await asyncio.sleep(poll_interval)
+
+
 async def rag_index(session_id: str, documents: list[dict]) -> dict:
     """
     Index documents in the RAG service for a session.
     documents: [{ id, name, text, source_type?, file_type?, metadata? }]
     """
+    await _wake_rag_service()
     try:
         async with httpx.AsyncClient(timeout=_TIMEOUT) as c:
             res = await c.post(f"{RAG_URL}/index", json={
@@ -78,6 +115,7 @@ async def rag_query(
     Retrieve grounded context + system prompt for a chat question.
     Returns dict with: system_prompt, context, retrieved, source_files, has_content
     """
+    await _wake_rag_service()
     try:
         async with httpx.AsyncClient(timeout=_TIMEOUT) as c:
             res = await c.post(f"{RAG_URL}/query", json={
@@ -108,6 +146,7 @@ async def rag_report(
     Full-coverage retrieval for report generation.
     Returns dict with: system_prompt, context, retrieved, source_files, has_content
     """
+    await _wake_rag_service()
     try:
         async with httpx.AsyncClient(timeout=_TIMEOUT) as c:
             res = await c.post(f"{RAG_URL}/report", json={
