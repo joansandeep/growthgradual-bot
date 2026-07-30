@@ -528,6 +528,24 @@ def _wrap(canvas, text: str, font: str, size: float, max_width: float) -> list[s
     return lines or [""]
 
 
+def _fit_cell(canvas, text: str, font: str, size: float, max_width: float) -> str:
+    """Truncate to the actual rendered pixel width (not a fixed char count),
+    so long cell values never overflow into the next column. Adds an
+    ellipsis when truncated; returns the original text untouched if it
+    already fits."""
+    if canvas.stringWidth(text, font, size) <= max_width:
+        return text
+    ell = "…"
+    lo, hi = 0, len(text)
+    while lo < hi:
+        mid = (lo + hi + 1) // 2
+        if canvas.stringWidth(text[:mid] + ell, font, size) <= max_width:
+            lo = mid
+        else:
+            hi = mid - 1
+    return text[:lo].rstrip() + ell if lo > 0 else ell
+
+
 # ─── Chart renderers ──────────────────────────────────────────────────────────
 def _bar(c, spec, x0, y0, w, h):
     series_list = spec.get("series") or [{}]
@@ -1581,7 +1599,9 @@ def build_pdf(report: str, title: str, question: str, summary: str,
                     cell_str = str(cell)
                     if ri > 0 and ci > 0:
                         cell_str = fmt_inr(cell_str)
-                    c.drawString(cx2, y[0] - ROW_H + 7, _strip_inline(cell_str)[:28])
+                    cell_str = _strip_inline(cell_str)
+                    cell_str = _fit_cell(c, cell_str, tfont, tsize, col_w - 8)
+                    c.drawString(cx2, y[0] - ROW_H + 7, cell_str)
                 nl(ROW_H)
             nl(8)
 

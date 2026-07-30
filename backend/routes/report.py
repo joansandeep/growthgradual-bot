@@ -252,6 +252,26 @@ CRITICAL DATA INTEGRITY RULES — VIOLATIONS DEGRADE REPORT QUALITY:
 CHART RULES — READ CAREFULLY. CHARTS ARE MANDATORY WHERE DATA EXISTS.
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
+TABLE vs CHART — THEY MUST NOT SHOW THE SAME NUMBERS TWICE.
+A table and a chart placed in the same subsection must each earn their place by
+showing something the other doesn't — never the identical set of labels/values
+rendered once as rows and once as bars right below. Decide per subsection:
+  • Data has ≥4 columns of mixed types (e.g. AMC name, approach, category, AUM,
+    several return periods) → TABLE ONLY. A chart can't hold that many
+    dimensions cleanly, and forcing one just repeats the table in picture form.
+  • Data is a single ranked metric across several named items (e.g. "1-year
+    return by strategy", "sector performance %") → CHART ONLY. Don't also dump
+    the same ranked list into a table right next to it — the chart already
+    shows every label and value clearly.
+  • If you genuinely need both (e.g. a compact chart for the visual takeaway
+    plus a fuller table with extra columns the chart omits), the table must
+    add at least one column/detail the chart does NOT show — otherwise drop
+    the table and keep only the chart, or vice versa.
+  • Vary which subsections get a table vs a chart vs points-only (bullet list)
+    — a report where every subsection is "table, then bar chart of the exact
+    same rows" reads as repetitive and mechanical, not professional. Rotate
+    formats deliberately across 3.1–3.4 so the report alternates rhythm.
+
 STEP 1 — AGGRESSIVELY SCAN sources for ANY chartable numbers:
   • Returns/performance of multiple funds, stocks, sectors → bar chart
   • Rankings with numbers (top 5 SIPs by return, top gainers) → bar chart
@@ -446,10 +466,10 @@ Then add a **"What This Report Covers"** bullet list (4-6 short items, one per l
 ## 3. Data Analysis
 
 ### 3.1 [Heading matching actual topic and data]
-Deep-dive quantitative findings (minimum 220 words). ALL numbers in markdown tables. Lead with 1-2 paragraphs of analysis, then a **MANDATORY bullet list** (3-5 items, not optional) calling out the standout data points or anomalies (e.g. "- IT sector returned 34% YTD, highest across all NIFTY sectors"). Explain what the data shows and why it matters. Insert [CHART_n] immediately after the paragraph whose data it visualises. Do NOT submit this subsection as pure paragraph prose — the bullet list must be present.
+Deep-dive quantitative findings (minimum 220 words). Lead with 1-2 paragraphs of analysis, then a **MANDATORY bullet list** (3-5 items, not optional) calling out the standout data points or anomalies (e.g. "- IT sector returned 34% YTD, highest across all NIFTY sectors"). Explain what the data shows and why it matters. Present the underlying numbers as EITHER a markdown table OR a [CHART_n] — pick per the TABLE vs CHART rule above — not both showing the same rows. Do NOT submit this subsection as pure paragraph prose — the bullet list must be present.
 
 ### 3.2 [Second dimension of analysis]
-Comparisons, breakdowns, benchmarks (minimum 220 words). Use a mix of formats: 1-2 paragraphs of context + a **MANDATORY bullet list** of key differentiators or ranked highlights (not optional) + tables + [CHART_n]. List top/bottom performers or distinguishing characteristics as bullets, not buried in paragraph sentences.
+Comparisons, breakdowns, benchmarks (minimum 220 words). Use a mix of formats: 1-2 paragraphs of context + a **MANDATORY bullet list** of key differentiators or ranked highlights (not optional) + ONE of (table OR [CHART_n]) per the TABLE vs CHART rule — choose whichever format this subsection's data suits, and choose differently than 3.1 did if the data shape allows, so the report doesn't repeat the same table+chart rhythm twice in a row. List top/bottom performers or distinguishing characteristics as bullets, not buried in paragraph sentences.
 
 ### 3.3 [Trends or forward-looking data — only if sources have it]
 Only include if sources have trend/time-series data with ≥4 distinct time points. Minimum 180 words if included. Use prose for the overall trend narrative; use a **MANDATORY bullet list** for discrete inflection points or catalysts (e.g. "- Q3 FY24: RBI rate pause triggered a rally in rate-sensitive sectors").

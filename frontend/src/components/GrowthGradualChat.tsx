@@ -1039,6 +1039,23 @@ async function extractXlsxText(file: File): Promise<string> {
   }
 }
 
+// Stable content hash — SHA-256 of the extracted text, so re-uploading the
+// exact same file (same content) always yields the same doc ID, letting the
+// backend's `sess.has_doc(doc_id)` dedup actually skip re-embedding and
+// skip rewriting bundle.md, instead of always looking "new".
+async function hashText(text: string): Promise<string> {
+  try {
+    const buf = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(text));
+    return Array.from(new Uint8Array(buf)).map(b => b.toString(16).padStart(2, '0')).join('').slice(0, 32);
+  } catch {
+    // Fallback for environments without SubtleCrypto (non-HTTPS, old browsers):
+    // a cheap rolling hash — not cryptographic, but stable for identical input.
+    let h = 0;
+    for (let i = 0; i < text.length; i++) { h = (Math.imul(31, h) + text.charCodeAt(i)) | 0; }
+    return 'fnv' + (h >>> 0).toString(16);
+  }
+}
+
 async function processFile(file: File): Promise<AttachedFile | null> {
   const accepted = ACCEPTED_TYPES.includes(file.type) || file.type.startsWith('image/') || file.type.startsWith('text/') || isSpreadsheetFile(file);
   if (!accepted) return null;
@@ -1162,6 +1179,27 @@ const SUGGESTIONS = [
   { icon:'📊', label:'Sector performance' },
 ];
 
+// ─── Attach-complete notification ─────────────────────────────────────────────
+// Fires a native browser notification only when the tab is backgrounded, so
+// someone who tabs away while a large file indexes still finds out it's done.
+// Silently no-ops if the browser doesn't support Notification or permission
+// hasn't been granted — never prompts on its own, only after an explicit
+// user gesture (first file attach) requests it once.
+let _notifyPermissionAsked = false;
+function notifyFileReady(title: string, body: string) {
+  if (typeof window === 'undefined' || !('Notification' in window)) return;
+  if (document.visibilityState === 'visible') return; // user is already looking at the chip
+  if (Notification.permission === 'granted') {
+    new Notification(title, { body, icon: '/favicon.ico', tag: 'gg-file-attach' });
+  }
+}
+function ensureNotifyPermission() {
+  if (typeof window === 'undefined' || !('Notification' in window)) return;
+  if (_notifyPermissionAsked || Notification.permission !== 'default') return;
+  _notifyPermissionAsked = true;
+  Notification.requestPermission().catch(() => {});
+}
+
 // ─── Main Component ───────────────────────────────────────────────────────────
 export default function GrowthGradualChat() {
   // Mobile detection
@@ -1215,6 +1253,7 @@ export default function GrowthGradualChat() {
     if (remaining <= 0) return;
     const toProcess = fileList.slice(0, remaining);
     setAttachLoading(true);
+    ensureNotifyPermission();
 
     // Add placeholder chips immediately with 'attaching' status
     const placeholders: AttachedFile[] = toProcess.map(f => ({
@@ -1247,6 +1286,22 @@ export default function GrowthGradualChat() {
 
     setAttachLoading(false);
 
+    {
+      const ok = results.filter(r => r !== null).length;
+      const failed = results.length - ok;
+      if (results.length === 1) {
+        notifyFileReady(
+          ok ? 'File attached' : 'Attach failed',
+          ok ? `${toProcess[0].name} is ready to use.` : `${toProcess[0].name} couldn't be read.`
+        );
+      } else if (results.length > 1) {
+        notifyFileReady(
+          'Files attached',
+          failed > 0 ? `${ok} attached, ${failed} failed.` : `${ok} files are ready to use.`
+        );
+      }
+    }
+
     const sessionId = getOrCreateSessionId();
     setRagIndexing(true);
 
@@ -1259,13 +1314,13 @@ export default function GrowthGradualChat() {
       const toIndex = results.filter((f): f is AttachedFile => f !== null && !!f.extractedText);
 
       if (toIndex.length > 0) {
-        const docs = toIndex.map(f => ({
-          id: f.id,
+        const docs = await Promise.all(toIndex.map(async f => ({
+          id: await hashText(f.extractedText!),
           name: f.name,
           text: f.extractedText!,
           source_type: 'file',
           file_type: f.type,
-        }));
+        })));
 
         // ── Index with one automatic retry (handles HF Space cold starts) ──────
         // HF Spaces sleep after ~15 min idle. Cold start = 60-90s. If the first
@@ -1333,6 +1388,9 @@ export default function GrowthGradualChat() {
     } finally {
       setRagIndexing(false);
       setStatusMsg('');
+      if (results.some(r => r !== null && !!r.extractedText)) {
+        notifyFileReady('Ready to search', 'Your file finished indexing — ask away.');
+      }
     }
   }, [attachedFiles.length]);
 
@@ -2872,7 +2930,7 @@ export default function GrowthGradualChat() {
                 }}
                 onKeyDown={onKey}
                 onPaste={handlePaste}
-                disabled={streaming || attachedFiles.some(f => f.status === 'attaching') || ragIndexing}
+                disabled={streaming}
               />
 
               <button className="send-btn" onClick={() => send(input)} disabled={!input.trim() || streaming || attachedFiles.some(f => f.status === 'attaching') || ragIndexing} aria-label="Send">

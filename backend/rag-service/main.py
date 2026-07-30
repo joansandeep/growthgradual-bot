@@ -1,6 +1,6 @@
 """Paperly RAG Service v2 — FastAPI app."""
 
-import os, logging, time, asyncio
+import os, logging, time
 import uvicorn
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
@@ -18,28 +18,6 @@ app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], all
 
 from rag_engine import RAGEngine
 engine = RAGEngine()
-
-# Idle sessions accumulate forever otherwise (see RAGEngine.evict_idle_sessions
-# docstring) — a slow memory leak on a long-running process that eventually
-# forces an OOM crash-and-restart. Sweep periodically instead.
-_SESSION_IDLE_TTL_SECONDS = int(os.environ.get("SESSION_IDLE_TTL_SECONDS", 6 * 60 * 60))   # 6h
-_SESSION_SWEEP_INTERVAL_SECONDS = int(os.environ.get("SESSION_SWEEP_INTERVAL_SECONDS", 30 * 60))  # 30min
-
-
-async def _idle_session_reaper():
-    while True:
-        await asyncio.sleep(_SESSION_SWEEP_INTERVAL_SECONDS)
-        try:
-            engine.evict_idle_sessions(_SESSION_IDLE_TTL_SECONDS)
-        except Exception as exc:
-            log.warning("Idle session reaper failed (non-critical): %s", exc)
-
-
-@app.on_event("startup")
-async def _on_startup():
-    asyncio.create_task(_idle_session_reaper())
-    log.info("Idle session reaper started (ttl=%ds, interval=%ds)",
-              _SESSION_IDLE_TTL_SECONDS, _SESSION_SWEEP_INTERVAL_SECONDS)
 
 
 # ── Models ────────────────────────────────────────────────────
@@ -122,12 +100,7 @@ async def query(req: QueryReq):
             top_k = min(30, engine.get_session_info(req.session_id).get("chunk_count", 30))
             min_score = 0.0
 
-        # engine.retrieve() calls the embedding model synchronously (CPU-bound)
-        # and is itself a plain `def`, not `async def`. Calling it directly here
-        # would block the single-threaded event loop for its full duration —
-        # same freeze that made /ping unresponsive during /index calls.
-        result = await asyncio.to_thread(
-            engine.retrieve,
+        result = engine.retrieve(
             session_id=req.session_id,
             question=req.question,
             top_k=top_k,
@@ -154,10 +127,7 @@ async def generate_report(req: ReportReq):
     """Full-coverage retrieval for report generation — no threshold filtering."""
     t0 = time.time()
     try:
-        # Same reasoning as /query above — retrieve_for_report() is sync and
-        # CPU-bound (embedding), so it must not run inline on the event loop.
-        result = await asyncio.to_thread(
-            engine.retrieve_for_report,
+        result = engine.retrieve_for_report(
             session_id=req.session_id,
             report_spec=req.report_spec,
             report_type=req.report_type,
