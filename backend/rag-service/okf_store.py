@@ -87,17 +87,46 @@ def _frontmatter(fields: Dict[str, Any]) -> str:
 
 
 async def _put_object(path: str, text: str) -> bool:
-    """Upload a text file to Supabase Storage at `<bucket>/<path>` (upsert)."""
+    """Upload a text file to Supabase Storage at `<bucket>/<path>` (upsert).
+
+    `x-upsert: true` makes Supabase Storage perform an UPDATE under the hood
+    when an object already exists at `path`, instead of a plain INSERT. If
+    the bucket's RLS policies only grant the INSERT privilege to this role
+    (a common setup when a policy was written/tested against first-time
+    uploads only), that upsert-as-update is rejected with the Postgres RLS
+    error "new row violates row-level security policy" — even though the
+    very same payload would have succeeded as a fresh insert. This is exactly
+    the failure mode seen for `bundle.md` (rewritten every time a doc is
+    indexed, so it already exists after the first write) while sibling
+    `documents/<slug>.md` files (each written exactly once) never hit it.
+
+    Root cause fix: grant UPDATE (or ALL) — not just INSERT — to this role
+    on storage.objects for the `paperly-uploads` bucket, e.g. in the
+    Supabase SQL editor:
+
+        create policy "okf storage rw"
+        on storage.objects for all
+        to anon
+        using (bucket_id = 'paperly-uploads')
+        with check (bucket_id = 'paperly-uploads');
+
+    Until/unless that policy is in place, recover in-process: delete the
+    stale object (DELETE is normally covered by the same broad policy even
+    when UPDATE isn't) and re-POST as a clean insert.
+    """
     if not _configured():
         return False
     url = f"{_SUPABASE_URL}/storage/v1/object/{_BUCKET}/{path}"
+    base_headers = {
+        "apikey": _SUPABASE_KEY,
+        "Authorization": f"Bearer {_SUPABASE_KEY}",
+    }
     try:
         async with httpx.AsyncClient(timeout=30) as client:
             resp = await client.post(
                 url,
                 headers={
-                    "apikey": _SUPABASE_KEY,
-                    "Authorization": f"Bearer {_SUPABASE_KEY}",
+                    **base_headers,
                     "Content-Type": "text/markdown; charset=utf-8",
                     "x-upsert": "true",
                 },
@@ -105,7 +134,47 @@ async def _put_object(path: str, text: str) -> bool:
             )
             if resp.is_success:
                 return True
-            log.warning("OKF: Supabase Storage upload %d for %s: %s", resp.status_code, path, resp.text[:150])
+
+            is_rls_denial = (
+                resp.status_code in (400, 403)
+                and "row-level security" in resp.text.lower()
+            )
+            if not is_rls_denial:
+                log.warning("OKF: Supabase Storage upload %d for %s: %s", resp.status_code, path, resp.text[:150])
+                return False
+
+            log.warning(
+                "OKF: upsert RLS-denied for %s (likely missing UPDATE policy on "
+                "storage.objects — see _put_object docstring); retrying as delete+insert",
+                path,
+            )
+            try:
+                await client.request(
+                    "DELETE",
+                    f"{_SUPABASE_URL}/storage/v1/object/{_BUCKET}",
+                    headers={**base_headers, "Content-Type": "application/json"},
+                    json={"prefixes": [path]},
+                )
+            except Exception as del_exc:
+                log.debug("OKF: pre-retry delete for %s failed: %s", path, del_exc)
+
+            retry = await client.post(
+                url,
+                headers={
+                    **base_headers,
+                    "Content-Type": "text/markdown; charset=utf-8",
+                    "x-upsert": "false",
+                },
+                content=text.encode("utf-8"),
+            )
+            if retry.is_success:
+                log.info("OKF: delete+insert retry succeeded for %s", path)
+                return True
+            log.warning(
+                "OKF: delete+insert retry also failed %d for %s: %s — "
+                "RLS policy on storage.objects needs an UPDATE/DELETE grant for this role",
+                retry.status_code, path, retry.text[:150],
+            )
             return False
     except Exception as exc:
         log.warning("OKF: Supabase Storage upload error for %s: %s", path, exc)
