@@ -2222,6 +2222,15 @@ async def generate_report(request: Request):
         return None  # never closed — genuinely truncated, caller should skip
     # ─────────────────────────────────────────────────────────────────────────
 
+    def _num(pt: dict) -> float:
+        """Safely coerce a chart point's value to a number. pt.get("value", 0)
+        only falls back to 0 when the key is *missing* — if the model emits
+        an explicit `"value": null`, .get returns None and later numeric
+        comparisons (e.g. `v > 0`) crash with a TypeError. Treat None/missing
+        the same way."""
+        v = pt.get("value", 0)
+        return v if isinstance(v, (int, float)) else 0
+
     def _is_plausible_chart(ch: dict) -> bool:
         if ch.get("type") == "table":
             cols = ch.get("columns") or []
@@ -2255,7 +2264,7 @@ async def generate_report(request: Request):
             n_labels = len(series[0].get("data") or [])
             min_labels = 2 if chart_type == "pie" else 3
             if chart_type == "bar" and n_labels == 2:
-                vals = [pt.get("value", 0) for pt in series[0].get("data") or []]
+                vals = [_num(pt) for pt in series[0].get("data") or []]
                 is_diverging = len(vals) == 2 and (vals[0] > 0) != (vals[1] > 0)
                 if is_diverging:
                     # e.g. FII outflow (-735) vs DII inflow (+705) — a genuine
@@ -2269,7 +2278,7 @@ async def generate_report(request: Request):
                 return False
 
         all_pts = [pt for s in series for pt in (s.get("data") or [])]
-        values  = [pt.get("value", 0) for pt in all_pts]
+        values  = [_num(pt) for pt in all_pts]
         if len(values) > 1 and len(set(values)) <= 1:
             log.warning("Chart rejected — identical values: %s", values[:6])
             return False
@@ -2278,7 +2287,7 @@ async def generate_report(request: Request):
         # (e.g. price 125957 and % change -3 as two bars in the same series)
         if chart_type == "bar":
             for s in series:
-                pts_vals = [pt.get("value", 0) for pt in (s.get("data") or [])]
+                pts_vals = [_num(pt) for pt in (s.get("data") or [])]
                 if len(pts_vals) >= 2:
                     pos_vals = [v for v in pts_vals if v > 0]
                     neg_vals = [v for v in pts_vals if v < 0]
@@ -2319,7 +2328,7 @@ async def generate_report(request: Request):
             return ch
         series = ch.get("series") or []
         if len(series) == 1 and len(series[0].get("data") or []) == 2:
-            vals = [pt.get("value", 0) for pt in series[0].get("data") or []]
+            vals = [_num(pt) for pt in series[0].get("data") or []]
             if all(v >= 0 for v in vals):
                 log.info("Chart auto-converted bar→pie (2 items): %s", ch.get("title", "?"))
                 return {**ch, "type": "pie"}
