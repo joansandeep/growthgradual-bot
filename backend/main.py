@@ -87,7 +87,7 @@ async def _keepalive_rag():
             # 60-90s) — this ping's whole purpose is to catch that case, so it
             # needs to outlast it rather than time out and get logged as a
             # generic failure.
-            async with httpx.AsyncClient(timeout=httpx.Timeout(connect=15, read=90)) as c:
+            async with httpx.AsyncClient(timeout=httpx.Timeout(connect=15, read=90, write=30, pool=10)) as c:
                 res = await c.get(ping_url)
             if res.is_success:
                 log.info("RAG keepalive ✓  %s  →  %s", ping_url, res.json())
