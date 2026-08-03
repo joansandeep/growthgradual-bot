@@ -5,7 +5,7 @@ Body: { report, title, charts, question, keyStats, summary }
 Report structure rendered:
   Page 1  — Title Page (cover)
   Page 2  — Introduction
-  Page 3  — Data Sources & Methodology
+  Page 3  — Data Sources & Executive Summary
   Page 4+ — Data Analysis  (charts injected at [CHART_n] placeholders)
   ...     — Key Findings
   ...     — Conclusion
@@ -558,7 +558,49 @@ def _fit_cell(canvas, text: str, font: str, size: float, max_width: float) -> st
     return text[:lo].rstrip() + ell if lo > 0 else ell
 
 
+_SIGNED_CELL_RE = re.compile(r"^[^\d+\-]*([+\-])\s*[₹$]?\s*[\d,.]+")
+_PAREN_NEG_RE   = re.compile(r"^[^\d(]*\(\s*[\d,.]")
+
+
+def _signed_cell_color(cell_str: str):
+    """Return GREEN/RED for a table cell that is a signed gain/loss figure
+    (e.g. '+6.4%', '-9.56%', '(1,234)' as accounting-style negative), or
+    None for anything else (names, dates, unsigned levels) so those keep
+    the row's default text color."""
+    s = cell_str.strip()
+    if not s:
+        return None
+    m = _SIGNED_CELL_RE.match(s)
+    if m:
+        return GREEN if m.group(1) == "+" else RED
+    if _PAREN_NEG_RE.match(s):
+        return RED
+    return None
+
+
 # ─── Chart renderers ──────────────────────────────────────────────────────────
+def _axis_titles(c, spec, x0, y0, PL, PB, pw, ph):
+    """Draw the axis TITLE text (e.g. 'Return (%)' / 'Sector') distinct from the
+    numeric/category tick labels the bar/line renderers already draw. Falls back
+    to the unit string for the Y title when the LLM didn't supply an explicit
+    yLabel, so a chart is never left with unlabeled axes."""
+    x_label = _safe_text((spec.get("xLabel") or "").strip())
+    y_label = _safe_text((spec.get("yLabel") or "").strip())
+    unit = _safe_text(spec.get("unit", ""))
+    if not y_label and unit:
+        y_label = unit
+    if x_label:
+        c.setFillColorRGB(*GREY); c.setFont("Helvetica-Oblique", 6.5)
+        c.drawCentredString(x0 + PL + pw / 2, y0 + 2, x_label[:40])
+    if y_label:
+        c.saveState()
+        c.translate(x0 + 10, y0 + PB + ph / 2)
+        c.rotate(90)
+        c.setFillColorRGB(*GREY); c.setFont("Helvetica-Oblique", 6.5)
+        c.drawCentredString(0, 0, y_label[:30])
+        c.restoreState()
+
+
 def _bar(c, spec, x0, y0, w, h):
     series_list = spec.get("series") or [{}]
     data = series_list[0].get("data") or []
@@ -591,7 +633,7 @@ def _bar(c, spec, x0, y0, w, h):
 
     has_legend = n_ser > 1
     LEGEND_H   = 16 if has_legend else 0
-    PL, PB     = 52, 32
+    PL, PB     = 52, 40   # PB includes room below the category tick labels for the axis title
     pw         = w - PL - 12
     ph         = h - PB - 24 - LEGEND_H
     sp         = pw / n
@@ -703,6 +745,8 @@ def _bar(c, spec, x0, y0, w, h):
             c.drawString(lx + 15, ly - 2, sname)
             lx += item_w
 
+    _axis_titles(c, spec, x0, y0, PL, PB, pw, ph)
+
 
 def _line(c, spec, x0, y0, w, h):
     series = spec.get("series") or []
@@ -725,7 +769,7 @@ def _line(c, spec, x0, y0, w, h):
 
     has_legend = len(series) > 1
     LEGEND_H   = 16 if has_legend else 0
-    PL, PB     = 52, 32
+    PL, PB     = 52, 40   # PB includes room below the category tick labels for the axis title
     pw         = w - PL - 12
     ph         = h - PB - 24 - LEGEND_H
 
@@ -835,6 +879,8 @@ def _line(c, spec, x0, y0, w, h):
             c.setFillColorRGB(*BODY_TXT); c.setFont("Helvetica", 7)
             c.drawString(lx + 15, ly - 2, sname)
             lx += item_w
+
+    _axis_titles(c, spec, x0, y0, PL, PB, pw, ph)
 
 
 def _pie(c, spec, x0, y0, w, h):
@@ -1046,12 +1092,14 @@ def build_pdf(report: str, title: str, question: str, summary: str,
             c.drawRightString(PAGE_W - MARGIN, PAGE_H - HEADER_H + 18, section_title[:70])
         c.setFillColorRGB(0.65, 0.68, 0.82); c.setFont("Helvetica", 7)
         c.drawRightString(PAGE_W - MARGIN, PAGE_H - HEADER_H + 7, now_str)
-        # Footer — minimal: just page number
+        # Footer — branded: report title + firm name on the left, page number on the right.
         c.setFillColorRGB(0.94, 0.95, 1.0)
         c.rect(0, 0, PAGE_W, FOOTER_H, fill=1, stroke=0)
         c.setStrokeColorRGB(*NAVY); c.setLineWidth(1.2)
         c.line(0, FOOTER_H, PAGE_W, FOOTER_H)
         c.setFillColorRGB(*GREY); c.setFont("Helvetica", 7)
+        footer_label = f"{(title or 'Market Intelligence Report')[:60]} · Growth Gradual"
+        c.drawString(MARGIN, 7, footer_label)
         c.drawRightString(PAGE_W - MARGIN, 7, f"Page {page_num[0]}")
 
     def _logo_text():
@@ -1278,6 +1326,12 @@ def build_pdf(report: str, title: str, question: str, summary: str,
     # a card's label wraps to two lines).
     c.setFillColorRGB(0.55, 0.60, 0.80); c.setFont("Helvetica", 8)
     c.drawRightString(PAGE_W - MARGIN, overline_y, "growth-gradual.com")
+    # Cover-page footer stamp (light text on the navy background) so page
+    # numbering is visible from page 1, consistent with the body pages' footer.
+    page_num[0] += 1
+    c.setFillColorRGB(0.55, 0.60, 0.80); c.setFont("Helvetica", 7)
+    c.drawRightString(PAGE_W - MARGIN, 16, f"Page {page_num[0]}")
+    c.drawString(MARGIN, 16, f"{(title or 'Market Intelligence Report')[:60]} · Growth Gradual")
     c.showPage()
 
     # ═══════════════════════════════════════════════════════════════════════════
@@ -1297,11 +1351,58 @@ def build_pdf(report: str, title: str, question: str, summary: str,
     def accent():
         return SECTION_ACCENTS[section_idx[0] % len(SECTION_ACCENTS)]
 
+    # ── Inline infographic stat-card strip ───────────────────────────────────
+    # The cover page only has room for 4 keyStats; this renders additional
+    # batches inline in the body so the report's data points show up as
+    # scannable cards (not just buried in prose) — mirrors the reference
+    # report's "RBI Policy Snapshot" style stat blocks.
+    def stat_strip(stats_subset: list, heading_label: str = ""):
+        stats_subset = [s for s in (stats_subset or []) if s.get("value") or s.get("label")]
+        if not stats_subset:
+            return
+        n = len(stats_subset)
+        gap = 12
+        card_w = (CW - gap * (n - 1)) / n
+        STRIP_H = 54
+        LABEL_H = 12 if heading_label else 0
+        need(STRIP_H + LABEL_H + 24, current_section[0])
+        nl(14)
+        if heading_label:
+            c.setFillColorRGB(*GREY); c.setFont("Helvetica-BoldOblique", 7)
+            c.drawString(MARGIN, y[0], heading_label.upper())
+            nl(LABEL_H)
+        bottom = y[0] - STRIP_H
+        for i, st in enumerate(stats_subset):
+            cx = MARGIN + i * (card_w + gap)
+            c.setFillColorRGB(0.96, 0.97, 1.0)
+            c.roundRect(cx, bottom, card_w, STRIP_H, 4, fill=1, stroke=0)
+            c.setStrokeColorRGB(0.87, 0.9, 0.95); c.setLineWidth(0.6)
+            c.roundRect(cx, bottom, card_w, STRIP_H, 4, fill=0, stroke=1)
+            val = _safe_text(fmt_inr(str(st.get("value", ""))))[:14]
+            lbl = _safe_text(st.get("label", ""))[:28]
+            chg = _safe_text(st.get("change", ""))
+            col_c = GREEN if chg.startswith("+") or val.startswith("+") else (RED if chg.startswith("-") or val.startswith("-") else NAVY)
+            c.setFillColorRGB(*col_c); c.setFont("Helvetica-Bold", 13)
+            c.drawString(cx + 8, bottom + STRIP_H - 22, val)
+            c.setFillColorRGB(*GREY); c.setFont("Helvetica-Bold", 6.5)
+            c.drawString(cx + 8, bottom + STRIP_H - 34, lbl.upper())
+            if chg and chg != val:
+                c.setFillColorRGB(*col_c); c.setFont("Helvetica-Bold", 7)
+                c.drawString(cx + 8, bottom + 6, chg)
+        y[0] = bottom - 14
+
+    _stats_strip_1_shown = [False]  # after Executive Summary
+    _stats_strip_2_shown = [False]  # before Conclusion
+
     # ── Token renderer ─────────────────────────────────────────────────────────
     tokens = list(_tokenise(report))
     chart_idx = [0]   # next chart to render
     rendered_charts: set[int] = set()  # indices of charts already rendered inline
     _seen_table_sigs: set[str] = set()  # dedup identical tables (LLM sometimes repeats them)
+    _seen_line_sigs: set[str] = set()   # dedup identical bullets/numbered items/paragraphs
+
+    def _line_sig(text: str) -> str:
+        return re.sub(r"\s+", " ", text.lower().strip(" .,-—:"))
 
     for tok in tokens:
         tp = tok["type"]
@@ -1462,6 +1563,19 @@ def build_pdf(report: str, title: str, question: str, summary: str,
             # itself, since we render our own "SECTION 0N" overline instead —
             # avoids a duplicated/mismatched number ("SECTION 02" over "2. Title").
             text_display = re.sub(r"^\d+\.\s*", "", text)
+
+            # Drop in an infographic stat-card strip right as we LEAVE the
+            # Executive Summary (using the keyStats batch the cover page had
+            # no room for), and again right as we ENTER the Conclusion — so
+            # the report's data points surface as scannable cards at two more
+            # points beyond the cover, not just inline in prose.
+            if "executive summary" in current_section[0].lower() and not _stats_strip_1_shown[0]:
+                stat_strip(key_stats[4:8], "Key Metrics")
+                _stats_strip_1_shown[0] = True
+            if "conclusion" in text_display.lower() and not _stats_strip_2_shown[0]:
+                stat_strip(key_stats[8:12], "At a Glance")
+                _stats_strip_2_shown[0] = True
+
             current_section[0] = text
             # 22(overline+gap) + up to 2 title lines + 10(rule) + 14(gap) + 30(min content) = ~110
             need(110, text)
@@ -1525,6 +1639,10 @@ def build_pdf(report: str, title: str, question: str, summary: str,
         # ── Bullet ───────────────────────────────────────────────────────────
         if tp == "bullet":
             plain_text = _strip_inline(tok["text"])
+            _sig = _line_sig(plain_text)
+            if len(_sig) > 12 and _sig in _seen_line_sigs:
+                continue  # exact repeat of an earlier bullet — skip, don't say it twice
+            _seen_line_sigs.add(_sig)
             wlines = _wrap(c, plain_text, "Helvetica", 10, CW - 16)
             for li, ln in enumerate(wlines):
                 need(15, current_section[0])
@@ -1539,6 +1657,10 @@ def build_pdf(report: str, title: str, question: str, summary: str,
         # ── Numbered item ────────────────────────────────────────────────────
         if tp == "numbered":
             plain_text = _strip_inline(tok["text"])
+            _sig = _line_sig(plain_text)
+            if len(_sig) > 12 and _sig in _seen_line_sigs:
+                continue  # exact repeat of an earlier finding/item — skip
+            _seen_line_sigs.add(_sig)
             num = tok.get("num", "•")
             indent = 18
             wlines = _wrap(c, plain_text, "Helvetica", 10, CW - indent)
@@ -1566,6 +1688,10 @@ def build_pdf(report: str, title: str, question: str, summary: str,
             )
             if any(h in _tlow for h in _DATA_NOTE_HINTS):
                 continue
+            _sig = _line_sig(plain_text)
+            if len(_sig) > 40 and _sig in _seen_line_sigs:
+                continue  # exact repeat of an earlier paragraph — skip
+            _seen_line_sigs.add(_sig)
             wlines = _wrap(c, plain_text, "Helvetica", 10, CW)
             for li, ln in enumerate(wlines):
                 need(15, current_section[0])
@@ -1606,13 +1732,16 @@ def build_pdf(report: str, title: str, question: str, summary: str,
 
                 for ci, cell in enumerate(row[:col_count]):
                     cx2 = MARGIN + ci * col_w + 4
-                    c.setFillColorRGB(*tcol); c.setFont(tfont, tsize)
                     # Format large numbers in Indian style for data rows (not header)
                     cell_str = str(cell)
                     if ri > 0 and ci > 0:
                         cell_str = fmt_inr(cell_str)
                     cell_str = _strip_inline(cell_str)
                     cell_str = _fit_cell(c, cell_str, tfont, tsize, col_w - 8)
+                    # Gain/loss cells (e.g. "+6.4%", "-9.56%") get green/red ink so
+                    # the table reads at a glance, same as the chart bars do.
+                    cell_color = _signed_cell_color(cell_str) if ri > 0 else None
+                    c.setFillColorRGB(*(cell_color or tcol)); c.setFont(tfont, tsize)
                     c.drawString(cx2, y[0] - ROW_H + 7, cell_str)
                 nl(ROW_H)
             nl(8)

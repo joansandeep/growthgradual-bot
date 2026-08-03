@@ -272,6 +272,15 @@ rendered once as rows and once as bars right below. Decide per subsection:
     same rows" reads as repetitive and mechanical, not professional. Rotate
     formats deliberately across 3.1–3.4 so the report alternates rhythm.
 
+NARRATED LISTS → TABLES, NOT PARAGRAPHS: any time you are about to describe 3+ comparable
+items that share the same attributes — a sequence of dated events, several entities each with
+a metric, a set of policy changes each with an effective date — stop and render it as a markdown
+table with named columns (e.g. Date | Event | Impact, or Entity | Metric | Change) instead of
+narrating each one as its own sentence inside a paragraph. A paragraph that reads "On June 5 the
+RBI held rates, then on June 11 the US struck Iran, then on June 19 Accenture cut guidance..." is
+exactly the pattern to avoid — that is a table wearing prose. Reserve paragraph prose for genuine
+analysis and connective reasoning between data points, not for listing the data points themselves.
+
 STEP 1 — AGGRESSIVELY SCAN sources for ANY chartable numbers:
   • Returns/performance of multiple funds, stocks, sectors → bar chart
   • Rankings with numbers (top 5 SIPs by return, top gainers) → bar chart
@@ -420,6 +429,8 @@ Chart spec shape:
   "type": "bar" | "line" | "pie",
   "title": "<specific title e.g. 'Top 5 SIP Funds — 3-Year Returns' not 'Chart 1'>",
   "unit": "%" | "₹" | "Cr" | "B" | "$" | "x" | "",
+  "xLabel": "<what the x-axis categories are, e.g. 'Fund' or 'Sector' or 'Session Date'>",
+  "yLabel": "<what the y-axis values represent, e.g. '3-Yr Return (%)' or 'Index Level'>",
   "stacked": true | false,  // ONLY for multi-series bar charts where each series is
                             // a PART of a whole per label (e.g. Equity/Debt/Cash per
                             // fund) — set true so it renders as one stacked column
@@ -427,6 +438,14 @@ Chart spec shape:
                             // or set false for comparison charts (entity vs entity).
   "series": [{ "name": "<series name>", "data": [{ "label": "<unique label>", "value": <number> }] }]
 }
+AXIS LABELS ARE MANDATORY for every bar/line chart — always fill in "xLabel" and "yLabel" with a
+short (1-4 word) description of what each axis represents. A chart with numeric tick marks but no
+axis title leaves the reader guessing what the numbers mean — never omit these two fields.
+
+PERIOD FRAMING: whenever the underlying data is a month-to-date or year-to-date figure, say so
+explicitly in the chart title (e.g. "Nifty 50 — MTD Performance", "Sectoral Returns, YTD") rather
+than a generic title — this matters as much for line charts tracking an index/stock across sessions
+as for bar charts comparing entities, since the reader needs to know the time window at a glance.
 
 GOOD chart examples — do exactly this:
   • "Top SIP Funds by 3-Yr Return" → bar, labels=[ICICI Pru Value, Nippon India Value, UTI Gold ETF, Quant Small Cap], values=[15.9, 15.8, 35.2, 28.4], unit="%"
@@ -460,8 +479,11 @@ write as much genuinely substantive analysis as the sources support):
 3-4 paragraphs (minimum 200 words): Provide rich context — explain the sector/topic, why it matters now, who the key stakeholders are, what macro or market forces are driving interest, the history/background that led here, and what this report covers. Write in plain prose. No filler, every sentence must add context or data.
 Then add a **"What This Report Covers"** bullet list (4-6 short items, one per line, starting with "-") summarising the key questions this report answers — e.g. "- Which sectors led/lagged and by how much", "- Key macro drivers behind outperformers". This gives the reader a quick scannable preview.
 
-## 2. Methodology
-2-3 paragraphs (minimum 150 words): describe what sources were used, what metrics were collected, and how comparisons were made — the reader needs this BEFORE the Data Analysis section so they know the basis and scope of what follows. Explicitly state any caveats or limitations in the data (e.g. single-document scope, no external market figures used, time period covered). Do NOT include the sources table here — that belongs only in the final "Data Sources" section. This section is prose-only, explaining approach, not listing publications.
+## 2. Executive Summary
+This is a DESK-NOTE, not a methods statement — never describe sources, metrics, or comparison approach here (readers get the source list from the final Data Sources table; no methodology walk-through belongs anywhere in this report). Structure:
+- 1 short paragraph (3-4 sentences, ~60-90 words) framing the single biggest story of the period in plain language — what happened and why it matters right now.
+- Then a **"Key Takeaways"** bullet list, 5-7 items, one per line, starting with "-". Every bullet MUST lead with a concrete number, %, level, or named figure — never a vague statement. Write these as data points, not narration: "- Nifty Bank led sectors, +6.4% for the month vs Nifty IT's -9.6%" not "- Banking did well while IT struggled." This list is the reader's 30-second scan of the whole report — treat every line as a headline stat.
+Do NOT include a sources table here — that belongs only in the final "Data Sources" section.
 
 ## 3. Data Analysis
 
@@ -480,6 +502,7 @@ Optional but encouraged when the sources have material left over after 3.1-3.3. 
 ## 4. Key Findings
 8-12 findings. Each finding must follow this exact format — a **bold lead sentence** with a specific stat, then 1-2 sentences of plain explanation:
 **1. [Bold stat-driven headline — e.g. "IT sector surged 34% YTD, outpacing all peers"]** — explanation of what it means and why it matters to investors.
+Every finding's lead sentence must itself be a data point (a number/%/level), never a qualitative claim without a figure attached ("sentiment improved" is not a finding; "India VIX fell from 27.3 to 13.1" is).
 No bracket citation markers — if attribution matters, name the publication in the sentence itself.
 
 ## 5. Risks & Considerations
@@ -490,12 +513,26 @@ No bracket citation markers — if attribution matters, name the publication in 
 2-3 paragraphs of synthesis (minimum 160 words) followed by a **"Key Takeaways"** bullet list (4-6 items, one per line) summarising the most important points for investors/stakeholders. End with a short forward-looking paragraph on outlook grounded in sources only.
 
 ## 7. Data Sources
-One markdown table of sources (Publication | URL | Data type). One short intro sentence is fine, but do NOT repeat the methodology narrative here — that lives only in section 2. This section is the table itself, nothing more.
+One markdown table of sources (Publication | URL | Data type). One short intro sentence is fine, but do NOT repeat anything already said in the Executive Summary here. This section is the table itself, nothing more.
 SOURCE BREADTH: list EVERY distinct publication below that contributed any real fact, figure, or context — not only whichever source happened to have the most granular numbers. If five sources were provided and three had usable content (numbers, context, definitions, market commentary), the table should show three rows, not one. Only cite a single source if every other source genuinely had nothing usable (e.g. paywalled, off-topic, or duplicate of another result) — and if so, do not claim more sources were used than actually were. Never list a publication that contributed nothing to the report.
 URL COLUMN: the URL column must contain the EXACT "Source: <url>" value given for that publication in the supplementary sources below — never a description, a paraphrase, or any placeholder text standing in for a missing link. If a publication's URL truly is not in the source list, omit that row entirely from the table rather than writing anything else in its place.
 This table is the ONLY place sources are listed. Do NOT add a separate "8. Sources" section, a second bulleted source list, or any other repeated listing of the same publications/URLs after this table — one table, once, is the complete Data Sources section. The report ends here, after this table.
 
 GLOBAL RULES:
+- NO REPETITION ACROSS SECTIONS: each specific stat, comparison, or finding is stated FULLY once,
+  in the single section it belongs to most, and referenced only in passing elsewhere (e.g. "as noted
+  above, Nifty Bank's 6.4% gain..."). Before writing a new sentence, check whether the same number or
+  claim already appeared earlier in the report — if so, either cut it or shorten it to a brief callback,
+  never restate it at full length again. This applies especially to the Key Takeaways bullets, the Key
+  Findings section, and the Conclusion, which commonly drift into re-explaining the same 2-3 headline
+  stats already covered in the Executive Summary — each of those sections must surface DIFFERENT facts,
+  not reformulations of the same ones.
+- SIGNED NUMBERS FOR GAINS/LOSSES: every percentage change, delta, or gain/loss figure — in prose,
+  bullets, tables, AND chart data — must be written with an explicit leading "+" for positive values
+  and "-" for negative values (e.g. "+6.4%", "-9.6%", never a bare "6.4%" for a change figure or "(-9.6%)").
+  This sign is load-bearing: the PDF renderer colors these green/red based on the leading character, so an
+  unsigned number renders in neutral ink and loses the visual cue entirely. Absolute levels that aren't a
+  change (e.g. an index closing level, a P/E ratio) do not need a sign.
 - FORMATTING DENSITY — MANDATORY: no section may run more than 2 consecutive paragraphs without
   a structural break — a bullet list, a table, or a chart. Sections 3.1 and 3.2 EACH require their
   own bullet list even if section 1 or 3 already had one; "the report has bullets somewhere" does
@@ -550,7 +587,26 @@ GLOBAL RULES:
 - NEVER cite "Tavily" as a publication or source — Tavily is an internal search tool, not a publisher. If a fact's only origin is an internal search summary rather than a named publication, state the fact without attribution rather than inventing a citation.
 - At least 4 markdown data tables
 - 2-4 relevant images selected from the candidate list (0 acceptable only if none are genuinely relevant)
-- keyStats: 6-8 real metrics with values and change indicators
+- keyStats: 8-12 real metrics with values and change indicators. These power the infographic stat-card
+  strips rendered throughout the PDF (cover page + one strip after the Executive Summary + one before
+  the Conclusion) — treat them as the report's visual backbone, not an afterthought. Pull the single
+  most important number from EVERY major section (Introduction context stat, each 3.x subsection's
+  headline number, a Risks-adjacent stat if one exists) so the strips actually represent the whole
+  report rather than only the intro. Each keyStat needs: label (short, e.g. "NIFTY BANK"), value
+  (e.g. "+6.41%" or "23,865.75"), and change (signed, e.g. "+6.41%") where applicable.
+- STRUCTURE ADAPTS TO THE TOPIC — THERE IS NO ONE FIXED SHAPE: the section skeleton above (Introduction,
+  Executive Summary, Data Analysis, Key Findings, Risks, Conclusion, Data Sources) is a minimum spine,
+  not a rigid template to fill identically every time. Adapt it to what was actually asked and what the
+  sources actually support:
+  → Subsection headings under Data Analysis (3.1, 3.2, ...) must be renamed to match the REAL topic and
+    data every time — never reuse generic placeholder headings like "Sector Performance" for a report
+    that isn't about sectors. Two reports on different questions should read as having been written by
+    an analyst who researched each one fresh, not as the same template with different numbers dropped in.
+  → Use 2 subsections when the sources only genuinely support 2 distinct angles; use 4 when they support
+    4. Padding to a fixed count with a thin subsection is worse than a shorter, denser report.
+  → Risks & Considerations and Data Sources are the only two sections that may never be dropped — every
+    other section's internal shape (how many bullets, whether a table or chart leads, subsection count)
+    should be driven by what the sources actually contain for THIS question, not copied from habit.
 - LENGTH TARGET: The "report" field should be roughly 2800-3500 words (≈18,000-30,000 characters).
   Responses shorter than 15,000 characters will be REJECTED and regenerated, so treat that floor as
   a real requirement. But this is a DEPTH target, not a hard quota to hit at any cost: explain the
@@ -582,7 +638,7 @@ summary) takes ~2000 tokens. The report content needs ~6000-7000 tokens. Total: 
 You have 32000 output tokens available — more than enough. Do NOT rush or compress.
 
 Rules to prevent truncation:
-1. Write sections in order: Introduction → Methodology → Data Analysis → Key Findings → Risks → Conclusion → Data Sources.
+1. Write sections in order: Introduction → Executive Summary → Data Analysis → Key Findings → Risks → Conclusion → Data Sources.
    Do NOT skip or abbreviate any section to save tokens.
 2. Pace yourself: if you are past section 4 (Key Findings) and have written fewer than 10000 chars
    of report content, you are on track — keep going, do NOT start compressing.
@@ -897,7 +953,8 @@ _LEAKED_PROMPT_MARKERS = (
     "if sources don't surface explicit risks, reason from data patterns",
     "2-3 paragraphs of synthesis (minimum",
     "one markdown table of sources (publication",
-    "do not repeat the methodology narrative here",
+    "do not repeat anything already said in the executive summary",
+    "this is a desk-note, not a methods statement",
     "source breadth: list every distinct publication",
     "url column: the url column must contain the exact",
     "formatting density — mandatory",
@@ -911,6 +968,12 @@ _LEAKED_PROMPT_MARKERS = (
     "sector performance table: only include a time-series table",
     "never write raw json inside the \"report\" string",
     "never use unescaped double-quote characters",
+    "no repetition across sections",
+    "signed numbers for gains/losses",
+    "narrated lists → tables",
+    "narrated lists -> tables",
+    "structure adapts to the topic",
+    "these power the infographic stat-card strips",
 )
 
 
@@ -1522,6 +1585,26 @@ async def call_gemini(user_prompt: str) -> tuple[str, str]:
                         "Gemini: report suspiciously long (%d chars > 60000) — likely runaway/"
                         "repeating generation — model=%s key=...%s — retrying next slot",
                         len(text), model, key[-4:],
+                    )
+                    continue
+                # Reject stale-structure output: the prompt no longer has a "Methodology"
+                # section (replaced by a data-point "Executive Summary"), so a report that
+                # still carries the old heading means the model drifted back to a fixed,
+                # memorized shape rather than following the current instructions. Recycle
+                # to the next key/model slot rather than shipping it.
+                _lower_text = text.lower()
+                if re.search(r"##\s*2\.\s*methodology\b", _lower_text):
+                    log.warning(
+                        "Gemini: output reverted to legacy 'Methodology' heading — "
+                        "model=%s key=...%s — retrying next slot for fresh structure",
+                        model, key[-4:],
+                    )
+                    continue
+                if "executive summary" not in _lower_text:
+                    log.warning(
+                        "Gemini: output missing required Executive Summary section — "
+                        "model=%s key=...%s — retrying next slot",
+                        model, key[-4:],
                     )
                     continue
                 return text, model
