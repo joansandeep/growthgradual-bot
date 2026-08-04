@@ -38,3 +38,5 @@ Thumbs.db
 npm-debug.log*
 yarn-debug.log*
 .vercel
+__pycache__/ 
+*.pyc 
