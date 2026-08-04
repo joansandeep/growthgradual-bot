@@ -230,7 +230,7 @@ Respond with EXACTLY this shape:
   "title": "<concise NOUN-PHRASE report title, max 12 words. Examples: 'Top Banking Stocks India 2026', 'Indian Mutual Fund SIP Returns Analysis', 'HDFC vs ICICI Bank Comparison', 'Nifty 50 Market Outlook — June 2026'. STRICT RULES: NEVER start with 'So', 'You', 'I', 'Let's', 'Here', 'Based', 'Looking', 'Understanding', 'A look at', 'An analysis of', or any verb/pronoun. NEVER start with 'The' followed by a verb — e.g. BAD: 'The Nifty outlook today is mixed, with some analysts predicting...' (full sentence starting with The) → GOOD: 'Nifty 50 Outlook — Mixed Signals Amid Volatility'. NEVER write a full sentence — this includes sentences that don't start with one of those words too, e.g. BAD: 'The Minimum Investment Amounts For These Top-Performing SIPs Are As Follows' → GOOD: 'Top-Performing SIP Funds — Minimum Investment Requirements'. Never end a title with a colon, 'as follows', or '...' — those signal an incomplete sentence, not a heading. ALWAYS write a noun phrase — topic first, qualifiers after.>",
   "report": "<full markdown report — target 2800-3500 words (MINIMUM 18000 characters — shorter responses will be rejected and retried), structured and data-rich. This is a LONG-FORM report (aim for ~10-12 printed pages once charts/tables/images are laid in) — see REPORT STRUCTURE below for the section list that gets you there. Add DEPTH, not invented data: more context, more explanation of mechanisms and causes, more comparison and discussion of what the numbers mean — never pad with filler sentences or numbers not in the sources.>",
   "charts": [...],
-  "images": [...],
+  "images": [{ "prompt": "<AI image-generation prompt — see AI IMAGE RULES>", "caption": "<short caption>" }, ...] (0-2 items, [] if none needed),
   "keyStats": [{ "label": "<short label>", "value": "<value string>", "change": "<+/- % or empty string>" }],
   "summary": "<2-3 sentence executive summary>"
 }
@@ -463,60 +463,82 @@ BAD chart examples — NEVER do this:
   ✗ [CHART_n] in report without matching charts[n-1] entry
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-IMAGE RULES — this report is charts/graphs/tables only. Do NOT reference, request,
-or place any stock/decorative photos. Never emit a [WEB_IMG_n] marker and never
-return an "images" array — visual content in this report comes exclusively from
-[CHART_n] (and [FILE_IMG_n] where applicable), not from web-sourced photography.
+AI IMAGE RULES — DATA NEVER GOES IN AN IMAGE. IMAGES ARE OPTIONAL AND RARE.
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-REPORT STRUCTURE (each section MUST be substantive — this is a LONG-FORM report, ~10-12 pages
-once charts/tables/images are laid in. Minimum word counts below are FLOORS, not targets —
-write as much genuinely substantive analysis as the sources support):
+Every number, ranking, trend, or comparison belongs in a [CHART_n] or a table — NEVER in a
+generated image. Images here are AI-generated (via Gemini), not stock/web photography, and exist
+only to give a genuinely data-thin section a visual anchor — a conceptual/editorial illustration,
+never a substitute for a chart.
+✓ Default is ZERO images. Only include one when a section would otherwise be pure text with no
+  chart/table available for it (e.g. a qualitative theme like "monsoon impact on rural consumption",
+  "geopolitical risk to energy supply chains", a company/sector profile with no numeric ranking to plot).
+✓ Maximum 2 images per report. Never one per subsection, never "for visual variety."
+✓ Each entry: {"prompt": "<scene description for an image generator>", "caption": "<1 short sentence>"}.
+  The prompt must describe an EDITORIAL/ILLUSTRATIVE scene only — e.g. "wide editorial photo of a
+  bustling Mumbai stock exchange trading floor, natural light, documentary style" or "clean minimal
+  illustration of container ships at a busy port, blue and gold palette" — never ask for text, numbers,
+  charts, logos, tickers, or any real named/branded company mark to appear IN the image; the model
+  generating the picture cannot render accurate data or trademarks, so asking for them produces
+  misleading or unusable output.
+✓ Reference each with [WEB_IMG_n] inline in the report body, at the point in the section it illustrates
+  — same placeholder mechanics as [CHART_n], numbered in the order the "images" array lists them.
+✗ Never invent a caption number/stat not already stated elsewhere in the report as its own bullet/table/chart.
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+REPORT STRUCTURE — PLAN THE SECTIONS YOURSELF, EVERY TIME, FROM THE ACTUAL QUESTION:
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+There is no fixed template. Before writing, decide the section list this specific report needs —
+driven by the question asked and what the sources actually contain, not by habit or by what last
+report used. Two reports on different questions must read as if a different analyst planned each
+one from scratch, down to the section names.
 
-# [Report Title]
+REQUIRED ANCHORS (always present, but shape freely within them):
+  1. A title (# heading).
+  2. An "Executive Summary" section (must contain the literal words "Executive Summary" as a heading)
+     — a desk-note: 1 short paragraph (3-4 sentences) on the single biggest story, then a
+     "Key Takeaways" bullet list (5-7 items, each leading with a concrete number/%/level — never a
+     vague statement). No methodology talk, no source list here.
+  3. A "Risks & Considerations" (or equivalently-named risk/caveats section) — 3-5 distinct risks,
+     each a **bold label** + 2-3 sentences, grounded in the sources or reasoned from the data patterns.
+  4. A closing synthesis section (Conclusion/Outlook/whatever name fits) — 1-2 short paragraphs +
+     a "Key Takeaways" or "What To Watch" bullet list.
+  5. A "Data Sources" section — one markdown table (Publication | URL | Data type) and nothing else.
+     List every distinct publication that contributed a real fact — not just the most-cited one.
+     URL column must be the exact "Source: <url>" given below; omit the row if no URL exists.
+     This is the ONLY sources listing — no second copy anywhere else in the report.
 
-## 1. Introduction
-3-4 paragraphs (minimum 200 words): Provide rich context — explain the sector/topic, why it matters now, who the key stakeholders are, what macro or market forces are driving interest, the history/background that led here, and what this report covers. Write in plain prose. No filler, every sentence must add context or data.
-Then add a **"What This Report Covers"** bullet list (4-6 short items, one per line, starting with "-") summarising the key questions this report answers — e.g. "- Which sectors led/lagged and by how much", "- Key macro drivers behind outperformers". This gives the reader a quick scannable preview.
+EVERYTHING BETWEEN Executive Summary and Risks & Considerations IS YOURS TO DESIGN:
+  → Pick 2-5 body sections (with subsections where useful) that map onto the REAL angles this
+    question and these sources support. Name them for the actual topic — e.g. a single-stock
+    question might use "Financial Performance", "Valuation vs Peers", "Analyst Views"; a sector
+    question might use "Sub-Sector Breakdown", "Policy Backdrop", "Key Players"; a market-moves
+    question might use "Index Performance", "Sector Rotation", "What Moved The Market". An
+    "Introduction" and generic "Data Analysis / 3.1, 3.2..." numbering are ONE possible shape, not
+    the default — use them only if they genuinely fit better than a topic-specific structure.
+  → Section count follows the sources: 2 sections when only 2 angles have real data, 5 when 5 do.
+    A thin section padded to hit a count is worse than a shorter, denser report.
+  → Optionally open with a short (1-2 paragraph, 100-150 word) framing/context section before the
+    numbered findings if the topic needs background a first-time reader wouldn't have — skip it
+    entirely for a narrow, self-explanatory question.
+  → Optionally include a "Key Findings" style section (8-12 bold-stat-led one-liners, each with a
+    number) if the material suits a scannable findings list — fold it into the body sections instead
+    if that reads better for this particular topic.
 
-## 2. Executive Summary
-This is a DESK-NOTE, not a methods statement — never describe sources, metrics, or comparison approach here (readers get the source list from the final Data Sources table; no methodology walk-through belongs anywhere in this report). Structure:
-- 1 short paragraph (3-4 sentences, ~60-90 words) framing the single biggest story of the period in plain language — what happened and why it matters right now.
-- Then a **"Key Takeaways"** bullet list, 5-7 items, one per line, starting with "-". Every bullet MUST lead with a concrete number, %, level, or named figure — never a vague statement. Write these as data points, not narration: "- Nifty Bank led sectors, +6.4% for the month vs Nifty IT's -9.6%" not "- Banking did well while IT struggled." This list is the reader's 30-second scan of the whole report — treat every line as a headline stat.
-Do NOT include a sources table here — that belongs only in the final "Data Sources" section.
-
-## 3. Data Analysis
-
-### 3.1 [Heading matching actual topic and data]
-Deep-dive quantitative findings (minimum 220 words). Lead with 1-2 paragraphs of analysis, then a **MANDATORY bullet list** (3-5 items, not optional) calling out the standout data points or anomalies (e.g. "- IT sector returned 34% YTD, highest across all NIFTY sectors"). Explain what the data shows and why it matters. Present the underlying numbers as EITHER a markdown table OR a [CHART_n] — pick per the TABLE vs CHART rule above — not both showing the same rows. Do NOT submit this subsection as pure paragraph prose — the bullet list must be present.
-
-### 3.2 [Second dimension of analysis]
-Comparisons, breakdowns, benchmarks (minimum 220 words). Use a mix of formats: 1-2 paragraphs of context + a **MANDATORY bullet list** of key differentiators or ranked highlights (not optional) + ONE of (table OR [CHART_n]) per the TABLE vs CHART rule — choose whichever format this subsection's data suits, and choose differently than 3.1 did if the data shape allows, so the report doesn't repeat the same table+chart rhythm twice in a row. List top/bottom performers or distinguishing characteristics as bullets, not buried in paragraph sentences.
-
-### 3.3 [Trends or forward-looking data — only if sources have it]
-Only include if sources have trend/time-series data with ≥4 distinct time points. Minimum 180 words if included. Use prose for the overall trend narrative; use a **MANDATORY bullet list** for discrete inflection points or catalysts (e.g. "- Q3 FY24: RBI rate pause triggered a rally in rate-sensitive sectors").
-
-### 3.4 [A fourth distinct angle — peer/sector context, valuation, ownership, regulatory backdrop, etc. — only if sources genuinely support it]
-Optional but encouraged when the sources have material left over after 3.1-3.3. Minimum 180 words if included. Skip entirely (don't stub it) if there's nothing left to say with real data.
-
-## 4. Key Findings
-8-12 findings. Each finding must follow this exact format — a **bold lead sentence** with a specific stat, then 1-2 sentences of plain explanation:
-**1. [Bold stat-driven headline — e.g. "IT sector surged 34% YTD, outpacing all peers"]** — explanation of what it means and why it matters to investors.
-Every finding's lead sentence must itself be a data point (a number/%/level), never a qualitative claim without a figure attached ("sentiment improved" is not a finding; "India VIX fell from 27.3 to 13.1" is).
-No bracket citation markers — if attribution matters, name the publication in the sentence itself.
-
-## 5. Risks & Considerations
-3-5 distinct risks. Each risk uses a **bold label** followed by 2-3 sentences of explanation (minimum 200 words total). Format:
-**[Risk Name — e.g. "Valuation Stretch"]:** explanation grounded in what the sources flag — regulatory risk, competitive pressure, valuation concerns, macro sensitivity, data gaps, etc. If sources don't surface explicit risks, reason from data patterns themselves. Do not skip this section.
-
-## 6. Conclusion
-2-3 paragraphs of synthesis (minimum 160 words) followed by a **"Key Takeaways"** bullet list (4-6 items, one per line) summarising the most important points for investors/stakeholders. End with a short forward-looking paragraph on outlook grounded in sources only.
-
-## 7. Data Sources
-One markdown table of sources (Publication | URL | Data type). One short intro sentence is fine, but do NOT repeat anything already said in the Executive Summary here. This section is the table itself, nothing more.
-SOURCE BREADTH: list EVERY distinct publication below that contributed any real fact, figure, or context — not only whichever source happened to have the most granular numbers. If five sources were provided and three had usable content (numbers, context, definitions, market commentary), the table should show three rows, not one. Only cite a single source if every other source genuinely had nothing usable (e.g. paywalled, off-topic, or duplicate of another result) — and if so, do not claim more sources were used than actually were. Never list a publication that contributed nothing to the report.
-URL COLUMN: the URL column must contain the EXACT "Source: <url>" value given for that publication in the supplementary sources below — never a description, a paraphrase, or any placeholder text standing in for a missing link. If a publication's URL truly is not in the source list, omit that row entirely from the table rather than writing anything else in its place.
-This table is the ONLY place sources are listed. Do NOT add a separate "8. Sources" section, a second bulleted source list, or any other repeated listing of the same publications/URLs after this table — one table, once, is the complete Data Sources section. The report ends here, after this table.
+FORMAT RATIO — STRUCTURED CONTENT LEADS, PARAGRAPHS SUPPORT:
+  Across the whole report, points/tables/charts should carry MORE of the informational weight than
+  narrative paragraphs do. Concretely, for every body section:
+  → Open with AT MOST 1-2 short paragraphs of framing/analysis (aim ~60-100 words) — never 3-4.
+  → Then represent the actual data as a bullet list, a markdown table, or a [CHART_n] — pick per the
+    TABLE vs CHART rule above — not buried inside more paragraph sentences.
+  → Any time you're about to describe 3+ comparable items in prose, stop and make it a table or
+    bullet list instead (see NARRATED LISTS rule above).
+  → A paragraph earns its place only for genuine connective reasoning (why X caused Y, what the
+    combination of two data points implies) — never for restating numbers a table/chart/bullet
+    already shows.
+  → Vary which format leads section to section (table here, chart there, bullets elsewhere) so nothing
+    reads mechanical.
+  Minimum word counts are gone — a section that says everything it needs in 120 words of framing +
+  a table + a bullet list is complete. Depth comes from adding another real, source-grounded
+  bullet/row/chart-series, not from writing longer sentences around the same facts.
 
 GLOBAL RULES:
 - NO REPETITION ACROSS SECTIONS: each specific stat, comparison, or finding is stated FULLY once,
@@ -534,12 +556,12 @@ GLOBAL RULES:
   unsigned number renders in neutral ink and loses the visual cue entirely. Absolute levels that aren't a
   change (e.g. an index closing level, a P/E ratio) do not need a sign.
 - FORMATTING DENSITY — MANDATORY: no section may run more than 2 consecutive paragraphs without
-  a structural break — a bullet list, a table, or a chart. Sections 3.1 and 3.2 EACH require their
-  own bullet list even if section 1 or 3 already had one; "the report has bullets somewhere" does
-  not satisfy a specific section's requirement. If you catch yourself writing a 4th paragraph in a
-  row with no bullets/table/chart between, stop and convert part of it into a bullet list instead —
-  break out specific numbers, named entities, or ranked items as list items rather than narrating
-  them inside a sentence.
+  a structural break — a bullet list, a table, or a chart. EVERY body section needs its OWN bullet
+  list, table, or chart — "the report has bullets somewhere" does not satisfy a specific section's
+  requirement, each one earns its own. If you catch yourself writing a 3rd paragraph in a row with
+  no bullets/table/chart between, stop and convert part of it into a bullet list instead — break out
+  specific numbers, named entities, or ranked items as list items rather than narrating them inside
+  a sentence.
 - ACCURACY MANDATE: every number, date, name, and statistic in the report must trace verbatim to a
   specific value found in the sources — never invented, never estimated, never "rounded for
   readability" away from the source's actual figure. If you are not certain a number appears in the
@@ -585,35 +607,34 @@ GLOBAL RULES:
   skip that table entirely rather than including a table with all empty cells.
 - NEVER use bracket citation markers such as [1], [2], [1, 2], [n] anywhere in the report body. This is a hard rule — the report reads as polished analyst prose, not an academic paper with footnote numbers. If a claim needs attribution, name the source in the sentence (e.g. "Screener.in data shows...").
 - NEVER cite "Tavily" as a publication or source — Tavily is an internal search tool, not a publisher. If a fact's only origin is an internal search summary rather than a named publication, state the fact without attribution rather than inventing a citation.
-- At least 4 markdown data tables
-- 2-4 relevant images selected from the candidate list (0 acceptable only if none are genuinely relevant)
+- Tables and charts are the DEFAULT way to present any comparable/ranked/multi-item data — target
+  3+ markdown tables where the sources genuinely support them; fewer is correct for a narrower
+  question with less tabular material, more is correct for a data-rich one.
+- Images: 0-2 AI-generated illustrative images (see AI IMAGE RULES) — 0 is the normal, expected
+  outcome for most reports; only add one where a section has no chart/table option at all.
 - keyStats: 8-12 real metrics with values and change indicators. These power the infographic stat-card
-  strips rendered throughout the PDF (cover page + one strip after the Executive Summary + one before
-  the Conclusion) — treat them as the report's visual backbone, not an afterthought. Pull the single
-  most important number from EVERY major section (Introduction context stat, each 3.x subsection's
-  headline number, a Risks-adjacent stat if one exists) so the strips actually represent the whole
-  report rather than only the intro. Each keyStat needs: label (short, e.g. "NIFTY BANK"), value
-  (e.g. "+6.41%" or "23,865.75"), and change (signed, e.g. "+6.41%") where applicable.
-- STRUCTURE ADAPTS TO THE TOPIC — THERE IS NO ONE FIXED SHAPE: the section skeleton above (Introduction,
-  Executive Summary, Data Analysis, Key Findings, Risks, Conclusion, Data Sources) is a minimum spine,
-  not a rigid template to fill identically every time. Adapt it to what was actually asked and what the
-  sources actually support:
-  → Subsection headings under Data Analysis (3.1, 3.2, ...) must be renamed to match the REAL topic and
-    data every time — never reuse generic placeholder headings like "Sector Performance" for a report
-    that isn't about sectors. Two reports on different questions should read as having been written by
-    an analyst who researched each one fresh, not as the same template with different numbers dropped in.
-  → Use 2 subsections when the sources only genuinely support 2 distinct angles; use 4 when they support
-    4. Padding to a fixed count with a thin subsection is worse than a shorter, denser report.
-  → Risks & Considerations and Data Sources are the only two sections that may never be dropped — every
-    other section's internal shape (how many bullets, whether a table or chart leads, subsection count)
-    should be driven by what the sources actually contain for THIS question, not copied from habit.
-- LENGTH TARGET: The "report" field should be roughly 2800-3500 words (≈18,000-30,000 characters).
-  Responses shorter than 15,000 characters will be REJECTED and regenerated, so treat that floor as
-  a real requirement. But this is a DEPTH target, not a hard quota to hit at any cost: explain the
-  mechanism behind every data point, give historical context, compare to peers, discuss implications
-  for different investor types. Every section listed above has its own minimum word count — meet them
-  by writing more analysis, never by repeating a section, restating an earlier point in new words, or
-  padding with filler.
+  strips rendered throughout the PDF (cover page, plus additional strips dropped in automatically
+  wherever a section turns out data-dense — the renderer decides placement from actual content, not
+  a fixed "after Executive Summary" spot) — treat them as the report's visual backbone, not an
+  afterthought. Pull the single most important number from EVERY major section (Introduction context
+  stat, each 3.x subsection's headline number, a Risks-adjacent stat if one exists) so the strips
+  actually represent the whole report rather than only the intro. Each keyStat needs: label (short,
+  e.g. "NIFTY BANK"), value (e.g. "+6.41%" or "23,865.75"), and change (signed, e.g. "+6.41%") where
+  applicable.
+- PULL-QUOTES / INSIGHT CALLOUTS: use a markdown blockquote (a line starting with "> ") 2-4 times
+  across the report — never zero, never on every subsection — to call out the single sharpest,
+  most consequential insight from the section it sits in. This renders as a distinct highlighted
+  callout card, not a normal paragraph, so it must earn that treatment: one tight, punchy sentence
+  (not a data recap you already put in a bullet or table — a "so what", an implication, a contrarian
+  read, or the one line a reader would remember). Example: "> Valuations near 24x forward earnings
+  leave little room for disappointment if Q2 guidance disappoints." Place them where the section's
+  argument actually turns on that insight, not evenly spaced for the sake of it.
+- LENGTH TARGET: The "report" field should land in the ~18,000-30,000 character range. Responses
+  shorter than 18,000 characters will be REJECTED and regenerated, so treat that floor as real — but
+  hit it through MORE structured content (more table rows, more chart series, more distinct bullets,
+  another genuinely-supported section) rather than through longer paragraphs. A report that hits the
+  floor with dense tables/bullets and lean prose is BETTER than one that hits it with long paragraphs.
+  Never pad with filler sentences, restated points, or invented figures.
 - STOP CONDITION — DO NOT OVERSHOOT: once you have written the Data Sources table (the final section),
   STOP immediately. Do not add anything after it — no extra sections, no restated conclusion, no
   repeated section numbers (there is exactly one "Key Findings", one "Risks & Considerations", one
@@ -638,14 +659,15 @@ summary) takes ~2000 tokens. The report content needs ~6000-7000 tokens. Total: 
 You have 32000 output tokens available — more than enough. Do NOT rush or compress.
 
 Rules to prevent truncation:
-1. Write sections in order: Introduction → Executive Summary → Data Analysis → Key Findings → Risks → Conclusion → Data Sources.
-   Do NOT skip or abbreviate any section to save tokens.
-2. Pace yourself: if you are past section 4 (Key Findings) and have written fewer than 10000 chars
-   of report content, you are on track — keep going, do NOT start compressing.
+1. Write your planned sections in the order you laid them out (Executive Summary first, Risks and
+   Data Sources last, whatever you chose in between) — do NOT skip or abbreviate one to save tokens.
+2. Pace yourself: roughly midway through your planned sections you should have written roughly half
+   your target character count — if not, you are on track only if it's because you're being dense
+   (tables/bullets/charts) rather than thin; keep going, do NOT start compressing.
 3. The "charts" array must be COMPLETE before you close the JSON. If you run low on space, write
    shorter chart titles but include ALL chart objects.
 4. Always end the JSON with: "summary": "...", "keyStats": [...]} — never leave it open.
-5. If a section runs shorter than its minimum, EXPAND it with more analysis rather than moving on.
+5. If a section runs thin, EXPAND it with another real bullet/table row/chart series rather than moving on.
 6. NEVER end the "report" string mid-sentence. Always close with a complete conclusion paragraph,
    then close the JSON string with " and the remaining fields.
 """
@@ -974,6 +996,11 @@ _LEAKED_PROMPT_MARKERS = (
     "narrated lists -> tables",
     "structure adapts to the topic",
     "these power the infographic stat-card strips",
+    "required anchors (always present",
+    "format ratio — structured content leads",
+    "ai image rules",
+    "never ask for text, numbers,",
+    "length target: the \"report\" field should land",
 )
 
 
@@ -1617,6 +1644,113 @@ async def call_gemini(user_prompt: str) -> tuple[str, str]:
     return "", ""
 
 
+# ── AI image generation (Gemini) ────────────────────────────────────────────
+# Used only for the rare, optional editorial/illustrative images described in
+# AI IMAGE RULES above — never for chart/data visuals, which are handled
+# entirely by the charts pipeline. Reuses the same key rotation as
+# call_gemini() so image requests share the existing rate-limit bookkeeping.
+GEMINI_IMAGE_MODELS = [
+    "gemini-2.5-flash-image",       # GA image-generation model
+    "gemini-3.1-flash-image-preview",  # newer preview, tried if 2.5 is unavailable
+]
+
+
+async def generate_gemini_image(prompt: str) -> bytes | None:
+    """Generate a single PNG/JPEG image from a text prompt via the Gemini
+    image-generation models. Returns raw image bytes, or None on failure —
+    callers must treat a miss as "skip this image", never as a hard error."""
+    keys = get_gemini_keys()
+    rest_keys = [k for k in keys if k.startswith("AIzaSy")]
+    if not rest_keys:
+        log.warning("Gemini image: no usable API keys configured")
+        return None
+
+    attempts = [
+        (key, model)
+        for model in GEMINI_IMAGE_MODELS
+        for key in round_robin(rest_keys)
+        if not is_rate_limited(key) and not is_rate_limited(f"{key}:{model}")
+    ]
+    for key, model in attempts:
+        try:
+            t0 = time.perf_counter()
+            async with httpx.AsyncClient(timeout=60) as client:
+                res = await client.post(
+                    f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={key}",
+                    json={"contents": [{"role": "user", "parts": [{"text": prompt}]}]},
+                )
+            if res.status_code == 429:
+                mark_rate_limited(key, 60_000)
+                mark_rate_limited(f"{key}:{model}", 60_000)
+                continue
+            if res.status_code == 403:
+                mark_rate_limited(key, 24 * 60 * 60_000)
+                continue
+            if not res.is_success:
+                log.warning("Gemini image: HTTP %d model=%s key=...%s", res.status_code, model, key[-4:])
+                if res.status_code == 404:
+                    break  # this model isn't available at all — skip straight to the next model
+                continue
+            parts = (
+                res.json().get("candidates", [{}])[0]
+                .get("content", {}).get("parts", [])
+            )
+            for part in parts:
+                inline = part.get("inlineData") or part.get("inline_data")
+                if inline and inline.get("data"):
+                    elapsed = (time.perf_counter() - t0) * 1000
+                    log.info("Gemini image: generated in %.0fms model=%s key=...%s", elapsed, model, key[-4:])
+                    import base64 as _b64
+                    return _b64.b64decode(inline["data"])
+            log.warning("Gemini image: no image data in response model=%s key=...%s", model, key[-4:])
+        except Exception as exc:
+            log.warning("Gemini image exception model=%s key=...%s: %s", model, key[-4:], exc)
+            continue
+    log.warning("Gemini image: all key×model combinations exhausted for prompt=%r", prompt[:80])
+    return None
+
+
+async def _generate_ai_report_images(raw_images: list, max_images: int = 2) -> tuple[list[dict], list[bool]]:
+    """Turn the model's requested image PROMPTS (see AI IMAGE RULES) into real
+    generated images. Returns ({"url": "data:image/...;base64,...", "caption"})
+    entries plus a keep-mask aligned to raw_images' original order, in the same
+    shape _validate_image_selections/_remap_web_image_placeholders expect —
+    a failed generation is simply dropped (mask False), never a hard error."""
+    candidates: list[tuple[int, str, str]] = []  # (original_index, prompt, caption)
+    for i, entry in enumerate(raw_images or []):
+        if not isinstance(entry, dict):
+            continue
+        prompt = str(entry.get("prompt") or "").strip()
+        if not prompt:
+            continue
+        caption = str(entry.get("caption") or "").strip()[:160]
+        candidates.append((i, prompt, caption))
+        if len(candidates) >= max_images:
+            break
+
+    mask = [False] * len(raw_images or [])
+    if not candidates:
+        return [], mask
+
+    results = await asyncio.gather(
+        *[generate_gemini_image(prompt) for _, prompt, _ in candidates],
+        return_exceptions=True,
+    )
+
+    import base64 as _b64
+    final: list[dict] = []
+    for (orig_idx, prompt, caption), img_bytes in zip(candidates, results):
+        if isinstance(img_bytes, Exception) or not img_bytes:
+            continue
+        b64 = _b64.b64encode(img_bytes).decode("ascii")
+        final.append({"url": f"data:image/png;base64,{b64}", "caption": caption})
+        mask[orig_idx] = True
+
+    if final:
+        log.info("Report: generated %d/%d AI image(s) via Gemini", len(final), len(candidates))
+    return final, mask
+
+
 async def extract_data_from_images(question: str, file_images: list[dict]) -> str:
     """
     Use Gemini Vision to extract all text, tables, charts, and data from
@@ -2130,7 +2264,9 @@ async def generate_report(request: Request):
         "2. Use web sources to supplement and validate the file data.\n"
         "3. Follow CHART RULES exactly — reproduce actual data from the file as charts where it exists.\n"
         "4. Write the full 6-section, long-form report (target 2800-3500 words (MINIMUM 18000 characters — shorter responses will be rejected and retried)). Insert [CHART_n] inline where valid chart data exists.\n"
-        "5. Do NOT insert any [WEB_IMG_n] markers and do not return an \"images\" array — this report uses charts/graphs/tables only, never stock or decorative photos.\n"
+        "5. Data → [CHART_n] or a table, always. Only if a section is genuinely non-numeric/thematic and would "
+        "otherwise be plain text, you MAY add up to 2 AI-generated illustrative images total — see AI IMAGE RULES. "
+        "Default to zero images; most reports should return \"images\": [].\n"
         + ("6. Insert [FILE_IMG_n] references inline where you reference data visible in that extracted image/chart.\n" if embedded_file_images else "")
         + "7. Respond ONLY with the JSON object — no markdown fences, no text outside JSON."
     )
@@ -2488,9 +2624,9 @@ async def generate_report(request: Request):
         report_text = _remap_chart_placeholders(report_text, original_charts_list, valid_mask)
 
         original_images_list = parsed.get("images") or []
-        images, images_valid_mask = _validate_image_selections(original_images_list, image_candidates)
+        images, images_valid_mask = await _generate_ai_report_images(original_images_list)
         if len(images) < len(original_images_list):
-            log.info("Image validation: kept %d / %d selections", len(images), len(original_images_list))
+            log.info("AI image generation: produced %d / %d requested", len(images), len(original_images_list))
 
         # ── Deterministic safety net ──────────────────────────────────────
         # The model is asked to pick 2-4 relevant images (see IMAGE RULES),

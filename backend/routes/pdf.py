@@ -16,9 +16,11 @@ import io
 import logging
 import math
 import os
+import random
 import re
 import time
 from datetime import datetime, timezone
+from functools import lru_cache
 from pathlib import Path
 
 from fastapi import APIRouter
@@ -304,6 +306,73 @@ def _flatten_to_rgb(pil_img):
     return pil_img
 
 
+@lru_cache(maxsize=6)
+def _generate_cover_texture(w_pt: int, h_pt: int, base_rgb: tuple, scale: float = 1.5) -> bytes:
+    """
+    Procedurally generate a cracked-mosaic / crumpled-fabric canvas texture
+    (PNG bytes) for the cover background: a jittered-lattice tessellation of
+    small irregular tiles (each a slightly different shade of the brand
+    navy, separated by a darker grout line), topped with a soft tonal cloud
+    and fine grain — matches the small cellular crackle look of the brand's
+    reference cover rather than a flat rect or a smooth linen weave. Built
+    purely with PIL (already a hard dependency), cached per (size, colour)
+    since every cover in a given process run shares the same values.
+    """
+    from PIL import Image, ImageDraw, ImageFilter
+
+    W, H = max(1, int(w_pt * scale)), max(1, int(h_pt * scale))
+    base = tuple(int(round(v * 255)) for v in base_rgb)
+
+    img = Image.new("RGB", (W, H), base)
+    draw = ImageDraw.Draw(img, "RGB")
+    rnd = random.Random(11)
+
+    # 1) Jittered-lattice mosaic — adjacent tiles share exact corner points
+    # (computed once per lattice vertex, reused by all 4 tiles touching it)
+    # so the tessellation has no gaps or overlaps, just irregular cell shapes.
+    cell = max(8, round(15 * scale))
+    jitter = cell * 0.42
+    cols, rows = W // cell + 3, H // cell + 3
+    pts = {}
+    for gy in range(rows):
+        for gx in range(cols):
+            pts[(gx, gy)] = (
+                gx * cell + rnd.uniform(-jitter, jitter),
+                gy * cell + rnd.uniform(-jitter, jitter),
+            )
+    grout = tuple(max(0, v - 24) for v in base)
+    for gy in range(rows - 1):
+        for gx in range(cols - 1):
+            quad = [pts[(gx, gy)], pts[(gx + 1, gy)], pts[(gx + 1, gy + 1)], pts[(gx, gy + 1)]]
+            d = rnd.uniform(-16, 14)
+            fill = tuple(max(0, min(255, int(v + d))) for v in base)
+            draw.polygon(quad, fill=fill, outline=grout)
+
+    # 2) Soft tonal cloud — large-scale variation so the mosaic doesn't read
+    # as perfectly uniform corner to corner.
+    sw, sh = max(2, W // 10), max(2, H // 10)
+    cloud = Image.new("L", (sw, sh))
+    cloud.putdata([rnd.randint(90, 175) for _ in range(sw * sh)])
+    cloud = cloud.resize((W, H), Image.BICUBIC).filter(ImageFilter.GaussianBlur(max(1, W / 50)))
+    lighter = tuple(min(255, v + 18) for v in base)
+    tint = Image.new("RGB", (W, H), lighter)
+    img = Image.composite(tint, img, cloud.point(lambda p: int(p * 0.22)))
+
+    # 3) Fine grain speckle — per-pixel noise from os.urandom (fast, no Python loop)
+    grain = Image.frombytes("L", (W, H), os.urandom(W * H))
+    grain_rgb = Image.merge("RGB", (grain, grain, grain))
+    img = Image.blend(img, grain_rgb, 0.03)
+
+    buf = io.BytesIO()
+    img.save(buf, format="PNG")
+    return buf.getvalue()
+
+
+def _mix(c1: tuple, c2: tuple, t: float) -> tuple:
+    """Linear-blend two 0-1 RGB tuples: t=0 -> c1, t=1 -> c2."""
+    return tuple(c1[i] * (1 - t) + c2[i] * t for i in range(3))
+
+
 def detect_domain(question: str) -> str:
     q = question.lower()
     if re.search(r"\b(stock|share|market|nse|bse|sensex|nifty|sebi|ipo|equity|mutual fund|etf|trading|portfolio|invest)\b", q):
@@ -479,6 +548,17 @@ def _tokenise(md: str):
                 # Only yield if header + at least 1 real data row
                 if len(filtered) >= 2:
                     yield {"type": "table", "rows": filtered}
+            continue
+
+        elif re.match(r"^>\s?", stripped):
+            # Blockquote — one or more consecutive "> " lines collapse into a
+            # single pull-quote/insight-callout token, rendered as a distinct
+            # card (see the "quote" branch below) rather than a plain paragraph.
+            q_lines = []
+            while i < len(lines) and re.match(r"^>\s?", lines[i].rstrip()):
+                q_lines.append(re.sub(r"^>\s?", "", lines[i].rstrip()))
+                i += 1
+            yield {"type": "quote", "text": " ".join(l for l in q_lines if l).strip()}
             continue
 
         elif re.match(r"^\s*[-*+]\s+", stripped):
@@ -1119,23 +1199,16 @@ def build_pdf(report: str, title: str, question: str, summary: str,
     # ═══════════════════════════════════════════════════════════════════════════
     # PAGE 1 — TITLE PAGE (navy textured cover, "Market Currents" style)
     # ═══════════════════════════════════════════════════════════════════════════
-    # Solid navy background, full bleed
+    # Solid navy fallback fill first (belt-and-braces if texture gen fails)
     c.setFillColorRGB(*NAVY)
     c.rect(0, 0, PAGE_W, PAGE_H, fill=1, stroke=0)
 
-    # Subtle stipple texture — a sparse grid of faint dots to approximate the
-    # canvas/linen texture of the reference cover without needing an image
-    # asset. Kept very low-contrast so it reads as texture, not noise.
-    c.saveState()
-    c.setFillColorRGB(34/255, 39/255, 92/255)  # one shade lighter than NAVY
-    _tex_step = 9
-    for _tx in range(0, int(PAGE_W) + _tex_step, _tex_step):
-        for _ty in range(0, int(PAGE_H) + _tex_step, _tex_step):
-            # Skew every other row slightly so the grid doesn't read as
-            # perfectly mechanical — cheap approximation of woven texture.
-            _ox = (_tex_step / 2) if (_ty // _tex_step) % 2 else 0
-            c.circle(_tx + _ox, _ty, 0.5, fill=1, stroke=0)
-    c.restoreState()
+    # Real woven canvas/linen texture, full bleed — see _generate_cover_texture().
+    try:
+        _tex_png = _generate_cover_texture(int(PAGE_W), int(PAGE_H), NAVY)
+        c.drawImage(ImageReader(io.BytesIO(_tex_png)), 0, 0, width=PAGE_W, height=PAGE_H, mask=None)
+    except Exception as _tex_exc:
+        log.warning("PDF: cover texture generation failed, falling back to flat navy (%s)", _tex_exc)
 
     # Gold accent bar at very top (thin, matches brand rule elsewhere)
     c.setFillColorRGB(*GOLD)
@@ -1356,7 +1429,7 @@ def build_pdf(report: str, title: str, question: str, summary: str,
     # batches inline in the body so the report's data points show up as
     # scannable cards (not just buried in prose) — mirrors the reference
     # report's "RBI Policy Snapshot" style stat blocks.
-    def stat_strip(stats_subset: list, heading_label: str = ""):
+    def stat_strip(stats_subset: list, heading_label: str = "", strip_color: tuple = None):
         stats_subset = [s for s in (stats_subset or []) if s.get("value") or s.get("label")]
         if not stats_subset:
             return
@@ -1372,11 +1445,14 @@ def build_pdf(report: str, title: str, question: str, summary: str,
             c.drawString(MARGIN, y[0], heading_label.upper())
             nl(LABEL_H)
         bottom = y[0] - STRIP_H
+        _col = strip_color if strip_color is not None else accent()
+        card_tint = _mix(WHITE, _col, 0.12)
+        card_border = _mix(WHITE, _col, 0.35)
         for i, st in enumerate(stats_subset):
             cx = MARGIN + i * (card_w + gap)
-            c.setFillColorRGB(0.96, 0.97, 1.0)
+            c.setFillColorRGB(*card_tint)
             c.roundRect(cx, bottom, card_w, STRIP_H, 4, fill=1, stroke=0)
-            c.setStrokeColorRGB(0.87, 0.9, 0.95); c.setLineWidth(0.6)
+            c.setStrokeColorRGB(*card_border); c.setLineWidth(0.6)
             c.roundRect(cx, bottom, card_w, STRIP_H, 4, fill=0, stroke=1)
             val = _safe_text(fmt_inr(str(st.get("value", ""))))[:14]
             lbl = _safe_text(st.get("label", ""))[:28]
@@ -1391,8 +1467,19 @@ def build_pdf(report: str, title: str, question: str, summary: str,
                 c.drawString(cx + 8, bottom + 6, chg)
         y[0] = bottom - 14
 
-    _stats_strip_1_shown = [False]  # after Executive Summary
-    _stats_strip_2_shown = [False]  # before Conclusion
+    # ── Dynamic stat-strip cadence ───────────────────────────────────────────
+    # Rather than hardcoding "one strip after Executive Summary, one before
+    # Conclusion" (which forced every report into the same rhythm regardless
+    # of how many sections it actually had, or where its data-dense parts
+    # fell), a strip is dropped in after whichever sections turn out to be
+    # data-rich (a table, or 3+ bullets/numbered points) — up to a cap — so
+    # the cadence tracks the actual shape of the content instead of a fixed
+    # template. The first 4 keyStats are reserved for the cover; the rest
+    # are drawn down here as data-rich sections are encountered.
+    _STAT_STRIP_MAX = 3
+    _stat_strip_count = [0]
+    _stat_pool = list(key_stats[4:]) if key_stats else []
+    _sec_signal = {"bullets": 0, "tables": 0}
 
     # ── Token renderer ─────────────────────────────────────────────────────────
     tokens = list(_tokenise(report))
@@ -1544,6 +1631,36 @@ def build_pdf(report: str, title: str, question: str, summary: str,
                     import traceback as _tb
                     log.warning("WEB_IMG_%d render failed: %s\n%s", wi + 1, exc, _tb.format_exc())
             continue
+        # ── Pull-quote / insight callout (from a markdown blockquote) ───────────
+        if tp == "quote":
+            text = _strip_inline(tok.get("text", ""))
+            if not text:
+                continue
+            QLINE_H = 16
+            wlines = _wrap(c, text, "Helvetica-Oblique", 11, CW - 52)
+            box_h = len(wlines) * QLINE_H + 26
+            need(box_h + 18, current_section[0])
+            nl(12)
+            top = y[0]
+            bottom = top - box_h
+            col = accent()
+            # Warm cream card — deliberately distinct from the white chart/
+            # stat cards so a callout reads as "stop and notice this", not
+            # just another data card.
+            c.setFillColorRGB(0.975, 0.965, 0.94)
+            c.roundRect(MARGIN, bottom, CW, box_h, 5, fill=1, stroke=0)
+            c.setFillColorRGB(*col)
+            c.rect(MARGIN, bottom, 4, box_h, fill=1, stroke=0)
+            c.setFont("Times-Bold", 30)
+            c.drawString(MARGIN + 14, top - 24, "\u201C")
+            ty2 = top - 20
+            c.setFillColorRGB(*NAVY); c.setFont("Helvetica-Oblique", 11)
+            for ln in wlines:
+                ty2 -= QLINE_H
+                c.drawString(MARGIN + 42, ty2 + 4, ln)
+            y[0] = bottom - 14
+            continue
+
         if tp == "hr":
             need(12, current_section[0])
             c.setStrokeColorRGB(0.87, 0.9, 0.94); c.setLineWidth(0.6)
@@ -1564,17 +1681,34 @@ def build_pdf(report: str, title: str, question: str, summary: str,
             # avoids a duplicated/mismatched number ("SECTION 02" over "2. Title").
             text_display = re.sub(r"^\d+\.\s*", "", text)
 
-            # Drop in an infographic stat-card strip right as we LEAVE the
-            # Executive Summary (using the keyStats batch the cover page had
-            # no room for), and again right as we ENTER the Conclusion — so
-            # the report's data points surface as scannable cards at two more
-            # points beyond the cover, not just inline in prose.
-            if "executive summary" in current_section[0].lower() and not _stats_strip_1_shown[0]:
-                stat_strip(key_stats[4:8], "Key Metrics")
-                _stats_strip_1_shown[0] = True
-            if "conclusion" in text_display.lower() and not _stats_strip_2_shown[0]:
-                stat_strip(key_stats[8:12], "At a Glance")
-                _stats_strip_2_shown[0] = True
+            # Drop in an infographic stat-card strip right as we LEAVE a
+            # section that turned out data-rich (a table, or 3+ bullets/
+            # numbered points) — using the keyStats batches the cover page
+            # had no room for — so cards show up where the data actually is,
+            # not at two fixed headings every single report repeats.
+            # section_idx was already bumped above for the section we're about
+            # to render, so the section that just ENDED (the one the strip
+            # represents) is one index back — look that colour up explicitly
+            # rather than calling accent(), which would give the new section's
+            # colour instead of the one the stat card is actually reporting on.
+            _prev_accent = SECTION_ACCENTS[(section_idx[0] - 1) % len(SECTION_ACCENTS)]
+            _section_was_data_rich = _sec_signal["tables"] >= 1 or _sec_signal["bullets"] >= 3
+            if (current_section[0] and _section_was_data_rich
+                    and _stat_pool and _stat_strip_count[0] < _STAT_STRIP_MAX):
+                _take = _stat_pool[:4]
+                del _stat_pool[:4]
+                stat_strip(_take, f"{current_section[0][:44]} — Key Metrics", strip_color=_prev_accent)
+                _stat_strip_count[0] += 1
+            elif ("conclusion" in text_display.lower() and _stat_pool
+                    and _stat_strip_count[0] < _STAT_STRIP_MAX):
+                # Safety net: make sure any leftover stats still surface
+                # somewhere rather than silently disappearing.
+                _take = _stat_pool[:4]
+                del _stat_pool[:4]
+                stat_strip(_take, "At a Glance", strip_color=_prev_accent)
+                _stat_strip_count[0] += 1
+            _sec_signal["bullets"] = 0
+            _sec_signal["tables"] = 0
 
             current_section[0] = text
             # 22(overline+gap) + up to 2 title lines + 10(rule) + 14(gap) + 30(min content) = ~110
@@ -1618,8 +1752,9 @@ def build_pdf(report: str, title: str, question: str, summary: str,
             # 8(gap above) + 20(banner) + 24(nl after) + 28(min content below) = 80
             need(80, current_section[0])
             nl(10)   # visible gap before sub-section
-            # Mid-navy tinted background (visible, but lighter than H2)
-            c.setFillColorRGB(0.18, 0.22, 0.48)
+            # Section-accent-tinted background (was a fixed mid-navy block for
+            # every section) — each section now reads as visually its own.
+            c.setFillColorRGB(*_mix(accent(), NAVY, 0.35))
             c.rect(MARGIN, y[0] - 4, CW, 20, fill=1, stroke=0)
             c.setFillColorRGB(*accent())
             c.rect(MARGIN, y[0] - 4, 3, 20, fill=1, stroke=0)
@@ -1643,6 +1778,7 @@ def build_pdf(report: str, title: str, question: str, summary: str,
             if len(_sig) > 12 and _sig in _seen_line_sigs:
                 continue  # exact repeat of an earlier bullet — skip, don't say it twice
             _seen_line_sigs.add(_sig)
+            _sec_signal["bullets"] += 1
             wlines = _wrap(c, plain_text, "Helvetica", 10, CW - 16)
             for li, ln in enumerate(wlines):
                 need(15, current_section[0])
@@ -1661,6 +1797,7 @@ def build_pdf(report: str, title: str, question: str, summary: str,
             if len(_sig) > 12 and _sig in _seen_line_sigs:
                 continue  # exact repeat of an earlier finding/item — skip
             _seen_line_sigs.add(_sig)
+            _sec_signal["bullets"] += 1  # numbered items count toward "data-rich" same as bullets
             num = tok.get("num", "•")
             indent = 18
             wlines = _wrap(c, plain_text, "Helvetica", 10, CW - indent)
@@ -1710,6 +1847,7 @@ def build_pdf(report: str, title: str, question: str, summary: str,
             if _tbl_sig in _seen_table_sigs:
                 continue
             _seen_table_sigs.add(_tbl_sig)
+            _sec_signal["tables"] += 1
             col_count = max(len(r) for r in rows)
             col_w = CW / col_count
             ROW_H = 15
@@ -1717,7 +1855,7 @@ def build_pdf(report: str, title: str, question: str, summary: str,
             for ri, row in enumerate(rows):
                 need(ROW_H + 2, current_section[0])
                 if ri == 0:
-                    c.setFillColorRGB(*NAVY)
+                    c.setFillColorRGB(*_mix(accent(), NAVY, 0.4))
                     c.rect(MARGIN, y[0] - ROW_H + 4, CW, ROW_H, fill=1, stroke=0)
                     tfont, tsize, tcol = "Helvetica-Bold", 7.5, WHITE
                 elif ri % 2 == 0:
@@ -1882,6 +2020,24 @@ async def generate_pdf(request: Request):
         async def _one(i: int, info: dict):
             url = (info.get("url") or "").strip()
             if not url:
+                return
+            # AI-generated images (see report.py's _generate_ai_report_images) arrive
+            # as inline data URIs, not fetchable HTTP links — decode directly and skip
+            # the network round-trip entirely.
+            if url.startswith("data:image"):
+                try:
+                    header, _, b64_payload = url.partition(",")
+                    if not b64_payload:
+                        log.warning("AI_IMG[%d] malformed data URI", i + 1)
+                        return
+                    content_bytes = base64.b64decode(b64_payload)
+                    if len(content_bytes) > max_bytes or len(content_bytes) < 500:
+                        log.debug("AI_IMG[%d] size %d out of range", i + 1, len(content_bytes))
+                        return
+                    out[i] = {"data": b64_payload, "caption": (info.get("caption") or "")[:120]}
+                    log.info("AI_IMG[%d] decoded %d bytes from inline data URI", i + 1, len(content_bytes))
+                except Exception as exc:
+                    log.warning("AI_IMG[%d] data URI decode failed: %s", i + 1, exc)
                 return
             async with sem:
                 try:
