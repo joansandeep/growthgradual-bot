@@ -588,12 +588,22 @@ GLOBAL RULES:
 - At least 4 markdown data tables
 - 2-4 relevant images selected from the candidate list (0 acceptable only if none are genuinely relevant)
 - keyStats: 8-12 real metrics with values and change indicators. These power the infographic stat-card
-  strips rendered throughout the PDF (cover page + one strip after the Executive Summary + one before
-  the Conclusion) — treat them as the report's visual backbone, not an afterthought. Pull the single
-  most important number from EVERY major section (Introduction context stat, each 3.x subsection's
-  headline number, a Risks-adjacent stat if one exists) so the strips actually represent the whole
-  report rather than only the intro. Each keyStat needs: label (short, e.g. "NIFTY BANK"), value
-  (e.g. "+6.41%" or "23,865.75"), and change (signed, e.g. "+6.41%") where applicable.
+  strips rendered throughout the PDF (cover page, plus additional strips dropped in automatically
+  wherever a section turns out data-dense — the renderer decides placement from actual content, not
+  a fixed "after Executive Summary" spot) — treat them as the report's visual backbone, not an
+  afterthought. Pull the single most important number from EVERY major section (Introduction context
+  stat, each 3.x subsection's headline number, a Risks-adjacent stat if one exists) so the strips
+  actually represent the whole report rather than only the intro. Each keyStat needs: label (short,
+  e.g. "NIFTY BANK"), value (e.g. "+6.41%" or "23,865.75"), and change (signed, e.g. "+6.41%") where
+  applicable.
+- PULL-QUOTES / INSIGHT CALLOUTS: use a markdown blockquote (a line starting with "> ") 2-4 times
+  across the report — never zero, never on every subsection — to call out the single sharpest,
+  most consequential insight from the section it sits in. This renders as a distinct highlighted
+  callout card, not a normal paragraph, so it must earn that treatment: one tight, punchy sentence
+  (not a data recap you already put in a bullet or table — a "so what", an implication, a contrarian
+  read, or the one line a reader would remember). Example: "> Valuations near 24x forward earnings
+  leave little room for disappointment if Q2 guidance disappoints." Place them where the section's
+  argument actually turns on that insight, not evenly spaced for the sake of it.
 - STRUCTURE ADAPTS TO THE TOPIC — THERE IS NO ONE FIXED SHAPE: the section skeleton above (Introduction,
   Executive Summary, Data Analysis, Key Findings, Risks, Conclusion, Data Sources) is a minimum spine,
   not a rigid template to fill identically every time. Adapt it to what was actually asked and what the
