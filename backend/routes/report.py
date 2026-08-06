@@ -228,7 +228,7 @@ You MUST respond with valid JSON only — no markdown fences, no preamble, no te
 Respond with EXACTLY this shape:
 {
   "title": "<concise NOUN-PHRASE report title, max 12 words. Examples: 'Top Banking Stocks India 2026', 'Indian Mutual Fund SIP Returns Analysis', 'HDFC vs ICICI Bank Comparison', 'Nifty 50 Market Outlook — June 2026'. STRICT RULES: NEVER start with 'So', 'You', 'I', 'Let's', 'Here', 'Based', 'Looking', 'Understanding', 'A look at', 'An analysis of', or any verb/pronoun. NEVER start with 'The' followed by a verb — e.g. BAD: 'The Nifty outlook today is mixed, with some analysts predicting...' (full sentence starting with The) → GOOD: 'Nifty 50 Outlook — Mixed Signals Amid Volatility'. NEVER write a full sentence — this includes sentences that don't start with one of those words too, e.g. BAD: 'The Minimum Investment Amounts For These Top-Performing SIPs Are As Follows' → GOOD: 'Top-Performing SIP Funds — Minimum Investment Requirements'. Never end a title with a colon, 'as follows', or '...' — those signal an incomplete sentence, not a heading. ALWAYS write a noun phrase — topic first, qualifiers after.>",
-  "report": "<full markdown report — target 2800-3500 words (MINIMUM 18000 characters — shorter responses will be rejected and retried), structured and data-rich. This is a LONG-FORM report (aim for ~10-12 printed pages once charts/tables/images are laid in) — see REPORT STRUCTURE below for the section list that gets you there. Add DEPTH, not invented data: more context, more explanation of mechanisms and causes, more comparison and discussion of what the numbers mean — never pad with filler sentences or numbers not in the sources.>",
+  "report": "<full markdown report — target 3500-4500 words (MINIMUM 22000 characters — shorter responses will be rejected and retried), structured and data-rich. This is a LONG-FORM report (aim for ~12-15 printed pages once charts/tables/images are laid in) — see REPORT STRUCTURE below for the section list that gets you there. Add DEPTH, not invented data: more context, more explanation of mechanisms and causes, more comparison and discussion of what the numbers mean — never pad with filler sentences or numbers not in the sources.>",
   "charts": [...],
   "images": [{ "prompt": "<AI image-generation prompt — see AI IMAGE RULES>", "caption": "<short caption>" }, ...] (0-2 items, [] if none needed),
   "keyStats": [{ "label": "<short label>", "value": "<value string>", "change": "<+/- % or empty string>" }],
@@ -417,7 +417,7 @@ STEP 3 — Place [CHART_n] inline in the report markdown right after the paragra
   paragraph (3+ sentences) or a paragraph + bullet list precedes the chart. This prevents blank whitespace
   gaps in the PDF.
 
-STEP 4 — Aim for 5-8 charts/tables per report when data supports it — this report runs long
+STEP 4 — Aim for 7-10 charts/tables per report when data supports it — this report runs long
   (10-12 pages), and visuals are what fill that length well rather than walls of text. Quality
   over quantity, but lean toward MORE high-level visuals rather than fewer when the sources have
   the numbers for it. Vary the shapes (bar, stacked bar, line, pie) rather than repeating the same
@@ -507,7 +507,7 @@ REQUIRED ANCHORS (always present, but shape freely within them):
      This is the ONLY sources listing — no second copy anywhere else in the report.
 
 EVERYTHING BETWEEN Executive Summary and Risks & Considerations IS YOURS TO DESIGN:
-  → Pick 2-5 body sections (with subsections where useful) that map onto the REAL angles this
+  → Pick 3-6 body sections (with subsections where useful) that map onto the REAL angles this
     question and these sources support. Name them for the actual topic — e.g. a single-stock
     question might use "Financial Performance", "Valuation vs Peers", "Analyst Views"; a sector
     question might use "Sub-Sector Breakdown", "Policy Backdrop", "Key Players"; a market-moves
@@ -612,7 +612,7 @@ GLOBAL RULES:
   question with less tabular material, more is correct for a data-rich one.
 - Images: 0-2 AI-generated illustrative images (see AI IMAGE RULES) — 0 is the normal, expected
   outcome for most reports; only add one where a section has no chart/table option at all.
-- keyStats: 8-12 real metrics with values and change indicators. These power the infographic stat-card
+- keyStats: 10-14 real metrics with values and change indicators. These power the infographic stat-card
   strips rendered throughout the PDF (cover page, plus additional strips dropped in automatically
   wherever a section turns out data-dense — the renderer decides placement from actual content, not
   a fixed "after Executive Summary" spot) — treat them as the report's visual backbone, not an
@@ -629,8 +629,8 @@ GLOBAL RULES:
   read, or the one line a reader would remember). Example: "> Valuations near 24x forward earnings
   leave little room for disappointment if Q2 guidance disappoints." Place them where the section's
   argument actually turns on that insight, not evenly spaced for the sake of it.
-- LENGTH TARGET: The "report" field should land in the ~18,000-30,000 character range. Responses
-  shorter than 18,000 characters will be REJECTED and regenerated, so treat that floor as real — but
+- LENGTH TARGET: The "report" field should land in the ~22,000-38,000 character range. Responses
+  shorter than 22,000 characters will be REJECTED and regenerated, so treat that floor as real — but
   hit it through MORE structured content (more table rows, more chart series, more distinct bullets,
   another genuinely-supported section) rather than through longer paragraphs. A report that hits the
   floor with dense tables/bullets and lean prose is BETTER than one that hits it with long paragraphs.
@@ -1437,9 +1437,9 @@ async def call_groq(user_prompt: str) -> str:
             if text:
                 elapsed = (time.perf_counter() - t0) * 1000
                 log.info("Groq: report generated in %.0fms (%d chars)", elapsed, len(text))
-                if len(text) < 18_000:
+                if len(text) < 22_000:
                     log.warning(
-                        "Groq: report too short (%d chars < 18000) — skipping, falling through to Gemini",
+                        "Groq: report too short (%d chars < 22000) — skipping, falling through to Gemini",
                         len(text),
                     )
                     continue
@@ -1518,7 +1518,14 @@ async def call_gemini(user_prompt: str) -> tuple[str, str]:
         for key in _key_order(model):
             attempts.append((key, model))
 
+    # Models confirmed unavailable (e.g. 404) during this call — once a model
+    # is dead, skip its remaining key attempts without aborting the rest of
+    # the queue (other models must still get their turn).
+    dead_models: set[str] = set()
+
     for key, model in attempts:
+        if model in dead_models:
+            continue
         if is_rate_limited(f"{key}:{model}"):
             continue
         try:
@@ -1568,9 +1575,10 @@ async def call_gemini(user_prompt: str) -> tuple[str, str]:
             if not res.is_success:
                 log.warning("Gemini HTTP %d on model=%s key=...%s", res.status_code, model, key[-4:])
                 if res.status_code == 404:
-                    # Model doesn't exist — no point trying other keys for this model
+                    # Model doesn't exist — no point trying other keys for this model,
+                    # but the remaining models still deserve their attempts.
                     log.warning("Gemini 404 — model=%s is deprecated/unavailable, skipping all keys for it", model)
-                    break
+                    dead_models.add(model)
                 continue
             text = res.json().get("candidates", [{}])[0].get("content", {}).get("parts", [{}])[0].get("text", "")
             if text:
@@ -1591,14 +1599,14 @@ async def call_gemini(user_prompt: str) -> tuple[str, str]:
                         model, key[-4:], len(text),
                     )
                     continue
-                if len(text) < 18_000:
+                if len(text) < 22_000:
                     log.warning(
-                        "Gemini: report too short (%d chars < 18000) — model=%s key=...%s — retrying next slot",
+                        "Gemini: report too short (%d chars < 22000) — model=%s key=...%s — retrying next slot",
                         len(text), model, key[-4:],
                     )
                     continue
-                # Reject runaway-length output. Target is ~2800-3500 words
-                # (roughly 18K-30K chars incl. markdown/tables). Output has
+                # Reject runaway-length output. Target is ~3500-4500 words
+                # (roughly 22K-38K chars incl. markdown/tables). Output has
                 # been observed to balloon to 400K+ chars when the model,
                 # chasing the length mandate, exhausts real content and
                 # starts repeating/echoing text (including its own
@@ -1671,7 +1679,12 @@ async def generate_gemini_image(prompt: str) -> bytes | None:
         for key in round_robin(rest_keys)
         if not is_rate_limited(key) and not is_rate_limited(f"{key}:{model}")
     ]
+    # Models confirmed unavailable (404) — skip their remaining key attempts
+    # without aborting attempts for the other model(s) still in the queue.
+    dead_models: set[str] = set()
     for key, model in attempts:
+        if model in dead_models:
+            continue
         try:
             t0 = time.perf_counter()
             async with httpx.AsyncClient(timeout=60) as client:
@@ -1689,7 +1702,7 @@ async def generate_gemini_image(prompt: str) -> bytes | None:
             if not res.is_success:
                 log.warning("Gemini image: HTTP %d model=%s key=...%s", res.status_code, model, key[-4:])
                 if res.status_code == 404:
-                    break  # this model isn't available at all — skip straight to the next model
+                    dead_models.add(model)  # this model isn't available at all — skip straight to the next model
                 continue
             parts = (
                 res.json().get("candidates", [{}])[0]
@@ -2113,6 +2126,16 @@ async def generate_report(request: Request):
             except Exception as e:
                 log.warning("Report: historical index fetch failed, continuing without it: %s", e)
 
+    # Fetch real page content (not just Tavily's snippet) for as many sources
+    # as we reasonably can — this is where the actual chartable numbers live.
+    # Tavily's fan-out routinely returns ~30 sources; we used to discard
+    # everything past 20 and only real-fetch the first 15 of those. Raised to
+    # use 25 sources and real-fetch all of them — the model's context window
+    # has plenty of headroom, and more real page text = more genuine data
+    # points to chart/table instead of the same handful of numbers reused.
+    ENRICH_SOURCE_COUNT = 25
+    ENRICH_FETCH_CHARS = 3000
+
     async def enrich(src: dict, idx: int) -> dict:
         if src.get("url", "").startswith("internal://"):
             return src
@@ -2122,22 +2145,23 @@ async def generate_report(request: Request):
             src = {**src, "fullContent": ""}
         if len(src.get("fullContent", "")) > 600:
             return src
-        if idx < 15:
-            fetched = await fetch_page_content(src["url"], 1500)
-            if _looks_like_ai_overview(fetched):
-                return src
-            if len(fetched) > len(src.get("snippet", "")):
-                log.debug("Enriched source %d: %s (+%d chars)", idx + 1, src.get("title", "")[:40], len(fetched))
-                return {**src, "fullContent": fetched}
+        fetched = await fetch_page_content(src["url"], ENRICH_FETCH_CHARS)
+        if _looks_like_ai_overview(fetched):
+            return src
+        if len(fetched) > len(src.get("snippet", "")):
+            log.debug("Enriched source %d: %s (+%d chars)", idx + 1, src.get("title", "")[:40], len(fetched))
+            return {**src, "fullContent": fetched}
         return src
 
     log.info("Report: enriching sources...")
-    enriched = list(await asyncio.gather(*[enrich(s, i) for i, s in enumerate(sources[:20])]))
+    enriched = list(await asyncio.gather(
+        *[enrich(s, i) for i, s in enumerate(sources[:ENRICH_SOURCE_COUNT])]
+    ))
     log.info("Report: enrichment done (%d sources ready)", len(enriched))
 
     src_text = "\n\n---\n\n".join(
         f"- **{s['title']}**\nSource: {s['url']}\n"
-        + (s["fullContent"][:1500] if len(s.get("fullContent", "")) > len(s.get("snippet", "")) else s.get("snippet", "")[:800])
+        + (s["fullContent"][:ENRICH_FETCH_CHARS] if len(s.get("fullContent", "")) > len(s.get("snippet", "")) else s.get("snippet", "")[:1000])
         for s in enriched
     )
 
@@ -2263,7 +2287,7 @@ async def generate_report(request: Request):
         "1. The uploaded file content (if provided) is your PRIMARY source — extract ALL numbers, tables, charts, and statistics from it first.\n"
         "2. Use web sources to supplement and validate the file data.\n"
         "3. Follow CHART RULES exactly — reproduce actual data from the file as charts where it exists.\n"
-        "4. Write the full 6-section, long-form report (target 2800-3500 words (MINIMUM 18000 characters — shorter responses will be rejected and retried)). Insert [CHART_n] inline where valid chart data exists.\n"
+        "4. Write the full 6-section, long-form report (target 3500-4500 words (MINIMUM 22000 characters — shorter responses will be rejected and retried)). Insert [CHART_n] inline where valid chart data exists.\n"
         "5. Data → [CHART_n] or a table, always. Only if a section is genuinely non-numeric/thematic and would "
         "otherwise be plain text, you MAY add up to 2 AI-generated illustrative images total — see AI IMAGE RULES. "
         "Default to zero images; most reports should return \"images\": [].\n"
