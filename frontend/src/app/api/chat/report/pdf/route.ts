@@ -45,10 +45,22 @@ export async function POST(req: NextRequest) {
   }
 
   if (!upstream.ok) {
-    const err = await upstream.text();
-    log.error('PDF generation failed upstream: HTTP %d — %s', upstream.status, err.slice(0, 120));
+    const raw = await upstream.text();
+    // The backend already returns a JSON body like {"error": "..."}. Re-wrapping
+    // that raw text as { error: raw } here double-encodes it into
+    // {"error":"{\"error\":\"...\"}"} — which is what rendered as the garbled
+    // nested-JSON blob on screen. Parse it through if it's already JSON;
+    // only fall back to wrapping when the upstream body genuinely isn't JSON.
+    let payload: unknown;
+    try {
+      const parsed = JSON.parse(raw);
+      payload = (parsed && typeof parsed === 'object') ? parsed : { error: raw || `Upstream error (${upstream.status})` };
+    } catch {
+      payload = { error: raw || `Upstream error (${upstream.status})` };
+    }
+    log.error('PDF generation failed upstream: HTTP %d — %s', upstream.status, raw.slice(0, 120));
     done(upstream.status, 'upstream error');
-    return NextResponse.json({ error: err }, { status: upstream.status });
+    return NextResponse.json(payload, { status: upstream.status });
   }
 
   const pdfBuffer = await upstream.arrayBuffer();

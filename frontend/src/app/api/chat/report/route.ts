@@ -21,11 +21,24 @@ export async function POST(req: NextRequest) {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body,
+      // Bound this explicitly to just under maxDuration so we always return
+      // a clean JSON error in-band. Without this, a slow upstream (Gemini
+      // retry cascade running past the platform's own gateway/function
+      // timeout) gets its connection killed uncleanly — the fetch never
+      // resolves through our try/catch, and the caller can end up treating
+      // whatever partial/empty response comes back as a "successful" report.
+      signal: AbortSignal.timeout(170_000),
     });
   } catch (err) {
-    log.error('Backend unreachable: %s', err);
-    done(502, 'backend unreachable');
-    return NextResponse.json({ error: 'Backend unavailable' }, { status: 502 });
+    const timedOut = err instanceof Error && (err.name === 'TimeoutError' || err.name === 'AbortError');
+    log.error('Backend unreachable or timed out: %s', err);
+    done(timedOut ? 504 : 502, timedOut ? 'backend timeout' : 'backend unreachable');
+    return NextResponse.json(
+      { error: timedOut
+        ? 'Report generation took too long and timed out. Please try again — a more specific question can help.'
+        : 'Backend unavailable' },
+      { status: timedOut ? 504 : 502 },
+    );
   }
 
   // Guard: upstream may return non-JSON (e.g. "Too Many Requests" plain text on 429)

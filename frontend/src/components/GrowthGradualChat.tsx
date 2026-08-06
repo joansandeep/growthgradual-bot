@@ -21,7 +21,7 @@ interface ReportData { report: string; title?: string; charts: ChartSpec[]; imag
 interface Message {
   id: string; role: 'user' | 'assistant'; text: string; ts: number;
   sources?: Source[]; searchPerformed?: boolean; queryType?: string;
-  reportData?: ReportData; reportLoading?: boolean;
+  reportData?: ReportData; reportLoading?: boolean; reportError?: string;
   inlineCharts?: ChartSpec[]; wantsVisual?: boolean;
   // Report is no longer auto-generated — these carry what's needed so the
   // "Generate Report" button can build the request whenever the user taps it.
@@ -699,13 +699,16 @@ function ReportPanel({ msg, question, hasPriorContext, onGenerate }: { msg: Mess
 
   const rd = msg.reportData;
   const loading = msg.reportLoading ?? false;
-  const done = !!rd;
+  const error = msg.reportError;
+  // done requires actual report text, not just a resolved reportData object —
+  // an object with report: '' must never be treated as a completed report.
+  const done = !!rd && !!rd.report && rd.report.trim().length > 0;
   const eligible = msg.reportEligible ?? false;
 
-  if (!loading && !done && !eligible) return null;
+  if (!loading && !done && !eligible && !error) return null;
 
   const downloadPdf = async () => {
-    if (!rd || pdfLoading) return;
+    if (!rd || !rd.report || !rd.report.trim() || pdfLoading) return;
     setPdfLoading(true);
     try {
       const res = await fetch('/api/chat/report/pdf', {
@@ -810,10 +813,16 @@ function ReportPanel({ msg, question, hasPriorContext, onGenerate }: { msg: Mess
               <span className="report-context-label">Include previous context</span>
             </label>
           )}
+          {!loading && !done && error && (
+            <div style={{ display:'flex', alignItems:'center', gap:6, fontSize:11, color:'#dc2626', fontFamily:"'DM Sans',sans-serif" }}>
+              <span style={{ fontSize:13 }}>⚠️</span>
+              <span>{error}</span>
+            </div>
+          )}
           {!loading && !done && eligible && (
             <button className="report-btn" onClick={() => onGenerate(hasPriorContext ? includeContext : false)}>
               <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="12" y1="11" x2="12" y2="17"/><line x1="9" y1="14" x2="15" y2="14"/></svg>
-              Generate Report
+              {error ? 'Retry Report' : 'Generate Report'}
             </button>
           )}
           {done && (
@@ -1936,13 +1945,34 @@ export default function GrowthGradualChat() {
         }),
       });
     })
-      .then(r => r.json())
-      .then(data => {
+      .then(async r => {
+        let data: any = null;
+        try { data = await r.json(); } catch { /* non-JSON body — data stays null */ }
+
+        // A response is only treated as a real report if it came back OK
+        // AND actually contains non-empty report text. Previously this
+        // branch was unconditional — an upstream timeout/502/error body
+        // (e.g. { error: "..." } from the proxy, or a killed connection
+        // after Gemini retries ran long) was still written into reportData
+        // as report: '', which silently marked the report "done" and
+        // enabled Download PDF with nothing to send — that's what produced
+        // the backend's "No report content" 400.
+        const reportText = typeof data?.report === 'string' ? data.report : '';
+        if (!r.ok || !reportText.trim()) {
+          const message = (data && typeof data.error === 'string' && data.error)
+            || `Report generation failed (HTTP ${r.status}). Please try again.`;
+          setMessages(prev => prev.map(m => m.id === botMsgId
+            ? { ...m, reportLoading: false, reportError: message }
+            : m));
+          return;
+        }
+
         setMessages(prev => prev.map(m => m.id === botMsgId ? {
           ...m,
           reportLoading: false,
+          reportError: undefined,
           reportData: {
-            report:     data.report     ?? '',
+            report:     reportText,
             title:      data.title      ?? '',
             charts:     data.charts     ?? [],
             images:     data.images     ?? [],
@@ -1953,8 +1983,11 @@ export default function GrowthGradualChat() {
           },
         } : m));
       })
-      .catch(() => {
-        setMessages(prev => prev.map(m => m.id === botMsgId ? { ...m, reportLoading: false } : m));
+      .catch((e) => {
+        console.error('[generateReport]', e);
+        setMessages(prev => prev.map(m => m.id === botMsgId
+          ? { ...m, reportLoading: false, reportError: 'Network error — could not reach server. Please try again.' }
+          : m));
       });
   }, [ragIndexed]);
 
@@ -2781,7 +2814,7 @@ export default function GrowthGradualChat() {
                           );
                         })()}
 
-                        {!isUser && (msg.reportEligible || msg.reportLoading || msg.reportData) && (
+                        {!isUser && (msg.reportEligible || msg.reportLoading || msg.reportData || msg.reportError) && (
                           <ReportPanel
                             msg={msg}
                             question={msg.reportQuestion ?? msg.text}
