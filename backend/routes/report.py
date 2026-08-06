@@ -1473,6 +1473,21 @@ async def call_groq(user_prompt: str) -> str:
 # billing is enabled on a project, ideally as a first-choice model rather
 # than folded back into this fallback order.
 # ---------------------------------------------------------------------------
+# ── Gemini key format filter ────────────────────────────────────────────────
+# Google has been migrating Gemini API keys from the legacy "AIzaSy..."
+# Standard-key format to a new "AQ.Ab..." Auth-key format since June 2026.
+# New keys issued in AI Studio now come out as AQ. by default; unrestricted
+# AIza Standard keys already stopped working as of June 19, 2026, and ALL
+# AIza keys — restricted or not — are cut off entirely from September 2026.
+# Both formats authenticate the same way against this same REST endpoint
+# (generativelanguage.googleapis.com) with the same ?key= query param, so
+# both are accepted here. What must still be excluded is gen-lang-client-*
+# keys, which are Vertex AI / Google Cloud service-account-style keys that
+# need OAuth and return 400 Bad Request against this REST endpoint.
+def _is_rest_api_key(key: str) -> bool:
+    return key.startswith("AIzaSy") or key.startswith("AQ.")
+
+
 GEMINI_MODELS = [
     "gemini-2.5-flash",        # 65 536 output tokens — fast + high quality
     "gemini-3.5-flash",        # 65 536 output tokens — next-gen flash
@@ -1496,11 +1511,12 @@ async def call_gemini(user_prompt: str) -> tuple[str, str]:
         log.warning("Gemini: no keys configured for report generation")
         return "", ""
 
-    # Filter to AIzaSy* keys only — gen-lang-client-* are Vertex AI keys that
-    # return 400 Bad Request on generativelanguage.googleapis.com REST API.
-    rest_keys = [k for k in keys if k.startswith("AIzaSy")]
+    # Filter to keys usable against this REST endpoint — see _is_rest_api_key
+    # for why both AIzaSy (legacy) and AQ. (current) formats are accepted,
+    # while gen-lang-client-* (Vertex AI) keys are excluded.
+    rest_keys = [k for k in keys if _is_rest_api_key(k)]
     if not rest_keys:
-        log.warning("Gemini: no AIzaSy* keys available — all keys are gen-lang-client type")
+        log.warning("Gemini: no AIzaSy*/AQ.* keys available — all keys are gen-lang-client type")
         return "", ""
 
     log.info("Gemini: attempting report generation with %d key(s), %d models", len(rest_keys), len(GEMINI_MODELS))
@@ -1668,7 +1684,7 @@ async def generate_gemini_image(prompt: str) -> bytes | None:
     image-generation models. Returns raw image bytes, or None on failure —
     callers must treat a miss as "skip this image", never as a hard error."""
     keys = get_gemini_keys()
-    rest_keys = [k for k in keys if k.startswith("AIzaSy")]
+    rest_keys = [k for k in keys if _is_rest_api_key(k)]
     if not rest_keys:
         log.warning("Gemini image: no usable API keys configured")
         return None
@@ -1804,10 +1820,10 @@ async def extract_data_from_images(question: str, file_images: list[dict]) -> st
 
     # Filter out gen-lang-client-* keys — these are Vertex AI / Google Cloud keys
     # that return 400 Bad Request on the generativelanguage.googleapis.com REST endpoint.
-    # Only AIzaSy* keys work with the standard REST API used here.
-    vision_keys = [k for k in keys if k.startswith("AIzaSy")]
+    # Both AIzaSy* (legacy) and AQ.* (current) key formats work with the REST API used here.
+    vision_keys = [k for k in keys if _is_rest_api_key(k)]
     if not vision_keys:
-        log.warning("extract_data_from_images: no AIzaSy* Gemini keys available for vision")
+        log.warning("extract_data_from_images: no AIzaSy*/AQ.* Gemini keys available for vision")
         return ""
 
     available_keys = [k for k in vision_keys if not is_rate_limited(k)]
