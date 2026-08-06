@@ -1437,12 +1437,16 @@ async def call_groq(user_prompt: str) -> str:
             if text:
                 elapsed = (time.perf_counter() - t0) * 1000
                 log.info("Groq: report generated in %.0fms (%d chars)", elapsed, len(text))
-                if len(text) < 22_000:
-                    log.warning(
-                        "Groq: report too short (%d chars < 22000) — skipping, falling through to Gemini",
-                        len(text),
+                if len(text) < MIN_REPORT_CHARS:
+                    # Length is no longer a retry trigger — a short report reflects
+                    # thin source data, not a bad generation (see report.py notes
+                    # on call_gemini for the full rationale). Retrying here just
+                    # burns API keys for the same shallow sourcing. Accept as-is
+                    # and log the shortfall for visibility only.
+                    log.info(
+                        "Groq: report is %d chars (< %d target) — accepting as-is, no retry",
+                        len(text), MIN_REPORT_CHARS,
                     )
-                    continue
                 return text
         except Exception as exc:
             log.warning("Groq exception on key ...%s: %s", key[-4:], exc)
@@ -1495,6 +1499,24 @@ GEMINI_MODELS = [
     "gemini-2.5-flash-lite",   # 32 768 output tokens — last resort (smallest window)
 ]
 
+# Minimum acceptable report length — see the "target 3500-4500 words" mandate
+# in SYSTEM_PROMPT. Kept as one constant so Groq/Gemini paths (and any future
+# provider) enforce the same floor.
+MIN_REPORT_CHARS = 22_000
+
+# Hard wall-clock budget for the ENTIRE call_gemini() attempt loop, across all
+# keys and models combined. Without this, a Gemini outage (mass 503s) or a
+# string of "too short" rejections walks every key×model combination
+# sequentially — with 22 keys × 4 models × up to ~30s per attempt, that's
+# tens of minutes, which starves the request well past any reasonable client
+# or proxy timeout and leaves the user watching a spinner indefinitely.
+# Past this budget we stop trying and fall back to the best candidate seen.
+GEMINI_TIME_BUDGET_SECONDS = 75
+# Cap on keys tried per model before moving on — with many keys configured,
+# exhausting all of them against one struggling/overloaded model is rarely
+# worth it; better to give the remaining models their turn sooner.
+GEMINI_MAX_KEYS_PER_MODEL = 6
+
 # Per-model max output tokens — used to set the right ceiling per attempt.
 # Setting this too high on flash-lite causes it to hang; match the actual model limit.
 _GEMINI_MAX_OUTPUT = {
@@ -1531,7 +1553,8 @@ async def call_gemini(user_prompt: str) -> tuple[str, str]:
 
     attempts = []
     for model in GEMINI_MODELS:
-        for key in _key_order(model):
+        # Cap keys tried per model — see GEMINI_MAX_KEYS_PER_MODEL above.
+        for key in _key_order(model)[:GEMINI_MAX_KEYS_PER_MODEL]:
             attempts.append((key, model))
 
     # Models confirmed unavailable (e.g. 404) during this call — once a model
@@ -1539,7 +1562,15 @@ async def call_gemini(user_prompt: str) -> tuple[str, str]:
     # the queue (other models must still get their turn).
     dead_models: set[str] = set()
 
+    loop_start = time.perf_counter()
+
     for key, model in attempts:
+        if time.perf_counter() - loop_start > GEMINI_TIME_BUDGET_SECONDS:
+            log.warning(
+                "Gemini: time budget (%ds) exhausted — stopping attempt loop early",
+                GEMINI_TIME_BUDGET_SECONDS,
+            )
+            break
         if model in dead_models:
             continue
         if is_rate_limited(f"{key}:{model}"):
@@ -1615,12 +1646,19 @@ async def call_gemini(user_prompt: str) -> tuple[str, str]:
                         model, key[-4:], len(text),
                     )
                     continue
-                if len(text) < 22_000:
-                    log.warning(
-                        "Gemini: report too short (%d chars < 22000) — model=%s key=...%s — retrying next slot",
-                        len(text), model, key[-4:],
+                if len(text) < MIN_REPORT_CHARS:
+                    # Length is no longer a retry trigger (see note by
+                    # MIN_REPORT_CHARS) — short output usually means thin
+                    # source data, not a bad generation. Retrying here just
+                    # burns keys re-asking the same shallow sources the same
+                    # question. Log for visibility and fall through to the
+                    # structural checks below (runaway/legacy-heading/exec
+                    # summary) — those still guard against genuinely broken
+                    # output; only the character-count floor is relaxed.
+                    log.info(
+                        "Gemini: report is %d chars (< %d target) — accepting as-is, no retry",
+                        len(text), MIN_REPORT_CHARS,
                     )
-                    continue
                 # Reject runaway-length output. Target is ~3500-4500 words
                 # (roughly 22K-38K chars incl. markdown/tables). Output has
                 # been observed to balloon to 400K+ chars when the model,
@@ -1666,7 +1704,6 @@ async def call_gemini(user_prompt: str) -> tuple[str, str]:
 
     log.error("Gemini: all key×model combinations exhausted")
     return "", ""
-
 
 # ── AI image generation (Gemini) ────────────────────────────────────────────
 # Used only for the rare, optional editorial/illustrative images described in
