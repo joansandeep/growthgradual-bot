@@ -669,6 +669,14 @@ def _axis_titles(c, spec, x0, y0, PL, PB, pw, ph):
     unit = _safe_text(spec.get("unit", ""))
     if not y_label and unit:
         y_label = unit
+    # Drop an xLabel that just repeats the chart's own title/series name
+    # (e.g. title "S&P 500 Session Volatility" + xLabel "S&P 500") — it adds
+    # no information and, on charts with only a couple of category ticks,
+    # its centred position can land right on top of the last (rotated) tick
+    # label instead of clear of it.
+    title = _safe_text((spec.get("title") or "").strip()).lower()
+    if x_label and title and (x_label.lower() in title or title in x_label.lower()):
+        x_label = ""
     if x_label:
         c.setFillColorRGB(*GREY); c.setFont("Helvetica-Oblique", 6.5)
         c.drawCentredString(x0 + PL + pw / 2, y0 + 2, x_label[:40])
@@ -1483,7 +1491,8 @@ def build_pdf(report: str, title: str, question: str, summary: str,
             c.setFillColorRGB(*NAVY); c.setFont("Helvetica-Bold", 7)
             c.drawCentredString(tx + 7, toc_y + 1, str(i + 1))
             c.setFillColorRGB(0.85, 0.87, 0.97); c.setFont("Helvetica", 8)
-            c.drawString(tx + 18, toc_y, heading[:40])
+            max_tw = col_w2 - 18 - 4
+            c.drawString(tx + 18, toc_y, _fit_cell(c, heading, "Helvetica", 8, max_tw))
             col_idx += 1
             if col_idx >= 2:
                 col_idx = 0
@@ -1601,6 +1610,38 @@ def build_pdf(report: str, title: str, question: str, summary: str,
     _stat_strip_count = [0]
     _stat_pool = list(key_stats[4:]) if key_stats else []
     _sec_signal = {"bullets": 0, "tables": 0}
+    _sec_text_buf = [""]   # plain text seen so far in the CURRENT section, for stat relevance matching
+
+    _STOPWORDS = {"the", "and", "for", "with", "from", "this", "that", "yield",
+                  "price", "change", "return", "value", "level", "close", "rate"}
+
+    def _pick_relevant_stats(pool: list, section_text: str, k: int = 4) -> list:
+        """Pull up to k stats out of `pool` (in place) that are actually about
+        this section's topic, instead of just taking whichever 4 happen to be
+        next in the list. A stat like "Marqeta 5-Yr Return" showing up under
+        an "Energy Markets" section (because it was simply next in line) reads
+        as a mistake — this scores each candidate by whether its label's
+        distinctive words appear anywhere in the section's own text, and only
+        falls back to FIFO order if nothing in the pool actually matches."""
+        if not pool:
+            return []
+        text_lower = section_text.lower()
+        scored = []
+        for st in pool:
+            label = str(st.get("label", "")).lower()
+            words = [w.strip(".,()%") for w in re.split(r"\s+", label) if len(w.strip(".,()%")) >= 4]
+            words = [w for w in words if w not in _STOPWORDS]
+            score = sum(1 for w in words if w in text_lower)
+            scored.append((score, st))
+        matched = [st for score, st in scored if score > 0]
+        if not matched:
+            take = pool[:k]
+            del pool[:k]
+            return take
+        take = matched[:k]
+        for st in take:
+            pool.remove(st)
+        return take
 
     # ── Token renderer ─────────────────────────────────────────────────────────
     tokens = list(_tokenise(report))
@@ -1621,6 +1662,7 @@ def build_pdf(report: str, title: str, question: str, summary: str,
             chart_idx[0] = ci + 1
             if ci < len(charts) and _is_valid_chart(charts[ci]):
                 ch = charts[ci]
+                _sec_text_buf[0] += " " + str(ch.get("title", "")).lower()
                 GAP_ABOVE = 8      # breathing room between previous content and this card
 
                 # When a Datawrapper PNG is available the title and axes are baked
@@ -1816,10 +1858,10 @@ def build_pdf(report: str, title: str, question: str, summary: str,
             _section_was_data_rich = _sec_signal["tables"] >= 1 or _sec_signal["bullets"] >= 3
             if (current_section[0] and _section_was_data_rich
                     and _stat_pool and _stat_strip_count[0] < _STAT_STRIP_MAX):
-                _take = _stat_pool[:4]
-                del _stat_pool[:4]
-                stat_strip(_take, f"{current_section[0][:44]} — Key Metrics", strip_color=_prev_accent)
-                _stat_strip_count[0] += 1
+                _take = _pick_relevant_stats(_stat_pool, _sec_text_buf[0])
+                if _take:
+                    stat_strip(_take, f"{current_section[0][:44]} — Key Metrics", strip_color=_prev_accent)
+                    _stat_strip_count[0] += 1
             elif ("conclusion" in text_display.lower() and _stat_pool
                     and _stat_strip_count[0] < _STAT_STRIP_MAX):
                 # Safety net: make sure any leftover stats still surface
@@ -1830,6 +1872,7 @@ def build_pdf(report: str, title: str, question: str, summary: str,
                 _stat_strip_count[0] += 1
             _sec_signal["bullets"] = 0
             _sec_signal["tables"] = 0
+            _sec_text_buf[0] = ""
 
             current_section[0] = text
             # 22(overline+gap) + up to 2 title lines + 10(rule) + 14(gap) + 30(min content) = ~110
@@ -1900,6 +1943,7 @@ def build_pdf(report: str, title: str, question: str, summary: str,
                 continue  # exact repeat of an earlier bullet — skip, don't say it twice
             _seen_line_sigs.add(_sig)
             _sec_signal["bullets"] += 1
+            _sec_text_buf[0] += " " + plain_text.lower()
             wlines = _wrap(c, plain_text, "Helvetica", 10, CW - 16)
             for li, ln in enumerate(wlines):
                 need(15, current_section[0])
@@ -1919,6 +1963,7 @@ def build_pdf(report: str, title: str, question: str, summary: str,
                 continue  # exact repeat of an earlier finding/item — skip
             _seen_line_sigs.add(_sig)
             _sec_signal["bullets"] += 1  # numbered items count toward "data-rich" same as bullets
+            _sec_text_buf[0] += " " + plain_text.lower()
             num = tok.get("num", "•")
             indent = 18
             wlines = _wrap(c, plain_text, "Helvetica", 10, CW - indent)
@@ -1950,6 +1995,7 @@ def build_pdf(report: str, title: str, question: str, summary: str,
             if len(_sig) > 40 and _sig in _seen_line_sigs:
                 continue  # exact repeat of an earlier paragraph — skip
             _seen_line_sigs.add(_sig)
+            _sec_text_buf[0] += " " + plain_text.lower()
             wlines = _wrap(c, plain_text, "Helvetica", 10, CW)
             for li, ln in enumerate(wlines):
                 need(15, current_section[0])
@@ -1969,39 +2015,76 @@ def build_pdf(report: str, title: str, question: str, summary: str,
                 continue
             _seen_table_sigs.add(_tbl_sig)
             _sec_signal["tables"] += 1
+            _sec_text_buf[0] += " " + " ".join(str(cell) for r in rows for cell in r).lower()
             col_count = max(len(r) for r in rows)
-            col_w = CW / col_count
-            ROW_H = 15
 
+            # Column widths sized to each column's actual content (header or
+            # any cell), not a blind even split — an even split starves a
+            # long free-text column (e.g. "Data Type" in the Data Sources
+            # table) down to ~30 chars, forcing a hard single-line ellipsis
+            # truncation even though the table has plenty of vertical room
+            # to just wrap onto a second line instead.
+            def _md_col_weight(ci: int) -> float:
+                longest = 6
+                for r in rows:
+                    if ci < len(r):
+                        longest = max(longest, len(_strip_inline(str(r[ci]))))
+                return min(longest, 60)
+            weights = [_md_col_weight(ci) for ci in range(col_count)]
+            total_wt = sum(weights) or col_count
+            min_col_w = 60.0
+            col_ws = [max(min_col_w, CW * (wt / total_wt)) for wt in weights]
+            scale = CW / sum(col_ws)
+            col_ws = [cw * scale for cw in col_ws]
+            col_x = [MARGIN]
+            for cw in col_ws[:-1]:
+                col_x.append(col_x[-1] + cw)
+
+            LINE_H = 11
             for ri, row in enumerate(rows):
+                if ri == 0:
+                    tfont, tsize, tcol = "Helvetica-Bold", 7.5, WHITE
+                else:
+                    tfont, tsize, tcol = "Helvetica", 8.5, BODY_TXT
+
+                # Pre-wrap every cell in this row using its column's real
+                # width so the row is drawn at the height it actually needs
+                # (up to 3 lines) instead of a fixed single-line ROW_H.
+                cell_strs = []
+                for ci in range(col_count):
+                    cell = row[ci] if ci < len(row) else ""
+                    cell_str = str(cell)
+                    if ri > 0 and ci > 0:
+                        cell_str = fmt_inr(cell_str)
+                    cell_strs.append(_strip_inline(cell_str))
+                wrapped_cells = [
+                    _wrap_to_width(c, cell_strs[ci], tfont, tsize, col_ws[ci] - 8, max_lines=3)
+                    for ci in range(col_count)
+                ]
+                n_lines = max(len(wc) for wc in wrapped_cells)
+                ROW_H = max(15, n_lines * LINE_H + 6)
                 need(ROW_H + 2, current_section[0])
+
                 if ri == 0:
                     c.setFillColorRGB(*_mix(accent(), NAVY, 0.4))
                     c.rect(MARGIN, y[0] - ROW_H + 4, CW, ROW_H, fill=1, stroke=0)
-                    tfont, tsize, tcol = "Helvetica-Bold", 7.5, WHITE
                 elif ri % 2 == 0:
                     c.setFillColorRGB(0.96, 0.97, 1.0)
                     c.rect(MARGIN, y[0] - ROW_H + 4, CW, ROW_H, fill=1, stroke=0)
-                    tfont, tsize, tcol = "Helvetica", 8.5, BODY_TXT
-                else:
-                    tfont, tsize, tcol = "Helvetica", 8.5, BODY_TXT
 
                 c.setStrokeColorRGB(0.87, 0.9, 0.94); c.setLineWidth(0.4)
                 c.rect(MARGIN, y[0] - ROW_H + 4, CW, ROW_H, fill=0, stroke=1)
 
-                for ci, cell in enumerate(row[:col_count]):
-                    cx2 = MARGIN + ci * col_w + 4
-                    # Format large numbers in Indian style for data rows (not header)
-                    cell_str = str(cell)
-                    if ri > 0 and ci > 0:
-                        cell_str = fmt_inr(cell_str)
-                    cell_str = _strip_inline(cell_str)
-                    cell_str = _fit_cell(c, cell_str, tfont, tsize, col_w - 8)
+                for ci, lines in enumerate(wrapped_cells):
+                    cx2 = col_x[ci] + 4
                     # Gain/loss cells (e.g. "+6.4%", "-9.56%") get green/red ink so
                     # the table reads at a glance, same as the chart bars do.
-                    cell_color = _signed_cell_color(cell_str) if ri > 0 else None
+                    cell_color = _signed_cell_color(" ".join(lines)) if ri > 0 else None
                     c.setFillColorRGB(*(cell_color or tcol)); c.setFont(tfont, tsize)
-                    c.drawString(cx2, y[0] - ROW_H + 7, cell_str)
+                    ty2 = y[0] - ROW_H + 4 + ROW_H - LINE_H + 1
+                    for line in lines:
+                        c.drawString(cx2, ty2, line)
+                        ty2 -= LINE_H
                 nl(ROW_H)
             nl(8)
 

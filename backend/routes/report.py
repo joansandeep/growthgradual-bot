@@ -230,7 +230,7 @@ Respond with EXACTLY this shape:
   "title": "<concise NOUN-PHRASE report title, max 12 words. Examples: 'Top Banking Stocks India 2026', 'Indian Mutual Fund SIP Returns Analysis', 'HDFC vs ICICI Bank Comparison', 'Nifty 50 Market Outlook — June 2026'. STRICT RULES: NEVER start with 'So', 'You', 'I', 'Let's', 'Here', 'Based', 'Looking', 'Understanding', 'A look at', 'An analysis of', or any verb/pronoun. NEVER start with 'The' followed by a verb — e.g. BAD: 'The Nifty outlook today is mixed, with some analysts predicting...' (full sentence starting with The) → GOOD: 'Nifty 50 Outlook — Mixed Signals Amid Volatility'. NEVER write a full sentence — this includes sentences that don't start with one of those words too, e.g. BAD: 'The Minimum Investment Amounts For These Top-Performing SIPs Are As Follows' → GOOD: 'Top-Performing SIP Funds — Minimum Investment Requirements'. Never end a title with a colon, 'as follows', or '...' — those signal an incomplete sentence, not a heading. ALWAYS write a noun phrase — topic first, qualifiers after.>",
   "report": "<full markdown report — target 3500-4500 words (MINIMUM 22000 characters — shorter responses will be rejected and retried), structured and data-rich. This is a LONG-FORM report (aim for ~12-15 printed pages once charts/tables/images are laid in) — see REPORT STRUCTURE below for the section list that gets you there. Add DEPTH, not invented data: more context, more explanation of mechanisms and causes, more comparison and discussion of what the numbers mean — never pad with filler sentences or numbers not in the sources.>",
   "charts": [...],
-  "images": [{ "prompt": "<AI image-generation prompt — see AI IMAGE RULES>", "caption": "<short caption>" }, ...] (0-2 items, [] if none needed),
+  "images": [{ "prompt": "<AI image-generation prompt — see AI IMAGE RULES>", "caption": "<short caption>" }, ...] (1-2 items — see AI IMAGE RULES, currently requires at least 1),
   "keyStats": [{ "label": "<short label>", "value": "<value string>", "change": "<+/- % or empty string>" }],
   "summary": "<2-3 sentence executive summary>"
 }
@@ -463,15 +463,16 @@ BAD chart examples — NEVER do this:
   ✗ [CHART_n] in report without matching charts[n-1] entry
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-AI IMAGE RULES — DATA NEVER GOES IN AN IMAGE. IMAGES ARE OPTIONAL AND RARE.
+AI IMAGE RULES — DATA NEVER GOES IN AN IMAGE. [TEMP: ALWAYS INCLUDE AT LEAST 1 — being trialed]
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 Every number, ranking, trend, or comparison belongs in a [CHART_n] or a table — NEVER in a
 generated image. Images here are AI-generated (via Gemini), not stock/web photography, and exist
-only to give a genuinely data-thin section a visual anchor — a conceptual/editorial illustration,
-never a substitute for a chart.
-✓ Default is ZERO images. Only include one when a section would otherwise be pure text with no
-  chart/table available for it (e.g. a qualitative theme like "monsoon impact on rural consumption",
-  "geopolitical risk to energy supply chains", a company/sector profile with no numeric ranking to plot).
+to give the report a visual anchor — a conceptual/editorial illustration, never a substitute for a chart.
+✓ TEMPORARY: every report MUST include at least 1 image (2 is fine too) — pick the single most
+  visual/scene-like moment in the report (a place, an event, an industry, a process) even if every
+  section already has a chart or table. This overrides any "images are rare/optional" instinct —
+  for now, "images": [] is only acceptable if the topic is so abstract there is truly no scene to
+  depict (e.g. "explain the yield curve inversion formula").
 ✓ Maximum 2 images per report. Never one per subsection, never "for visual variety."
 ✓ Each entry: {"prompt": "<scene description for an image generator>", "caption": "<1 short sentence>"}.
   The prompt must describe an EDITORIAL/ILLUSTRATIVE scene only — e.g. "wide editorial photo of a
