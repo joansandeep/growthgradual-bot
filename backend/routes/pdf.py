@@ -1048,51 +1048,172 @@ def _datawrapper_image(c, spec, x0, y0, w, h):
         return False
 
 
+def _wrap_to_width(c, text: str, font: str, size: float, max_w: float, max_lines: int = 3) -> list[str]:
+    """Word/char-wrap `text` to fit `max_w` points, measuring actual glyph
+    width (c.stringWidth) instead of a crude character-count guess. Falls
+    back to hard character breaks for single "words" wider than max_w on
+    their own (e.g. a long URL with no spaces) so it still fits rather than
+    silently overflowing. Truncates with an ellipsis if it still doesn't
+    fit in max_lines."""
+    if not text:
+        return [""]
+    words = text.split(" ")
+    lines: list[str] = []
+    cur = ""
+    for word in words:
+        candidate = f"{cur} {word}".strip()
+        if c.stringWidth(candidate, font, size) <= max_w or not cur:
+            # Word itself may still be wider than max_w (e.g. a bare URL) —
+            # hard-break it character by character in that case.
+            if c.stringWidth(candidate, font, size) <= max_w:
+                cur = candidate
+                continue
+            # cur is empty and the single word overflows — break it up.
+            piece = ""
+            for ch in word:
+                if c.stringWidth(piece + ch, font, size) <= max_w:
+                    piece += ch
+                else:
+                    lines.append(piece)
+                    piece = ch
+            cur = piece
+        else:
+            lines.append(cur)
+            cur = word
+    if cur:
+        lines.append(cur)
+
+    if len(lines) > max_lines:
+        lines = lines[:max_lines]
+        last = lines[-1]
+        while last and c.stringWidth(last + "…", font, size) > max_w:
+            last = last[:-1]
+        lines[-1] = last + "…"
+    return lines or [""]
+
+
 def _table(c, spec, x0, y0, w, h):
-    """Fallback grid renderer used only if the Datawrapper PNG isn't available."""
+    """Fallback grid renderer used only if the Datawrapper PNG isn't available.
+
+    Column widths used to be split perfectly evenly (w / n_cols) and every
+    cell was hard-truncated to `col_w / 4` characters regardless of what
+    that column actually held. For a 3-4 column table that gives each
+    column ~25-30 characters — fine for a short "Data Type" cell, but it
+    silently chopped every URL down to a meaningless "https://uk.finance.
+    yahoo.com/q…" with no way to tell what page it actually pointed to.
+    Fixed by (1) sizing columns by their real content instead of splitting
+    evenly, and (2) wrapping long cells (URLs in particular) across up to
+    3 lines using actual measured text width instead of truncating them.
+    """
     columns = spec.get("columns") or []
     rows = spec.get("rows") or []
     if not columns:
         return
     n_cols = len(columns)
-    col_w = w / n_cols
     header_h = 18
-    row_h = 14
-    # If showing every row wouldn't fit, reserve one row's worth of space for
-    # the "+N more rows" note up front — otherwise that note gets computed
-    # AFTER filling every available row and ends up drawn below the card's
-    # bottom edge, overlapping whatever content follows the table.
-    max_rows_no_note = max(1, int((h - header_h) // row_h))
-    needs_note = len(rows) > max_rows_no_note
-    max_rows = max(1, max_rows_no_note - 1) if needs_note else max_rows_no_note
-    shown_rows = rows[:max_rows]
+    PAD = 4
+
+    HEADER_FONT, HEADER_SIZE = "Helvetica-Bold", 7
+    BODY_FONT, BODY_SIZE = "Helvetica", 6.5
+
+    # ── Column widths: proportional to the longest content each column
+    # actually holds (header or any cell), not a blind even split. A
+    # generous cap keeps any single very-long column (URLs) from starving
+    # the rest down to nothing.
+    def _content_weight(ci: int) -> float:
+        longest = len(str(columns[ci]))
+        for row in rows:
+            if ci < len(row):
+                longest = max(longest, len(str(row[ci])))
+        return min(longest, 60)  # cap so one huge cell doesn't dominate
+
+    weights = [max(_content_weight(ci), 6) for ci in range(n_cols)]
+    total_w_units = sum(weights) or n_cols
+    min_col_w = 46.0
+    col_ws = [max(min_col_w, w * (wt / total_w_units)) for wt in weights]
+    # If mins pushed the total over the card width, rescale everything down
+    # proportionally so columns still sum to exactly `w`.
+    scale = w / sum(col_ws)
+    col_ws = [cw * scale for cw in col_ws]
+    col_x = [x0]
+    for cw in col_ws[:-1]:
+        col_x.append(col_x[-1] + cw)
+
+    # ── Pre-wrap every cell (and header) now, using each column's actual
+    # width, so we know how tall each row needs to be before drawing.
+    def _wrap_cell(text: str, ci: int, font: str, size: float) -> list[str]:
+        return _wrap_to_width(c, str(text), font, size, col_ws[ci] - 2 * PAD, max_lines=3)
+
+    wrapped_rows: list[list[list[str]]] = []
+    row_heights: list[float] = []
+    LINE_H = 8
+    for row in rows:
+        cells_wrapped = [_wrap_cell(row[ci] if ci < len(row) else "", ci, BODY_FONT, BODY_SIZE)
+                          for ci in range(n_cols)]
+        n_lines = max(len(cw) for cw in cells_wrapped)
+        wrapped_rows.append(cells_wrapped)
+        row_heights.append(max(14, n_lines * LINE_H + 6))
+
+    # If showing every row wouldn't fit, reserve space for a "+N more rows"
+    # note up front — computed against real (variable) row heights this
+    # time, rather than assuming every row is the same fixed height.
+    avail_h = h - header_h
+    NOTE_H = 12
+    # Reserve room for the "+N more rows" note up front whenever not every
+    # row is going to fit — otherwise that note gets computed AFTER filling
+    # every available row and ends up drawn below the card's bottom edge.
+    fits_all = sum(row_heights) <= avail_h
+    budget = avail_h if fits_all else max(0.0, avail_h - NOTE_H)
+    shown_rows: list[list[list[str]]] = []
+    shown_heights: list[float] = []
+    running = 0.0
+    for cw, rh in zip(wrapped_rows, row_heights):
+        if running + rh > budget and shown_rows:
+            break
+        running += rh
+        shown_rows.append(cw)
+        shown_heights.append(rh)
+    needs_note = len(shown_rows) < len(wrapped_rows)
 
     # Header
     c.setFillColorRGB(*NAVY)
     c.rect(x0, y0 + h - header_h, w, header_h, fill=1, stroke=0)
     c.setFillColorRGB(*WHITE)
-    c.setFont("Helvetica-Bold", 7)
+    c.setFont(HEADER_FONT, HEADER_SIZE)
     for ci, col in enumerate(columns):
-        cx = x0 + ci * col_w + 4
-        c.drawString(cx, y0 + h - header_h + 6, str(col)[:int(col_w / 4)])
+        cx = col_x[ci] + PAD
+        c.drawString(cx, y0 + h - header_h + 6, str(col)[:40])
 
     # Rows
-    c.setFont("Helvetica", 7)
-    for ri, row in enumerate(shown_rows):
-        ry = y0 + h - header_h - (ri + 1) * row_h
+    ry_top = y0 + h - header_h
+    for ri, (cells, rh) in enumerate(zip(shown_rows, shown_heights)):
+        ry = ry_top - rh
         if ri % 2 == 1:
             c.setFillColorRGB(*LIGHT)
-            c.rect(x0, ry, w, row_h, fill=1, stroke=0)
+            c.rect(x0, ry, w, rh, fill=1, stroke=0)
         c.setFillColorRGB(*BODY_TXT)
-        for ci, cell in enumerate(row):
-            cx = x0 + ci * col_w + 4
-            c.drawString(cx, ry + 4, str(cell)[:int(col_w / 4)])
+        c.setFont(BODY_FONT, BODY_SIZE)
+        for ci, lines in enumerate(cells):
+            cx = col_x[ci] + PAD
+            # Cells that look like a URL are also drawn as real clickable
+            # links (in addition to being fully visible, wrapped text) so
+            # the source is one click away instead of a dead-end ellipsis.
+            cell_text_full = " ".join(lines)
+            is_url = cell_text_full.strip().lower().startswith(("http://", "https://"))
+            ty = ry + rh - LINE_H
+            for line in lines:
+                c.drawString(cx, ty, line)
+                ty -= LINE_H
+            if is_url:
+                c.linkURL(cell_text_full.strip(), (cx, ry, col_x[ci] + col_ws[ci] - PAD, ry + rh),
+                          relative=0, thickness=0)
+        ry_top = ry
 
-    if len(rows) > max_rows:
+    if needs_note:
+        n_more = len(wrapped_rows) - len(shown_rows)
         c.setFillColorRGB(*GREY)
         c.setFont("Helvetica-Oblique", 6.5)
-        c.drawString(x0, y0 + h - header_h - (max_rows + 1) * row_h - 2,
-                     f"+ {len(rows) - max_rows} more rows — see full table on Datawrapper")
+        c.drawString(x0, ry_top - 10, f"+ {n_more} more row{'s' if n_more != 1 else ''} — see full table on Datawrapper")
 
 
 def _draw_chart(c, spec, x0, y0, w, h):

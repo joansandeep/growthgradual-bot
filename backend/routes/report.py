@@ -501,9 +501,10 @@ REQUIRED ANCHORS (always present, but shape freely within them):
      each a **bold label** + 2-3 sentences, grounded in the sources or reasoned from the data patterns.
   4. A closing synthesis section (Conclusion/Outlook/whatever name fits) — 1-2 short paragraphs +
      a "Key Takeaways" or "What To Watch" bullet list.
-  5. A "Data Sources" section — one markdown table (Publication | URL | Data type) and nothing else.
+  5. A "Data Sources" section — one markdown table (Publication | Data type) and nothing else.
      List every distinct publication that contributed a real fact — not just the most-cited one.
-     URL column must be the exact "Source: <url>" given below; omit the row if no URL exists.
+     Do NOT include a URL/link column — the table names the publication and what it contributed,
+     nothing more; raw URLs never appear anywhere in the report, in this table or elsewhere.
      This is the ONLY sources listing — no second copy anywhere else in the report.
 
 EVERYTHING BETWEEN Executive Summary and Risks & Considerations IS YOURS TO DESIGN:
@@ -536,6 +537,13 @@ FORMAT RATIO — STRUCTURED CONTENT LEADS, PARAGRAPHS SUPPORT:
     already shows.
   → Vary which format leads section to section (table here, chart there, bullets elsewhere) so nothing
     reads mechanical.
+  → Treat each section as its own small piece of design, not a repeat of the last one's shape. Across
+    the report as a whole, deliberately rotate through EVERY available element — markdown tables,
+    [CHART_n] bar/line/pie/donut charts, bullet and numbered lists, blockquote callouts (see PULL-QUOTES
+    below), and [WEB_IMG_n]/AI-generated images (see Images below) — so a reader flipping through feels
+    like each section was laid out on purpose. Two sections in a row leaning on the exact same shape
+    (e.g. "paragraph then bullet list" twice back to back) is the failure mode to avoid; two sections in
+    a row each pairing a different pair of elements (chart + callout, then table + image) is the goal.
   Minimum word counts are gone — a section that says everything it needs in 120 words of framing +
   a table + a bullet list is complete. Depth comes from adding another real, source-grounded
   bullet/row/chart-series, not from writing longer sentences around the same facts.
@@ -610,8 +618,10 @@ GLOBAL RULES:
 - Tables and charts are the DEFAULT way to present any comparable/ranked/multi-item data — target
   3+ markdown tables where the sources genuinely support them; fewer is correct for a narrower
   question with less tabular material, more is correct for a data-rich one.
-- Images: 0-2 AI-generated illustrative images (see AI IMAGE RULES) — 0 is the normal, expected
-  outcome for most reports; only add one where a section has no chart/table option at all.
+- Images: 1-3 AI-generated illustrative images (see AI IMAGE RULES) — actively look for at least one
+  genuine opportunity per report (a concept, place, product, process, or scene worth visualizing),
+  not only as a last resort where no chart/table fits. A report with zero images should be the
+  exception (a narrow, purely numeric question with nothing visual to illustrate), not the default.
 - keyStats: 10-14 real metrics with values and change indicators. These power the infographic stat-card
   strips rendered throughout the PDF (cover page, plus additional strips dropped in automatically
   wherever a section turns out data-dense — the renderer decides placement from actual content, not
@@ -1310,19 +1320,34 @@ def _extract_markdown_tables(report_text: str, existing_charts: list) -> tuple[s
             is_metadata_table = bool(_NON_CHART_HEADING_RE.search(last_heading))
             is_duplicate_of_chart = _table_duplicates_existing_chart(header_cells, rows, charts)
             if len(header_cells) >= 2 and len(rows) >= 2 and not is_metadata_table and not is_duplicate_of_chart:
-                # Defensive scrub: if a column is literally a URL/Link column,
-                # blank any cell that isn't an actual http(s) link rather than
-                # let placeholder/descriptive text (e.g. an LLM echoing a
-                # "missing data" caveat) through to the rendered table.
-                url_col_idxs = [
-                    idx for idx, h in enumerate(header_cells)
-                    if h.strip().lower() in ("url", "link", "source url")
-                ]
-                if url_col_idxs:
-                    for row in rows:
-                        for idx in url_col_idxs:
-                            if idx < len(row) and not re.match(r"^https?://", row[idx].strip()):
-                                row[idx] = "—"
+                # Reports never show raw URLs, in the Data Sources table or
+                # anywhere else — drop any URL/Link column entirely (not
+                # just blank bad cells in it) so a stray link column the
+                # model adds despite the prompt's instructions still can't
+                # make it into the rendered PDF. Unambiguous header names
+                # ("URL", "Link"...) are dropped outright; an ambiguous name
+                # like "Source" or "Website" (which could just as easily
+                # hold a publication NAME, which we want to keep) is only
+                # dropped if most of its actual cell values look like
+                # http(s) links, not merely from its header text.
+                unambiguous_url_headers = {"url", "link", "source url", "web link", "hyperlink"}
+                ambiguous_url_headers = {"source", "website"}
+
+                def _is_url_col(idx: int, header: str) -> bool:
+                    h = header.strip().lower()
+                    if h in unambiguous_url_headers:
+                        return True
+                    if h in ambiguous_url_headers:
+                        vals = [row[idx].strip() for row in rows if idx < len(row) and row[idx].strip()]
+                        if not vals:
+                            return False
+                        return sum(1 for v in vals if re.match(r"^https?://", v)) >= max(1, len(vals) * 0.6)
+                    return False
+
+                url_col_idxs = {idx for idx, h in enumerate(header_cells) if _is_url_col(idx, h)}
+                if url_col_idxs and len(header_cells) - len(url_col_idxs) >= 2:
+                    header_cells = [h for idx, h in enumerate(header_cells) if idx not in url_col_idxs]
+                    rows = [[c for idx, c in enumerate(row) if idx not in url_col_idxs] for row in rows]
 
                 charts.append({
                     "type":    "table",
@@ -1705,45 +1730,95 @@ async def call_gemini(user_prompt: str) -> tuple[str, str]:
     log.error("Gemini: all key×model combinations exhausted")
     return "", ""
 
-# ── AI image generation (Gemini) ────────────────────────────────────────────
+# ── AI image generation (Imagen + Gemini) ───────────────────────────────────
 # Used only for the rare, optional editorial/illustrative images described in
 # AI IMAGE RULES above — never for chart/data visuals, which are handled
 # entirely by the charts pipeline. Reuses the same key rotation as
 # call_gemini() so image requests share the existing rate-limit bookkeeping.
+#
+# Imagen models are tried FIRST, not the Gemini "Nano Banana" flash-image
+# models — this project's free-tier key has real quota for Imagen (25
+# requests/day each on imagen-4.0-*) but 0/0/0 quota for every "Nano Banana"
+# / Gemini flash-image model, per the account's own rate-limit dashboard.
+# Every attempt against a Gemini image model on this tier was therefore
+# guaranteed to fail before it even ran (quota already exhausted at 0),
+# which is a very different failure mode than "no image data in response"
+# — it's "this tier can't call this model at all". Gemini's flash-image
+# models are kept as a fallback in case the account's quota changes later
+# (e.g. a paid tier), but Imagen is what's actually usable today.
+IMAGEN_MODELS = [
+    "imagen-4.0-fast-generate-001",   # highest RPM quota (150/min) — tried first
+    "imagen-4.0-generate-001",        # standard quality, 75/min
+    "imagen-4.0-ultra-generate-001",  # highest quality, lowest quota — last resort
+]
 GEMINI_IMAGE_MODELS = [
     "gemini-2.5-flash-image",       # GA image-generation model
     "gemini-3.1-flash-image-preview",  # newer preview, tried if 2.5 is unavailable
 ]
 
 
+async def _call_imagen(client: httpx.AsyncClient, model: str, key: str, prompt: str) -> httpx.Response:
+    """Imagen models use the Vertex/GenAI `:predict` endpoint — a completely
+    different request/response shape than the Gemini chat models'
+    `:generateContent` (instances/predictions instead of contents/
+    candidates). There's no generationConfig/responseModalities here;
+    Imagen is images-only by definition."""
+    return await client.post(
+        f"https://generativelanguage.googleapis.com/v1beta/models/{model}:predict?key={key}",
+        json={"instances": [{"prompt": prompt}], "parameters": {"sampleCount": 1}},
+    )
+
+
+async def _call_gemini_flash_image(client: httpx.AsyncClient, model: str, key: str, prompt: str) -> httpx.Response:
+    return await client.post(
+        f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={key}",
+        # NOTE: generationConfig.responseModalities used to be omitted
+        # entirely. gemini-2.5-flash-image (a dedicated, image-only model)
+        # tolerates that and defaults to returning an image anyway — but
+        # gemini-3.1-flash-image-preview is an interleaved text+image
+        # model, and without an explicit responseModalities it can default
+        # to TEXT-only, silently producing zero image parts. Setting both
+        # modalities explicitly, per Google's own docs, makes image output
+        # the guaranteed behavior for both models instead of an
+        # implementation-defined default.
+        json={
+            "contents": [{"role": "user", "parts": [{"text": prompt}]}],
+            "generationConfig": {"responseModalities": ["TEXT", "IMAGE"]},
+        },
+    )
+
+
 async def generate_gemini_image(prompt: str) -> bytes | None:
-    """Generate a single PNG/JPEG image from a text prompt via the Gemini
-    image-generation models. Returns raw image bytes, or None on failure —
+    """Generate a single PNG/JPEG image from a text prompt, trying Imagen
+    models first and Gemini's flash-image models second (see IMAGEN_MODELS
+    docstring above for why). Returns raw image bytes, or None on failure —
     callers must treat a miss as "skip this image", never as a hard error."""
     keys = get_gemini_keys()
     rest_keys = [k for k in keys if _is_rest_api_key(k)]
     if not rest_keys:
-        log.warning("Gemini image: no usable API keys configured")
+        log.warning("Image gen: no usable API keys configured")
         return None
 
+    all_models = [(m, "imagen") for m in IMAGEN_MODELS] + [(m, "gemini") for m in GEMINI_IMAGE_MODELS]
     attempts = [
-        (key, model)
-        for model in GEMINI_IMAGE_MODELS
+        (key, model, family)
+        for model, family in all_models
         for key in round_robin(rest_keys)
         if not is_rate_limited(key) and not is_rate_limited(f"{key}:{model}")
     ]
     # Models confirmed unavailable (404) — skip their remaining key attempts
     # without aborting attempts for the other model(s) still in the queue.
     dead_models: set[str] = set()
-    for key, model in attempts:
+    for key, model, family in attempts:
         if model in dead_models:
             continue
         try:
             t0 = time.perf_counter()
             async with httpx.AsyncClient(timeout=60) as client:
-                res = await client.post(
-                    f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={key}",
-                    json={"contents": [{"role": "user", "parts": [{"text": prompt}]}]},
+                res = (
+                    await _call_imagen(client, model, key, prompt)
+                    if family == "imagen"
+                    else await _call_gemini_flash_image(client, model, key, prompt)
                 )
             if res.status_code == 429:
                 mark_rate_limited(key, 60_000)
@@ -1753,26 +1828,57 @@ async def generate_gemini_image(prompt: str) -> bytes | None:
                 mark_rate_limited(key, 24 * 60 * 60_000)
                 continue
             if not res.is_success:
-                log.warning("Gemini image: HTTP %d model=%s key=...%s", res.status_code, model, key[-4:])
+                log.warning("Image gen: HTTP %d model=%s key=...%s", res.status_code, model, key[-4:])
                 if res.status_code == 404:
                     dead_models.add(model)  # this model isn't available at all — skip straight to the next model
                 continue
-            parts = (
-                res.json().get("candidates", [{}])[0]
-                .get("content", {}).get("parts", [])
-            )
-            for part in parts:
-                inline = part.get("inlineData") or part.get("inline_data")
-                if inline and inline.get("data"):
+
+            body = res.json()
+            if family == "imagen":
+                predictions = body.get("predictions") or []
+                if not predictions:
+                    # Imagen returns 200 with an empty/absent `predictions`
+                    # list when every candidate image was filtered out by
+                    # the safety filter — there's no separate
+                    # `promptFeedback` block like the chat models have.
+                    log.warning("Image gen: Imagen returned no predictions model=%s key=...%s", model, key[-4:])
+                    continue
+                b64 = predictions[0].get("bytesBase64Encoded")
+                if b64:
                     elapsed = (time.perf_counter() - t0) * 1000
-                    log.info("Gemini image: generated in %.0fms model=%s key=...%s", elapsed, model, key[-4:])
-                    import base64 as _b64
-                    return _b64.b64decode(inline["data"])
-            log.warning("Gemini image: no image data in response model=%s key=...%s", model, key[-4:])
+                    log.info("Image gen: generated in %.0fms model=%s key=...%s", elapsed, model, key[-4:])
+                    import base64 as _b64mod
+                    return _b64mod.b64decode(b64)
+                log.warning("Image gen: prediction had no image bytes model=%s key=...%s", model, key[-4:])
+            else:
+                candidates = body.get("candidates") or []
+                if not candidates:
+                    # A 200 response with zero candidates means the prompt was
+                    # blocked (safety filter / recitation / etc.) — the reason
+                    # lives in promptFeedback.blockReason. The old code did
+                    # `res.json().get("candidates", [{}])[0]`: since "candidates"
+                    # WAS present in the body (just empty), that default never
+                    # kicked in and `[0]` raised an IndexError on an empty list —
+                    # caught by the blanket `except Exception` below and logged
+                    # as an opaque "Gemini image exception", hiding the real
+                    # cause. Handle it explicitly here instead.
+                    block_reason = (body.get("promptFeedback") or {}).get("blockReason")
+                    log.warning("Image gen: no candidates returned model=%s key=...%s blockReason=%s",
+                                model, key[-4:], block_reason or "unknown")
+                    continue
+                parts = candidates[0].get("content", {}).get("parts", [])
+                for part in parts:
+                    inline = part.get("inlineData") or part.get("inline_data")
+                    if inline and inline.get("data"):
+                        elapsed = (time.perf_counter() - t0) * 1000
+                        log.info("Image gen: generated in %.0fms model=%s key=...%s", elapsed, model, key[-4:])
+                        import base64 as _b64mod
+                        return _b64mod.b64decode(inline["data"])
+                log.warning("Image gen: no image data in response model=%s key=...%s", model, key[-4:])
         except Exception as exc:
-            log.warning("Gemini image exception model=%s key=...%s: %s", model, key[-4:], exc)
+            log.warning("Image gen exception model=%s key=...%s: %s", model, key[-4:], exc)
             continue
-    log.warning("Gemini image: all key×model combinations exhausted for prompt=%r", prompt[:80])
+    log.warning("Image gen: all key×model combinations exhausted for prompt=%r", prompt[:80])
     return None
 
 
@@ -2633,6 +2739,77 @@ async def generate_report(request: Request):
                     return False
         return True
 
+    def _chart_signature(ch: dict) -> tuple:
+        """A hashable fingerprint of a chart's actual content (type + title +
+        every series' label/value pairs), used to catch the model emitting
+        the *same* chart twice (identical data, occasionally even an
+        identical title) under two separate [CHART_n] placeholders — which
+        renders as two visually-identical cards back to back in the PDF.
+        Table charts are excluded (tables already have their own dedup via
+        `_table_duplicates_existing_chart` / `_seen_table_sigs`)."""
+        if ch.get("type") == "table":
+            return ()
+        series_sig = tuple(
+            (s.get("name", ""), tuple((str(p.get("label", "")), p.get("value")) for p in (s.get("data") or [])))
+            for s in (ch.get("series") or [])
+        )
+        return (ch.get("type", ""), (ch.get("title") or "").strip().lower(), series_sig)
+
+    def _drop_duplicate_charts(mask: list[bool], chart_list: list[dict]) -> list[bool]:
+        """Given an existing plausibility mask, additionally turn off any
+        chart whose content signature exactly matches an earlier chart
+        that's still kept — so a repeated chart is dropped the same way an
+        implausible one is (and [CHART_n] placeholders get renumbered
+        around it by the existing `_remap_chart_placeholders` call)."""
+        seen: set[tuple] = set()
+        out = list(mask)
+        for i, ch in enumerate(chart_list):
+            if not out[i]:
+                continue
+            sig = _chart_signature(ch)
+            if not sig:  # tables — handled elsewhere
+                continue
+            if sig in seen:
+                log.info("Chart rejected — exact duplicate of an earlier chart: %s", ch.get("title", "?"))
+                out[i] = False
+            else:
+                seen.add(sig)
+        return out
+
+    def _strip_url_columns(chart_list: list[dict]) -> list[dict]:
+        """Belt-and-braces twin of the URL-column stripping already done in
+        `_extract_markdown_tables` (see there for the ambiguous-header
+        heuristic) — applied here too because a "table" chart can also
+        arrive as a JSON object straight in the model's own "charts" array
+        (never went through markdown parsing at all), and reports never
+        show raw URLs anywhere, regardless of which path a table took."""
+        unambiguous = {"url", "link", "source url", "web link", "hyperlink"}
+        ambiguous = {"source", "website"}
+        for ch in chart_list:
+            if ch.get("type") != "table":
+                continue
+            cols = ch.get("columns") or []
+            rows = ch.get("rows") or []
+            if not cols:
+                continue
+
+            def _is_url_col(idx: int, header: str) -> bool:
+                h = str(header).strip().lower()
+                if h in unambiguous:
+                    return True
+                if h in ambiguous:
+                    vals = [str(r[idx]).strip() for r in rows if idx < len(r) and str(r[idx]).strip()]
+                    if not vals:
+                        return False
+                    return sum(1 for v in vals if re.match(r"^https?://", v)) >= max(1, len(vals) * 0.6)
+                return False
+
+            drop = {idx for idx, h in enumerate(cols) if _is_url_col(idx, h)}
+            if drop and len(cols) - len(drop) >= 2:
+                ch["columns"] = [c for idx, c in enumerate(cols) if idx not in drop]
+                ch["rows"] = [[c for idx, c in enumerate(r) if idx not in drop] for r in rows]
+        return chart_list
+
     def _recover_thin_bar_as_pie(ch: dict) -> dict:
         """A single-series bar chart with exactly 2 items fails the ≥3-item
         bar rule but is a perfectly legitimate pie IF both values are a genuine
@@ -2688,6 +2865,7 @@ async def generate_report(request: Request):
             for c in (parsed.get("charts") or [])
         ]
         valid_mask = [_is_plausible_chart(c) for c in original_charts_list]
+        valid_mask = _drop_duplicate_charts(valid_mask, original_charts_list)
         charts = [c for c, keep in zip(original_charts_list, valid_mask) if keep]
         if len(charts) < len(original_charts_list):
             log.info("Chart validation: kept %d / %d charts", len(charts), len(original_charts_list))
@@ -2752,6 +2930,7 @@ async def generate_report(request: Request):
                 report_text = m.group(1).replace("\\n", "\n").replace('\\"', '"')
                 log.warning("Report: regex-extracted report field from raw JSON (pass 4)")
 
+        charts = _strip_url_columns(charts)
         charts = await attach_datawrapper_charts(charts)
         report_text = _strip_citation_markers(report_text)
         # Debug: verify [WEB_IMG_n] placeholders are in final report_text
@@ -2854,12 +3033,14 @@ async def generate_report(request: Request):
                 for c in (salvaged.get("charts") or [])
             ]
             _valid_mask = [_is_plausible_chart(c) for c in _raw_charts]
+            _valid_mask = _drop_duplicate_charts(_valid_mask, _raw_charts)
             _salv_charts = [c for c, keep in zip(_raw_charts, _valid_mask) if keep]
             if len(_salv_charts) < len(_raw_charts):
                 log.info("Chart validation (salvage): kept %d / %d charts", len(_salv_charts), len(_raw_charts))
             salvaged["report"] = _remap_chart_placeholders(salvaged.get("report", ""), _raw_charts, _valid_mask)
             salvaged["report"], _salv_charts = _extract_inline_chart_jsons(salvaged["report"], _salv_charts)
             salvaged["report"], _salv_charts = _extract_markdown_tables(salvaged["report"], _salv_charts)
+            _salv_charts = _strip_url_columns(_salv_charts)
             salvaged["charts"] = await attach_datawrapper_charts(_salv_charts)
             return JSONResponse({
                 "title":      _sanitize_title(salvaged.get("title", ""), question),
@@ -2896,12 +3077,14 @@ async def generate_report(request: Request):
                 for c in (repaired_parsed.get("charts") or [])
             ]
             _valid_mask = [_is_plausible_chart(c) for c in _raw_charts]
+            _valid_mask = _drop_duplicate_charts(_valid_mask, _raw_charts)
             _rep_charts = [c for c, keep in zip(_raw_charts, _valid_mask) if keep]
             if len(_rep_charts) < len(_raw_charts):
                 log.info("Chart validation (repair): kept %d / %d charts", len(_rep_charts), len(_raw_charts))
             repaired_report = _remap_chart_placeholders(repaired_report, _raw_charts, _valid_mask)
             repaired_report, _rep_charts = _extract_inline_chart_jsons(repaired_report, _rep_charts)
             repaired_report, _rep_charts = _extract_markdown_tables(repaired_report, _rep_charts)
+            _rep_charts = _strip_url_columns(_rep_charts)
             repaired_charts = await attach_datawrapper_charts(_rep_charts)
             repaired_report = _inject_fallback_image_placeholders(repaired_report, repaired_imgs)
             repaired_report = _strip_citation_markers(repaired_report)

@@ -281,13 +281,43 @@ async def publish_chart(client: httpx.AsyncClient, spec: dict) -> dict | None:
         # Build color palette — Growth Gradual brand colors
         series_list = spec.get("series") or []
         brand_colors = ["#1a1f4e", "#3b82f6", "#22c55e", "#f59e0b", "#ef4444", "#8b5cf6", "#06b6d4", "#ec4899"]
+        GREEN, RED_HEX = "#178a4c", "#c0392b"
         custom_colors: dict = {}
-        for i, s in enumerate(series_list):
-            s_name = s.get("name", f"Series {i+1}")
-            custom_colors[s_name] = brand_colors[i % len(brand_colors)]
-        # Also index-based fallback
-        for i in range(8):
-            custom_colors[str(i)] = brand_colors[i % len(brand_colors)]
+        # Single-series bar/column charts (the common case for "gainers vs.
+        # losers" tables like this report's stock/index comparisons) used to
+        # get ONE flat colour for every bar, keyed by the series name — e.g.
+        # every bar in "Key Indian Stock and Sectoral Performance" painted
+        # the same navy regardless of whether the value was +1.50% or
+        # -0.23%. That made every bar/column chart in a report look like a
+        # copy of the last one (same silhouette, same single colour) even
+        # though the underlying data differed — the "charts keep repeating"
+        # symptom. Fix: for a single-series chart whose values are mixed
+        # sign, colour each bar by its own sign (green = gain, red = loss)
+        # via a per-ROW custom-colors entry (Datawrapper keys custom-colors
+        # by row label when there is exactly one data series), instead of
+        # one colour for the whole series.
+        if len(series_list) == 1:
+            pts = (series_list[0].get("data") or [])
+            vals = []
+            for pt in pts:
+                try:
+                    vals.append(float(pt.get("value", 0)))
+                except (TypeError, ValueError):
+                    vals.append(0.0)
+            mixed_sign = any(v > 0 for v in vals) and any(v < 0 for v in vals)
+            if mixed_sign:
+                for pt, v in zip(pts, vals):
+                    lbl = str(pt.get("label", ""))
+                    custom_colors[lbl] = GREEN if v > 0 else (RED_HEX if v < 0 else brand_colors[0])
+            else:
+                custom_colors[series_list[0].get("name") or "Value"] = brand_colors[0]
+        else:
+            for i, s in enumerate(series_list):
+                s_name = s.get("name", f"Series {i+1}")
+                custom_colors[s_name] = brand_colors[i % len(brand_colors)]
+            # Also index-based fallback
+            for i in range(8):
+                custom_colors[str(i)] = brand_colors[i % len(brand_colors)]
 
         metadata: dict = {
             "describe": {
@@ -300,7 +330,22 @@ async def publish_chart(client: httpx.AsyncClient, spec: dict) -> dict | None:
                 "custom-colors": custom_colors,
                 "base-color": "#1a1f4e",
                 "label-colors": True,
+                # NOTE on value labels: "value-labels" (below) is NOT a real
+                # Datawrapper metadata key for bar/column charts — it's a
+                # no-op the API silently ignores, which is why every bar in
+                # every published chart in this report was missing its
+                # number. The actual key (confirmed from Datawrapper's own
+                # chart-properties payloads) is "value-label-visibility",
+                # and its default is "hover" — i.e. the label ONLY appears
+                # on mouse hover in the live embed, and is therefore absent
+                # from a static PNG export entirely. That's the exact
+                # mechanism behind the missing-labels bug: the charts were
+                # real Datawrapper renders, they just never had their
+                # labels switched from "hover" to "show". We set both the
+                # legacy key (harmless if ignored) and the real one.
                 "value-labels": True,
+                "value-label-visibility": "show",
+                "show-value-labels": True,
             },
         }
         if dw_type in ("d3-bars", "d3-bars-stacked", "column-chart", "grouped-column-chart",
@@ -309,6 +354,11 @@ async def publish_chart(client: httpx.AsyncClient, spec: dict) -> dict | None:
                 "y-grid": "on",
                 "tooltip-number-format": f"0,0.0{('a ' + unit) if unit else ''}".strip(),
             })
+        if dw_type in ("d3-lines", "d3-area"):
+            # Line/area charts use a different toggle family than bars —
+            # "hide-value-labels" (inverse boolean), separate from the
+            # bar-chart "value-label-visibility" set above.
+            metadata["visualize"]["hide-value-labels"] = False
         if unit == "%":
             metadata["visualize"]["value-label-format"] = "0.0%"
         elif unit in ("Cr", "₹", "Rs"):
