@@ -1758,6 +1758,32 @@ GEMINI_IMAGE_MODELS = [
 ]
 
 
+async def _call_pollinations_image(client: httpx.AsyncClient, prompt: str) -> bytes | None:
+    """Pollinations AI (image.pollinations.ai) — free, unlimited, no API key.
+    Simple GET against a REST endpoint with the prompt URL-encoded into the
+    path; returns raw image bytes directly (no JSON envelope to unwrap).
+    Tried FIRST, ahead of Imagen/Gemini flash-image, since this account's
+    Gemini keys currently have zero image-generation quota on every model
+    (see generate_gemini_image below) while Pollinations has none of that
+    quota friction."""
+    import urllib.parse as _urlparse
+    import random as _random
+    encoded = _urlparse.quote(prompt, safe="")
+    url = f"https://image.pollinations.ai/prompt/{encoded}"
+    params = {
+        "width": "1024", "height": "768", "nologo": "true", "model": "flux",
+        "seed": str(_random.randint(1, 2_000_000_000)),  # avoid returning a cached image for a repeated prompt
+    }
+    try:
+        res = await client.get(url, params=params, timeout=60)
+        if res.status_code == 200 and res.content and len(res.content) > 500:
+            return res.content
+        log.warning("Image gen: Pollinations HTTP %d (%d bytes)", res.status_code, len(res.content or b""))
+    except Exception as exc:
+        log.warning("Image gen: Pollinations exception: %s", exc)
+    return None
+
+
 async def _call_imagen(client: httpx.AsyncClient, model: str, key: str, prompt: str) -> httpx.Response:
     """Imagen models use the Vertex/GenAI `:predict` endpoint — a completely
     different request/response shape than the Gemini chat models'
@@ -1790,10 +1816,19 @@ async def _call_gemini_flash_image(client: httpx.AsyncClient, model: str, key: s
 
 
 async def generate_gemini_image(prompt: str) -> bytes | None:
-    """Generate a single PNG/JPEG image from a text prompt, trying Imagen
-    models first and Gemini's flash-image models second (see IMAGEN_MODELS
-    docstring above for why). Returns raw image bytes, or None on failure —
-    callers must treat a miss as "skip this image", never as a hard error."""
+    """Generate a single PNG/JPEG image from a text prompt. Tries Pollinations
+    AI first (free, unlimited, no API key — see _call_pollinations_image),
+    then falls back to Imagen and Gemini's flash-image models in case
+    Pollinations is briefly down. Returns raw image bytes, or None on
+    failure — callers must treat a miss as "skip this image", never as a
+    hard error."""
+    async with httpx.AsyncClient(timeout=60) as client:
+        img = await _call_pollinations_image(client, prompt)
+    if img:
+        log.info("Image gen: generated via Pollinations (%d bytes)", len(img))
+        return img
+    log.warning("Image gen: Pollinations failed, falling back to Imagen/Gemini")
+
     keys = get_gemini_keys()
     rest_keys = [k for k in keys if _is_rest_api_key(k)]
     if not rest_keys:
