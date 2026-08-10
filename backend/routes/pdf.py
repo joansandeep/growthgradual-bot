@@ -521,6 +521,26 @@ def _tokenise(md: str):
         elif stripped == "---":
             yield {"type": "hr"}
 
+        elif re.match(r"^```", stripped):
+            # Fenced code block. The LLM occasionally wraps an ASCII
+            # diagram/roadmap in a ```...``` fence; previously neither the
+            # opening/closing ``` fence markers nor this branch existed at
+            # all, so each fence line fell through to the generic "para"
+            # branch below and got rendered as literal, visible backtick
+            # text with the diagram lines as ordinary paragraphs around it.
+            # Now: consume the fence, and yield its contents as normal
+            # paragraphs (still no attempt to typeset ASCII-art tables /
+            # arrows nicely — that's a separate improvement — but at least
+            # the ``` markers themselves never show up as visible text).
+            i += 1
+            while i < len(lines) and not re.match(r"^```", lines[i].rstrip()):
+                inner = lines[i].strip()
+                if inner:
+                    yield {"type": "para", "text": inner}
+                i += 1
+            # i now points at the closing ``` (or EOF) — the outer i += 1
+            # at the bottom of the loop advances past it.
+
         elif stripped.startswith("| "):
             rows = []
             while i < len(lines) and lines[i].startswith("|"):
@@ -1298,7 +1318,12 @@ def build_pdf(report: str, title: str, question: str, summary: str,
             _logo_text()
         if section_title:
             c.setFillColorRGB(*WHITE); c.setFont("Helvetica-Bold", 8)
-            c.drawRightString(PAGE_W - MARGIN, PAGE_H - HEADER_H + 18, section_title[:70])
+            # Pixel-width-aware ellipsis instead of a blind [:70] char slice,
+            # which could cut a long section title off mid-word right against
+            # the page-number/date area with no visual indication of the cut.
+            title_max_w = PAGE_W - MARGIN - 150
+            c.drawRightString(PAGE_W - MARGIN, PAGE_H - HEADER_H + 18,
+                               _fit_cell(c, section_title, "Helvetica-Bold", 8, title_max_w))
         c.setFillColorRGB(0.65, 0.68, 0.82); c.setFont("Helvetica", 7)
         c.drawRightString(PAGE_W - MARGIN, PAGE_H - HEADER_H + 7, now_str)
         # Footer — branded: report title + firm name on the left, page number on the right.
@@ -1307,7 +1332,14 @@ def build_pdf(report: str, title: str, question: str, summary: str,
         c.setStrokeColorRGB(*NAVY); c.setLineWidth(1.2)
         c.line(0, FOOTER_H, PAGE_W, FOOTER_H)
         c.setFillColorRGB(*GREY); c.setFont("Helvetica", 7)
-        footer_label = f"{(title or 'Market Intelligence Report')[:60]} · Growth Gradual"
+        # Same fix here: was f"{title[:60]} · Growth Gradual", a fixed
+        # character count that cuts a long title mid-word ("...Ten Million
+        # Dollar Busine · Growth Gradual") regardless of the actual pixel
+        # width available on the page.
+        suffix = " · Growth Gradual"
+        footer_max_w = PAGE_W - 2 * MARGIN - 70 - c.stringWidth(suffix, "Helvetica", 7)
+        footer_title = _fit_cell(c, title or "Market Intelligence Report", "Helvetica", 7, footer_max_w)
+        footer_label = f"{footer_title}{suffix}"
         c.drawString(MARGIN, 7, footer_label)
         c.drawRightString(PAGE_W - MARGIN, 7, f"Page {page_num[0]}")
 
@@ -1437,6 +1469,7 @@ def build_pdf(report: str, title: str, question: str, summary: str,
 
     # ── Description paragraph — light grey/white body text ────────────────────
     if summary:
+        summary = _safe_text(summary)
         c.setFillColorRGB(0.82, 0.85, 0.95); c.setFont("Helvetica", 10.5)
         s_lines = _wrap(c, summary, "Helvetica", 10.5, CW)
         if len(s_lines) > 5:
@@ -1509,16 +1542,18 @@ def build_pdf(report: str, title: str, question: str, summary: str,
         for i in range(n_cards):
             st = key_stats[i]
             val = _safe_text(fmt_inr(str(st.get("value", ""))))[:14]
-            lbl = _safe_text(st.get("label", ""))[:60]
+            lbl = _safe_text(st.get("label", ""))
             chg = _safe_text(st.get("change", ""))
             col_c = GREEN if chg.startswith("+") or val.startswith("+") else (RED if chg.startswith("-") or val.startswith("-") else WHITE)
             cx = MARGIN + i * (card_w + card_gap)
             c.setFillColorRGB(*col_c); c.setFont("Helvetica-Bold", 17)
             c.drawString(cx, card_y + 26, val)
             c.setFillColorRGB(0.7, 0.74, 0.9); c.setFont("Helvetica-Bold", 7.5)
-            lbl_lines = _wrap(c, lbl.upper(), "Helvetica-Bold", 7.5, card_w)
+            lbl_lines = _wrap(c, lbl.upper(), "Helvetica-Bold", 7.5, card_w)[:2]
+            if len(lbl_lines) == 2 and c.stringWidth(lbl_lines[1], "Helvetica-Bold", 7.5) >= card_w:
+                lbl_lines[1] = _fit_cell(c, lbl_lines[1], "Helvetica-Bold", 7.5, card_w)
             lyy = card_y + 12
-            for ll in lbl_lines[:2]:
+            for ll in lbl_lines:
                 c.drawString(cx, lyy, ll)
                 lyy -= 10
             if chg and chg != val:
@@ -1534,7 +1569,7 @@ def build_pdf(report: str, title: str, question: str, summary: str,
     page_num[0] += 1
     c.setFillColorRGB(0.55, 0.60, 0.80); c.setFont("Helvetica", 7)
     c.drawRightString(PAGE_W - MARGIN, 16, f"Page {page_num[0]}")
-    c.drawString(MARGIN, 16, f"{(title or 'Market Intelligence Report')[:60]} · Growth Gradual")
+    c.drawString(MARGIN, 16, f"{_fit_cell(c, title or 'Market Intelligence Report', 'Helvetica', 7, PAGE_W - 2 * MARGIN - 70 - c.stringWidth(' · Growth Gradual', 'Helvetica', 7))} · Growth Gradual")
     c.showPage()
 
     # ═══════════════════════════════════════════════════════════════════════════
@@ -1585,13 +1620,23 @@ def build_pdf(report: str, title: str, question: str, summary: str,
             c.setStrokeColorRGB(*card_border); c.setLineWidth(0.6)
             c.roundRect(cx, bottom, card_w, STRIP_H, 4, fill=0, stroke=1)
             val = _safe_text(fmt_inr(str(st.get("value", ""))))[:14]
-            lbl = _safe_text(st.get("label", ""))[:28]
+            lbl_raw = _safe_text(st.get("label", "")).upper()
             chg = _safe_text(st.get("change", ""))
             col_c = GREEN if chg.startswith("+") or val.startswith("+") else (RED if chg.startswith("-") or val.startswith("-") else NAVY)
             c.setFillColorRGB(*col_c); c.setFont("Helvetica-Bold", 13)
             c.drawString(cx + 8, bottom + STRIP_H - 22, val)
             c.setFillColorRGB(*GREY); c.setFont("Helvetica-Bold", 6.5)
-            c.drawString(cx + 8, bottom + STRIP_H - 34, lbl.upper())
+            # Pixel-width-aware wrap (was a blind [:28] char slice, which cut
+            # mid-word with no ellipsis — e.g. "...MILLIONAIRES WITHO" — since
+            # 28 characters is not a fixed width across different letters).
+            lbl_max_w = card_w - 16
+            lbl_lines = _wrap(c, lbl_raw, "Helvetica-Bold", 6.5, lbl_max_w)[:2]
+            if len(lbl_lines) == 2 and c.stringWidth(lbl_lines[1], "Helvetica-Bold", 6.5) >= lbl_max_w:
+                lbl_lines[1] = _fit_cell(c, lbl_lines[1], "Helvetica-Bold", 6.5, lbl_max_w)
+            lyy = bottom + STRIP_H - 34
+            for ll in lbl_lines:
+                c.drawString(cx + 8, lyy, ll)
+                lyy -= 8
             if chg and chg != val:
                 c.setFillColorRGB(*col_c); c.setFont("Helvetica-Bold", 7)
                 c.drawString(cx + 8, bottom + 6, chg)
@@ -1875,8 +1920,19 @@ def build_pdf(report: str, title: str, question: str, summary: str,
             _sec_text_buf[0] = ""
 
             current_section[0] = text
-            # 22(overline+gap) + up to 2 title lines + 10(rule) + 14(gap) + 30(min content) = ~110
-            need(110, text)
+            # Was need(110, ...) — 22(overline+gap) + up to 2 title lines +
+            # 10(rule) + 14(gap) + only ~30pt of guaranteed room for whatever
+            # comes next. A 2-line title actually consumes up to ~92pt of
+            # that 110pt reservation, leaving as little as ~18pt of slack —
+            # under one line's worth of body text — before the very next
+            # paragraph/bullet's own need() check forces ANOTHER page break
+            # right away. The visible result was a heading (sometimes just
+            # its "SECTION 0N" overline) landing alone at the bottom of a
+            # page with its actual body text pushed entirely onto the next
+            # page. Bumping to 190 guarantees enough headroom after even a
+            # 2-line title for several lines of follow-on content before a
+            # break can happen, so a heading is never left dangling alone.
+            need(190, text)
             nl(20)   # visible gap before section heading block
             col = accent()
             # Gold "SECTION 0N" overline, letter-spaced small caps
@@ -1913,8 +1969,9 @@ def build_pdf(report: str, title: str, question: str, summary: str,
         # ── H3 — sub-section ─────────────────────────────────────────────────
         if tp == "h3":
             text = _strip_inline(tok["text"])
-            # 8(gap above) + 20(banner) + 24(nl after) + 28(min content below) = 80
-            need(80, current_section[0])
+            # Was need(80, ...) — same "orphaned heading" risk as h2 above,
+            # just smaller scale: bump the guaranteed post-banner slack.
+            need(120, current_section[0])
             nl(10)   # visible gap before sub-section
             # Section-accent-tinted background (was a fixed mid-navy block for
             # every section) — each section now reads as visually its own.

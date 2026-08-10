@@ -136,6 +136,23 @@ def _dw_type(spec: dict) -> str:
     return "d3-bars"
 
 
+def _clean_label(text) -> str:
+    """Strip markdown emphasis markers (**bold**, *italic*, `code`) from any
+    text that ends up as a Datawrapper CSV value — labels, series names, and
+    table cells. The LLM writes chart specs in the same voice it writes the
+    report body in, so it sometimes emphasises a label ("**Software / AI
+    SaaS**") the same way it would in prose; the PDF's own text renderer
+    strips that via _strip_inline, but nothing was doing the equivalent for
+    text that flows into a chart instead, so the raw ** markers were showing
+    up literally in the published chart image."""
+    if not isinstance(text, str):
+        return text
+    text = re.sub(r"\*\*(.+?)\*\*", r"\1", text)
+    text = re.sub(r"\*(.+?)\*", r"\1", text)
+    text = re.sub(r"`([^`]+)`", r"\1", text)
+    return text.strip()
+
+
 def _format_table_cell(raw_value, column_header: str):
     """Datawrapper's Tables chart type auto-detects "number-looking" columns
     and applies its OWN default number format — which, left unset, rounds to
@@ -152,7 +169,7 @@ def _format_table_cell(raw_value, column_header: str):
     if raw_value is None:
         return ""
     if isinstance(raw_value, str):
-        return raw_value  # already text — trust the model's own formatting
+        return _clean_label(raw_value)  # already text — trust the model's own formatting (minus markdown)
     if not isinstance(raw_value, (int, float)):
         return raw_value
 
@@ -185,12 +202,13 @@ def _spec_to_csv(spec: dict) -> str:
     writer = csv.writer(buf)
 
     if chart_type == "table":
-        columns = spec.get("columns") or []
+        columns = [_clean_label(c) for c in (spec.get("columns") or [])]
         rows = spec.get("rows") or []
         writer.writerow(columns)
         for row in rows:
             formatted_row = [
-                _format_table_cell(cell, columns[ci] if ci < len(columns) else "")
+                _format_table_cell(_clean_label(cell) if isinstance(cell, str) else cell,
+                                    columns[ci] if ci < len(columns) else "")
                 for ci, cell in enumerate(row)
             ]
             writer.writerow(formatted_row)
@@ -200,10 +218,10 @@ def _spec_to_csv(spec: dict) -> str:
 
     if chart_type == "pie" or len(series) == 1:
         s = series[0] if series else {"data": []}
-        name = s.get("name") or spec.get("unit") or "Value"
+        name = _clean_label(s.get("name") or spec.get("unit") or "Value")
         writer.writerow(["Label", name])
         for pt in s.get("data") or []:
-            writer.writerow([pt.get("label", ""), pt.get("value", "")])
+            writer.writerow([_clean_label(pt.get("label", "")), pt.get("value", "")])
         return buf.getvalue()
 
     # Multi-series: merge on label, preserving first-seen order.
@@ -211,16 +229,16 @@ def _spec_to_csv(spec: dict) -> str:
     seen = set()
     for s in series:
         for pt in s.get("data") or []:
-            lbl = pt.get("label", "")
+            lbl = _clean_label(pt.get("label", ""))
             if lbl not in seen:
                 seen.add(lbl)
                 labels.append(lbl)
 
     lookups = []
     for s in series:
-        lookups.append({pt.get("label", ""): pt.get("value", "") for pt in (s.get("data") or [])})
+        lookups.append({_clean_label(pt.get("label", "")): pt.get("value", "") for pt in (s.get("data") or [])})
 
-    header = ["Label"] + [s.get("name") or f"Series {i+1}" for i, s in enumerate(series)]
+    header = ["Label"] + [_clean_label(s.get("name") or f"Series {i+1}") for i, s in enumerate(series)]
     writer.writerow(header)
     for lbl in labels:
         row = [lbl] + [lookups[i].get(lbl, "") for i in range(len(series))]
@@ -275,8 +293,8 @@ def _axis_intro(spec: dict) -> str:
     dw_type = _dw_type(spec)
     if dw_type in ("d3-pies", "d3-donuts", "tables"):
         return ""  # axes don't apply to these chart types
-    x_label = str(spec.get("xLabel") or "").strip()
-    y_label = str(spec.get("yLabel") or "").strip()
+    x_label = _clean_label(str(spec.get("xLabel") or "").strip())
+    y_label = _clean_label(str(spec.get("yLabel") or "").strip())
     title_lower = str(spec.get("title") or "").lower()
     parts = []
     if y_label and y_label.lower() not in title_lower:
@@ -293,7 +311,7 @@ async def publish_chart(client: httpx.AsyncClient, spec: dict) -> dict | None:
 
     try:
         dw_type = _dw_type(spec)
-        title = spec.get("title") or "Chart"
+        title = _clean_label(spec.get("title") or "Chart")
 
         create = await client.post(
             f"{API_BASE}/charts",

@@ -652,6 +652,13 @@ GLOBAL RULES:
   have ACTUAL numeric values for those years from the sources. If the data is not in the sources,
   skip that table entirely rather than including a table with all empty cells.
 - NEVER use bracket citation markers such as [1], [2], [1, 2], [n] anywhere in the report body. This is a hard rule — the report reads as polished analyst prose, not an academic paper with footnote numbers. If a claim needs attribution, name the source in the sentence (e.g. "Screener.in data shows...").
+- NEVER wrap ANY content in a fenced code block (```...```) or draw an ASCII/text diagram with
+  arrows or boxes (e.g. "[Phase 1] --> [Phase 2] --> [Phase 3]"). This report is typeset with a
+  proper heading/paragraph/table/chart renderer, not a plain-text terminal — a code fence has no
+  visual meaning there, and gets discarded, while raw "-->" arrows and "[bracketed]" text just show
+  up as literal, ugly text in the final PDF. Represent a sequence of phases/steps as what it
+  actually is: a numbered list (STEP 1, STEP 2, ...) or a short H3-per-phase breakdown with normal
+  prose under each one — never as bracket-and-arrow ASCII art, and never inside triple backticks.
 - NEVER cite "Tavily" as a publication or source — Tavily is an internal search tool, not a publisher. If a fact's only origin is an internal search summary rather than a named publication, state the fact without attribution rather than inventing a citation.
 - Tables and charts are the DEFAULT way to present any comparable/ranked/multi-item data — target
   3+ markdown tables where the sources genuinely support them; fewer is correct for a narrower
