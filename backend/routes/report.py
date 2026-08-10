@@ -437,13 +437,25 @@ STEP 3 — Place [CHART_n] inline in the report markdown right after the paragra
   paragraph (3+ sentences) or a paragraph + bullet list precedes the chart. This prevents blank whitespace
   gaps in the PDF.
 
-STEP 4 — Aim for 7-10 charts/tables per report when data supports it — this report runs long
-  (10-12 pages), and visuals are what fill that length well rather than walls of text. Quality
-  over quantity, but lean toward MORE high-level visuals rather than fewer when the sources have
-  the numbers for it. Vary the shapes (bar, stacked bar, line, pie, arrow, scatter) rather than
+STEP 4 — MINIMUM 6 charts/tables per report, no exceptions unless sources are genuinely numeric-free.
+  This report runs long (10-12 pages), and visuals — not walls of text — are what fill that length
+  well and make the report interesting to read. Target 7-10 total when the sources support it; treat
+  6 as the floor, not an aspiration. Before finalizing, count your "charts" array: if it has fewer
+  than 6 entries, go back through the sources/file data and STEP 1's per-scenario list again — there
+  is almost always another chartable angle you skipped (a ratio, a trend, a breakdown, a comparison
+  across a different pairing of the same entities) rather than genuinely no more data. Only report
+  fewer than 6 if the sources are so thin there is truly nothing left to chart — that should be rare,
+  not the default outcome. Vary the shapes (bar, stacked bar, line, pie, arrow, scatter) rather than
   repeating the same shape for every chart; use the stacked-bar shape above whenever a breakdown
-  is compared across multiple labels. If sources genuinely lack numeric data → 0 charts is
-  acceptable. But look hard first.
+  is compared across multiple labels.
+
+  TABLES SHOULD OFTEN CARRY A COMPANION CHART, NOT STAND ALONE: per the TABLE vs CHART rule above,
+  whenever a table's data has one ranked/comparable column that would read clearly as a visual on its
+  own, pull that column out into its own compact chart alongside the fuller table — this is one of the
+  easiest ways to hit the chart-count floor above without padding, since the table already did the
+  data-gathering work. Don't force this when the table's rows genuinely don't reduce to one clean
+  chartable column — but default to looking for that opportunity rather than leaving every table
+  chart-less.
 
   CHART-TYPE VARIETY IS MANDATORY, NOT OPTIONAL: bar charts are the easiest shape to reach for,
   which is exactly why reports drift into making EVERY chart a bar chart even when the underlying
@@ -512,12 +524,29 @@ to give the report a visual anchor — a conceptual/editorial illustration, neve
   depict (e.g. "explain the yield curve inversion formula").
 ✓ Maximum 2 images per report. Never one per subsection, never "for visual variety."
 ✓ Each entry: {"prompt": "<scene description for an image generator>", "caption": "<1 short sentence>"}.
-  The prompt must describe an EDITORIAL/ILLUSTRATIVE scene only — e.g. "wide editorial photo of a
-  bustling Mumbai stock exchange trading floor, natural light, documentary style" or "clean minimal
-  illustration of container ships at a busy port, blue and gold palette" — never ask for text, numbers,
-  charts, logos, tickers, or any real named/branded company mark to appear IN the image; the model
-  generating the picture cannot render accurate data or trademarks, so asking for them produces
-  misleading or unusable output.
+✓ WRITE A SPECIFIC, CONCRETE SCENE — not a generic mood board. The prompt must name an actual
+  subject tied to THIS report's content: a specific industry setting, a specific activity, a specific
+  vantage point/angle, specific lighting, specific composition. Think like an art director briefing a
+  photographer for a named publication, not like someone typing "business concept" into a stock site.
+  ✗ BANNED CLICHÉS — never generate any of these regardless of topic, they are the generic-stock-photo
+  defaults every image model reaches for and they add zero visual interest: a laptop open on a wooden
+  desk with a coffee cup/plant/notebook; a handshake in a blurred office; a generic city skyline at
+  sunset; a magnifying glass over a chart; stacks of gold coins/rising coin towers; a lightbulb icon;
+  a rocket launching; people pointing at a whiteboard; a generic "team meeting" around a table.
+  ✓ INSTEAD go specific and sensory: name the actual place/process/object from the report (a specific
+  kind of workshop floor, a specific market stall, a specific type of machinery, a specific texture or
+  material, a specific weather/time-of-day), and specify an unusual but natural camera angle (low angle,
+  overhead, through a doorway, close-up on hands doing the actual work) — e.g. instead of "laptop on a
+  desk," write "overhead shot of a small workshop table cluttered with fabric swatches and a sewing
+  machine mid-stitch, warm afternoon light through a window, shallow depth of field" if the report is
+  about a boutique tailoring business.
+  Style: describe it as an editorial illustration or a documentary-style photograph (pick whichever
+  suits the topic), with a concrete color/lighting direction (e.g. "muted navy and warm gold tones,
+  soft directional light" or "high-contrast documentary photography, natural light") — never leave the
+  visual style to chance.
+  Never ask for text, numbers, charts, logos, tickers, or any real named/branded company mark to appear
+  IN the image; the model generating the picture cannot render accurate data or trademarks, so asking
+  for them produces misleading or unusable output.
 ✓ Reference each with [WEB_IMG_n] inline in the report body, at the point in the section it illustrates
   — same placeholder mechanics as [CHART_n], numbered in the order the "images" array lists them.
 ✗ Never invent a caption number/stat not already stated elsewhere in the report as its own bullet/table/chart.
@@ -1815,7 +1844,12 @@ async def _call_pollinations_image(client: httpx.AsyncClient, prompt: str) -> by
     encoded = _urlparse.quote(prompt, safe="")
     url = f"https://image.pollinations.ai/prompt/{encoded}"
     params = {
-        "width": "1024", "height": "768", "nologo": "true", "model": "flux",
+        "width": "1280", "height": "960", "nologo": "true", "model": "flux",
+        # enhance=true routes the prompt through Pollinations' own LLM prompt
+        # rewriter before generation, which fleshes out composition/lighting/
+        # detail the way a human-tuned prompt would — noticeably reduces the
+        # "generic AI stock photo" look versus sending the raw prompt as-is.
+        "enhance": "true",
         "seed": str(_random.randint(1, 2_000_000_000)),  # avoid returning a cached image for a repeated prompt
     }
     try:
@@ -1968,6 +2002,21 @@ async def _generate_ai_report_images(raw_images: list, max_images: int = 2) -> t
     entries plus a keep-mask aligned to raw_images' original order, in the same
     shape _validate_image_selections/_remap_web_image_placeholders expect —
     a failed generation is simply dropped (mask False), never a hard error."""
+    # Appended to every image prompt so report images share one cohesive,
+    # premium editorial look tied to the brand (deep navy + warm gold, the
+    # same palette used across the PDF's header/cover/accent elements)
+    # instead of each image landing on whatever generic style the model
+    # defaults to on its own. Composition/quality directives here are
+    # deliberately generic (never topic-specific) since the report's own
+    # prompt already carries the specific scene — this only shapes *how*
+    # that scene is rendered, not *what* it depicts.
+    _BRAND_STYLE_SUFFIX = (
+        ", premium editorial photography, cinematic natural lighting, shallow depth of field, "
+        "rich detail and texture, sophisticated muted color grade with deep navy blue and warm "
+        "gold accent tones, shot on a full-frame camera, magazine feature quality, no text, "
+        "no watermark, no logos"
+    )
+
     candidates: list[tuple[int, str, str]] = []  # (original_index, prompt, caption)
     for i, entry in enumerate(raw_images or []):
         if not isinstance(entry, dict):
@@ -1976,7 +2025,7 @@ async def _generate_ai_report_images(raw_images: list, max_images: int = 2) -> t
         if not prompt:
             continue
         caption = str(entry.get("caption") or "").strip()[:160]
-        candidates.append((i, prompt, caption))
+        candidates.append((i, f"{prompt}{_BRAND_STYLE_SUFFIX}", caption))
         if len(candidates) >= max_images:
             break
 
@@ -2203,6 +2252,26 @@ async def generate_report(request: Request):
     # query builder below can target prior Q&A specifically — see
     # _build_followup_search_query.
     conversation_context: str = body.get("conversationContext", "")
+
+    # Detect an explicit ask for MORE data points / charts / graphs / infographics
+    # — either in the question itself ("give me more data points and graphs on
+    # this") or in the prior turn the report follows on from. Previously this
+    # was invisible to the report prompt: the generic CHART RULES section says
+    # charts are "mandatory where data exists" but never overrides the model's
+    # own judgment call on volume, so an explicit user request to go heavier on
+    # data/visuals had no stronger instruction to actually act on — the model
+    # kept producing its usual 2-3 charts regardless of what was asked. Now,
+    # when this fires, an extra directive below raises the floor explicitly.
+    _WANTS_MORE_DATA_RE = re.compile(
+        r"\b(more|richer|deeper|additional|extra)\s+(data\s*points?|charts?|graphs?|"
+        r"visuals?|infographics?|numbers|metrics|statistics)\b"
+        r"|\binfographics?\b"
+        r"|\bmore\s+granular\b",
+        re.IGNORECASE,
+    )
+    wants_more_data_viz = bool(_WANTS_MORE_DATA_RE.search(question)) or bool(
+        _WANTS_MORE_DATA_RE.search(conversation_context[-1500:])
+    )
 
     # Defensive filter: Tavily (and any other internal search/aggregator domains)
     # must never be cited as if they were a publisher. Strip them here so they
@@ -2564,7 +2633,21 @@ async def generate_report(request: Request):
         "otherwise be plain text, you MAY add up to 2 AI-generated illustrative images total — see AI IMAGE RULES. "
         "Default to zero images; most reports should return \"images\": [].\n"
         + ("6. Insert [FILE_IMG_n] references inline where you reference data visible in that extracted image/chart.\n" if embedded_file_images else "")
-        + "7. Respond ONLY with the JSON object — no markdown fences, no text outside JSON."
+        + (
+            "7. THE USER EXPLICITLY ASKED FOR MORE DATA POINTS / CHARTS / GRAPHS — go beyond the usual "
+            "STEP 4 floor of 6: produce AT LEAST 8-10 [CHART_n]/table entries if the source material "
+            "(file data, web sources, or — when NO_WEB_SOURCES — figures/ratios you can validly derive "
+            "from the numbers already given) supports that many distinct chartable angles. For every "
+            "metric mentioned in the text, also surface it as a keyStats entry or a chart data point "
+            "rather than leaving it as a bare sentence. Where the same underlying numbers support more "
+            "than one lens (e.g. absolute values AND ratios/percentages, current-state AND trend-over-"
+            "time, per-unit AND aggregate), chart more than one of those lenses instead of picking just "
+            "one. This does NOT license inventing numbers — every extra chart/stat still must trace back "
+            "to a real source figure or a straightforward derived calculation from figures already given "
+            "(e.g. revenue ÷ client count = ARPU is fine; a number with no basis is not).\n"
+            if wants_more_data_viz else ""
+        )
+        + "8. Respond ONLY with the JSON object — no markdown fences, no text outside JSON."
     )
 
     raw, model_used = await call_gemini(user_prompt)

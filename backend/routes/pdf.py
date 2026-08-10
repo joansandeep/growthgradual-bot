@@ -1041,6 +1041,18 @@ def _datawrapper_image(c, spec, x0, y0, w, h):
     Falls back to the native renderer if pngBytes is missing, corrupt, or not
     a valid PNG (e.g. a JSON status object returned while Datawrapper was still
     rendering the export).
+
+    Datawrapper has no literal axis-title field for bar/column/line charts
+    (confirmed platform limitation — only scatter plots get one). Previously
+    xLabel/yLabel were folded into the chart's "intro" subtitle sentence
+    baked into the PNG (e.g. "Amount (INR) by Financial Metric"), which reads
+    as a description line under the title, not a real axis label sitting at
+    the axis. Fixed here by carving out a thin margin around the PNG —
+    bottom for the x-axis title, left (rotated) for the y-axis title — and
+    drawing real ReportLab text there with the exact same styling/position
+    convention _axis_titles() already uses for natively-rendered charts, so
+    a Datawrapper chart and a native chart both end up with genuine,
+    consistently-placed axis labels instead of just one of the two.
     """
     from reportlab.lib.utils import ImageReader
     import base64 as _b64
@@ -1062,14 +1074,41 @@ def _datawrapper_image(c, spec, x0, y0, w, h):
         )
         return False
     try:
+        # Axis titles only make sense for XY chart types — pies/donuts/tables
+        # have no x/y axes to label, so skip reserving margin for them.
+        dw_type = str(spec.get("type", "bar")).lower()
+        wants_axis_titles = dw_type not in ("pie", "donut", "table")
+        x_label = _safe_text((spec.get("xLabel") or "").strip()) if wants_axis_titles else ""
+        y_label = _safe_text((spec.get("yLabel") or "").strip()) if wants_axis_titles else ""
+        if not y_label and wants_axis_titles:
+            y_label = _safe_text(spec.get("unit", ""))
+        title_lower = _safe_text((spec.get("title") or "").strip()).lower()
+        if x_label and title_lower and (x_label.lower() in title_lower or title_lower in x_label.lower()):
+            x_label = ""
+
+        PB = 13 if x_label else 0   # bottom strip for the x-axis title
+        PL = 13 if y_label else 0   # left strip for the (rotated) y-axis title
+
         img = ImageReader(io.BytesIO(png_bytes))
         iw, ih = img.getSize()
-        scale = min(w / iw, h / ih)
+        avail_w, avail_h = max(w - PL, 1), max(h - PB, 1)
+        scale = min(avail_w / iw, avail_h / ih)
         dw, dh = iw * scale, ih * scale
-        dx = x0 + (w - dw) / 2
-        dy = y0 + (h - dh) / 2
+        dx = x0 + PL + (avail_w - dw) / 2
+        dy = y0 + PB + (avail_h - dh) / 2
         c.drawImage(img, dx, dy, width=dw, height=dh,
                     preserveAspectRatio=True, mask="auto")
+
+        if x_label:
+            c.setFillColorRGB(*GREY); c.setFont("Helvetica-Oblique", 6.5)
+            c.drawCentredString(x0 + PL + avail_w / 2, y0 + 2, x_label[:40])
+        if y_label:
+            c.saveState()
+            c.translate(x0 + 10, y0 + PB + avail_h / 2)
+            c.rotate(90)
+            c.setFillColorRGB(*GREY); c.setFont("Helvetica-Oblique", 6.5)
+            c.drawCentredString(0, 0, y_label[:30])
+            c.restoreState()
         return True
     except Exception as exc:
         log.warning("Failed to draw Datawrapper PNG for chart %r: %s", spec.get("title", "?"), exc)
