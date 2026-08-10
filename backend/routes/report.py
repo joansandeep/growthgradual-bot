@@ -2323,9 +2323,31 @@ async def generate_report(request: Request):
     else:
         from routes.chat import _looks_like_ai_overview
 
-    if not sources and not has_file_data:
-        log.warning("Report: still no sources after self-search")
-        return JSONResponse({"report": "Could not retrieve data for this topic. Please try again.", "charts": [], "keyStats": [], "summary": "", "title": ""})
+    # A Tavily search coming back empty does NOT mean the topic is
+    # unanswerable — it just means there's no news article/webpage that
+    # matches it. Personal/advisory questions ("give me a business idea
+    # given my income of X") are a common case: real, answerable, but not
+    # something a web search will ever surface sources for. Previously this
+    # bailed out entirely with a generic "Could not retrieve data" error,
+    # even though the chat endpoint answers the exact same question fine
+    # from the model's own knowledge. So: only hard-fail when the question
+    # actually needs current/sourced data (prices, news, recent events) and
+    # genuinely got nothing back. Otherwise fall through and let the model
+    # write the report from its own reasoning/knowledge, with an explicit
+    # instruction not to fabricate sources or citations.
+    no_web_sources = not sources and not has_file_data
+    if no_web_sources:
+        needs_current_data = bool(re.search(
+            r"\b(today|latest|current|this\s+(week|month|quarter|year)|"
+            r"recent|news|price|prices|quote|nifty|sensex|stock|share\s+price|"
+            r"market\s+(today|now)|breaking)\b",
+            question, re.IGNORECASE,
+        ))
+        if needs_current_data:
+            log.warning("Report: still no sources after self-search, and question needs live data — failing")
+            return JSONResponse({"report": "Could not retrieve data for this topic. Please try again.", "charts": [], "keyStats": [], "summary": "", "title": ""})
+        log.info("Report: no web sources found, but question doesn't require live data — "
+                  "generating report from model knowledge instead of failing")
 
     # ── Verified index data: scraped sources are hit-or-miss on precise
     # Nifty/Sensex/Bank Nifty levels (stale snippets, wrong page, etc.), so
@@ -2520,7 +2542,18 @@ async def generate_report(request: Request):
         + (f"\nPRIMARY SOURCE — ANALYSE THIS FIRST (uploaded file data takes highest priority):{file_section}" if file_section else "")
         + conversation_section
         + (img_placement_instruction if img_placement_instruction else "")
-        + f"\n\nSupplementary web sources ({len(enriched)} results):\n\n{src_text}\n\n"
+        + (
+            f"\n\nSupplementary web sources ({len(enriched)} results):\n\n{src_text}\n\n"
+            if not no_web_sources else
+            "\n\nNO WEB SOURCES: A web search for this topic returned nothing usable — this is "
+            "expected for a personal/advisory question rather than a news or market-data query. "
+            "Write the report entirely from your own financial/business knowledge and reasoning. "
+            "Do NOT invent citations, publication names, statistics, or URLs you were not actually "
+            "given — attribute nothing to a 'source' that doesn't exist here. Where a number is a "
+            "reasonable estimate or industry rule-of-thumb rather than a verified figure, say so "
+            "explicitly (e.g. 'typically', 'a common benchmark is', 'as a rough estimate'). Omit any "
+            "References/Sources/Methodology section entirely, since there are no sources to list.\n\n"
+        )
         + image_candidates_block
         + "INSTRUCTIONS:\n"
         "1. The uploaded file content (if provided) is your PRIMARY source — extract ALL numbers, tables, charts, and statistics from it first.\n"
