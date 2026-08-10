@@ -287,6 +287,26 @@ STEP 1 — AGGRESSIVELY SCAN sources for ANY chartable numbers:
   • Time-series: quarterly results, monthly data, weekly prices → line chart
   • Allocation/composition (sector weights, portfolio mix) → pie chart
   • Comparisons: 1yr vs 3yr vs 5yr returns of same fund → bar chart
+  • A metric that CHANGED FROM ONE VALUE TO ANOTHER for the same named items —
+    guidance revised from X% to Y%, price target raised from ₹A to ₹B, a rating
+    upgraded/downgraded, before-vs-after any number — → ARROW CHART, not a bar
+    chart. This is one of the most common shapes in an earnings/guidance story
+    ("cut FY26 guidance from +1-3% to flat-to-down 1%") and reads far better as
+    an arrow from the old value to the new one than as two separate bars.
+    → {"type":"arrow","series":[{"name":"Previous","data":[{"label":"Fiserv","value":2}]},
+                                  {"name":"Revised","data":[{"label":"Fiserv","value":-1}]}]}
+    → Needs ≥2 named items with a real before/after pair each; for a single item,
+      state the before/after in text instead (an arrow chart needs ≥2 items same as bar/pie).
+  • Two INDEPENDENT numeric metrics given for the same set of named entities where
+    the RELATIONSHIP between them is the actual point (e.g. valuation score vs.
+    1-year return, P/E vs. revenue growth, market cap vs. daily % move) → SCATTER
+    chart, not two separate bar charts. Use this whenever the report's own prose
+    is making a "despite X being high, Y is low" / "X correlates with Y" argument —
+    that argument IS the scatter plot.
+    → {"type":"scatter","series":[{"name":"1-Yr Return %","data":[{"label":"Astera Labs","value":86.3}]},
+                                    {"name":"Valuation Score /6","data":[{"label":"Astera Labs","value":0}]}]}
+    → Needs ≥4 named entities with BOTH metrics present — fewer than that, a scatter
+      plot is just a few dots with nothing to show a pattern; use a table instead.
   • FII/DII flows by date → line chart if 3+ dates given. For a single-day FII vs
     DII comparison (one net-buy figure, one net-sell figure — opposite signs),
     use a 2-bar chart, NOT a pie: a pie slice can't represent a negative outflow,
@@ -366,16 +386,16 @@ STEP 1 — AGGRESSIVELY SCAN sources for ANY chartable numbers:
   • Mutual fund topic → pie chart of category allocation OR bar of returns by category
 
 STEP 2 — ONLY create a chart if ALL conditions are met:
-  ✓ At least 3 data points (bar/pie) or 4 time points (line)
+  ✓ At least 3 data points (bar/pie) or 4 time points (line), 2 items (arrow), 4 items (scatter)
   ✓ All labels are DIFFERENT from each other
   ✓ All values are DIFFERENT from each other (not all the same)
   ✓ Values come from the source data — do NOT invent numbers
   ✗ NEVER create a chart from a single number
   ✗ NEVER duplicate labels
   ✗ NEVER use future/projected values you invented
-  ✗ A bar chart needs ≥3 named distinct items; a pie chart needs ≥2 — this is
-    enforced server-side and anything short of that WILL be silently dropped,
-    wasting the slot.
+  ✗ A bar chart needs ≥3 named distinct items; a pie chart needs ≥2; an arrow chart
+    needs ≥2; a scatter chart needs ≥4 — this is enforced server-side and anything
+    short of that WILL be silently dropped, wasting the slot.
   → If the topic naturally centers on 2 entities (e.g. "HDFC vs ICICI"), actively
     scan the rest of the sources for OTHER comparable entities mentioned anywhere
     (peer banks, sector averages, other funds in the same category, etc.) and add
@@ -420,13 +440,25 @@ STEP 3 — Place [CHART_n] inline in the report markdown right after the paragra
 STEP 4 — Aim for 7-10 charts/tables per report when data supports it — this report runs long
   (10-12 pages), and visuals are what fill that length well rather than walls of text. Quality
   over quantity, but lean toward MORE high-level visuals rather than fewer when the sources have
-  the numbers for it. Vary the shapes (bar, stacked bar, line, pie) rather than repeating the same
-  shape for every chart; use the stacked-bar shape above whenever a breakdown is compared across
-  multiple labels. If sources genuinely lack numeric data → 0 charts is acceptable. But look hard first.
+  the numbers for it. Vary the shapes (bar, stacked bar, line, pie, arrow, scatter) rather than
+  repeating the same shape for every chart; use the stacked-bar shape above whenever a breakdown
+  is compared across multiple labels. If sources genuinely lack numeric data → 0 charts is
+  acceptable. But look hard first.
+
+  CHART-TYPE VARIETY IS MANDATORY, NOT OPTIONAL: bar charts are the easiest shape to reach for,
+  which is exactly why reports drift into making EVERY chart a bar chart even when the underlying
+  data fits a different shape much better. Before finalizing the "images"/"charts" list, check the
+  full set you've built: if the report has 4+ charts and 3 or more of them are plain (non-stacked,
+  non-grouped) bar charts, go back through STEP 1's per-scenario rules above and actively look for
+  data you may have force-fit into a bar chart that actually belongs as an arrow chart (any before/
+  after or revised-guidance number), a scatter chart (any two-metrics-per-entity relationship), a
+  line/area chart (any single trend across 4+ points), or a pie/donut (any composition-of-a-whole).
+  A report is not required to use every type, but repeating the exact same bar-chart shape for most
+  of the report's visuals is a sign the data was matched to the easiest chart, not the right one.
 
 Chart spec shape:
 {
-  "type": "bar" | "line" | "pie",
+  "type": "bar" | "line" | "pie" | "arrow" | "scatter",
   "title": "<specific title e.g. 'Top 5 SIP Funds — 3-Year Returns' not 'Chart 1'>",
   "unit": "%" | "₹" | "Cr" | "B" | "$" | "x" | "",
   "xLabel": "<what the x-axis categories are, e.g. 'Fund' or 'Sector' or 'Session Date'>",
@@ -438,9 +470,14 @@ Chart spec shape:
                             // or set false for comparison charts (entity vs entity).
   "series": [{ "name": "<series name>", "data": [{ "label": "<unique label>", "value": <number> }] }]
 }
-AXIS LABELS ARE MANDATORY for every bar/line chart — always fill in "xLabel" and "yLabel" with a
-short (1-4 word) description of what each axis represents. A chart with numeric tick marks but no
-axis title leaves the reader guessing what the numbers mean — never omit these two fields.
+"arrow" and "scatter" both use the SAME two-series-sharing-labels shape as any other
+multi-series chart (see COMPARISON TOPICS above) — no extra fields needed:
+  → arrow: series = [{"name":"Previous","data":[...]}, {"name":"Revised"/"Current","data":[...]}]
+  → scatter: series = [{"name":"<x-metric>","data":[...]}, {"name":"<y-metric>","data":[...]}]
+AXIS LABELS ARE MANDATORY for every bar/line/arrow/scatter chart — always fill in "xLabel" and
+"yLabel" with a short (1-4 word) description of what each axis represents. A chart with numeric
+tick marks but no axis title leaves the reader guessing what the numbers mean — never omit these
+two fields.
 
 PERIOD FRAMING: whenever the underlying data is a month-to-date or year-to-date figure, say so
 explicitly in the chart title (e.g. "Nifty 50 — MTD Performance", "Sectoral Returns, YTD") rather
@@ -2730,6 +2767,19 @@ async def generate_report(request: Request):
                     # a pie (negative values aren't representable as slices),
                     # so it's allowed through as a bar despite the usual ≥3 rule.
                     min_labels = 2
+            if n_labels < min_labels:
+                log.warning("Chart rejected — only %d distinct items (need ≥%d for %s chart): %s",
+                            n_labels, min_labels, chart_type, ch.get("title", "?"))
+                return False
+
+        # Arrow/scatter charts share the two-series-sharing-labels shape, but
+        # need their own minimum-items rule (matches STEP 2 in the system
+        # prompt): an arrow chart with 1 item is just "before/after" prose
+        # wearing a chart, and a scatter plot with under 4 points is a
+        # handful of dots with no visible relationship to show.
+        if chart_type in ("arrow", "scatter"):
+            n_labels = len(series[0].get("data") or []) if series else 0
+            min_labels = 2 if chart_type == "arrow" else 4
             if n_labels < min_labels:
                 log.warning("Chart rejected — only %d distinct items (need ≥%d for %s chart): %s",
                             n_labels, min_labels, chart_type, ch.get("title", "?"))

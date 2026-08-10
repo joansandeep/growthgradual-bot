@@ -81,9 +81,8 @@ def _looks_like_composition(series: list[dict]) -> bool:
 def _dw_type(spec: dict) -> str:
     """
     Pick the best-fitting Datawrapper chart type for this spec, rather than a
-    fixed bar/line/pie -> single-id mapping. Only chooses from chart types that
-    map cleanly onto our label/value series shape (no maps/tables/scatter,
-    which need data we don't have).
+    fixed bar/line/pie -> single-id mapping. Chooses from chart types that
+    map cleanly onto our label/value series shape.
     """
     chart_type = spec.get("type", "bar")
     series = spec.get("series") or []
@@ -93,6 +92,21 @@ def _dw_type(spec: dict) -> str:
 
     if chart_type == "table":
         return "tables"
+
+    if chart_type == "scatter":
+        # Two independent numeric metrics per entity (e.g. valuation score
+        # vs. 1-yr return) — our 2-series-sharing-labels shape maps directly
+        # onto Datawrapper's scatter plot's (x, y) columns once merged by
+        # label in _spec_to_csv, same as any other multi-series chart.
+        return "d3-scatter-plot"
+
+    if chart_type == "arrow":
+        # A single metric that moved from one value to another for the same
+        # named entities (guidance revisions, price-target changes, before/
+        # after any number) — represented the same way: two series
+        # ("Previous"/"Current") sharing labels, which is exactly the shape
+        # Datawrapper's arrow/range plot expects (start column, end column).
+        return "d3-arrow-plot"
 
     if chart_type == "pie":
         n_slices = len((series[0].get("data") or [])) if series else 0
