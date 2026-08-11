@@ -1593,10 +1593,11 @@ async def call_groq(user_prompt: str) -> str:
 #
 #  Model                  | Max output tokens | Notes
 #  -----------------------|-------------------|-------------------------------
-#  gemini-2.5-flash       |        65 536     | Fast + high quality
-#  gemini-3.5-flash       |        65 536     | Next-gen flash
+#  gemini-3.6-flash       |        65 536     | GA July 21 2026 — Google's new
+#                         |                   | default stable Flash model
+#  gemini-3.5-flash       |        65 536     | Previous-gen flash
 #  gemini-3-flash-preview |        65 536     | Preview of Gemini 3
-#  gemini-2.5-flash-lite  |        32 768     | Smallest output window — last resort
+#  gemini-3.5-flash-lite  |        32 768     | Smallest output window — last resort
 #
 # Removed: gemini-2.0-flash / gemini-2.0-flash-lite (retired June 2026)
 # Removed: gemini-2.5-pro — confirmed 0/0 RPM/TPM/RPD quota on every free-tier
@@ -1606,6 +1607,13 @@ async def call_groq(user_prompt: str) -> str:
 # single report/extraction call for no chance of success. Re-add it once
 # billing is enabled on a project, ideally as a first-choice model rather
 # than folded back into this fallback order.
+# Removed: gemini-2.5-flash — now returns HTTP 404 ("deprecated/unavailable")
+# on every key on this project as of 2026-08-11, despite still showing quota
+# on the AI Studio rate-limit dashboard. Google appears to have pulled the
+# free-tier endpoint ahead of the dashboard catching up. If it comes back,
+# re-add it — but confirm with a live curl first, not just the quota page.
+# Removed: gemini-2.5-flash-lite — same 404 pattern as gemini-2.5-flash;
+# swapped for gemini-3.5-flash-lite (GA, same output-token ceiling).
 # ---------------------------------------------------------------------------
 # ── Gemini key format filter ────────────────────────────────────────────────
 # Google has been migrating Gemini API keys from the legacy "AIzaSy..."
@@ -1623,10 +1631,10 @@ def _is_rest_api_key(key: str) -> bool:
 
 
 GEMINI_MODELS = [
-    "gemini-2.5-flash",        # 65 536 output tokens — fast + high quality
-    "gemini-3.5-flash",        # 65 536 output tokens — next-gen flash
+    "gemini-3.6-flash",        # 65 536 output tokens — GA, current default Flash
+    "gemini-3.5-flash",        # 65 536 output tokens — previous-gen flash
     "gemini-3-flash-preview",  # 65 536 output tokens — Gemini 3 preview
-    "gemini-2.5-flash-lite",   # 32 768 output tokens — last resort (smallest window)
+    "gemini-3.5-flash-lite",   # 32 768 output tokens — last resort (smallest window)
 ]
 
 # Minimum acceptable report length — see the "target 3500-4500 words" mandate
@@ -1654,11 +1662,21 @@ GEMINI_MAX_KEYS_PER_MODEL = 6
 # Per-model max output tokens — used to set the right ceiling per attempt.
 # Setting this too high on flash-lite causes it to hang; match the actual model limit.
 _GEMINI_MAX_OUTPUT = {
-    "gemini-2.5-flash":        65_536,
+    "gemini-3.6-flash":        65_536,
     "gemini-3.5-flash":        65_536,
     "gemini-3-flash-preview":  65_536,
-    "gemini-2.5-flash-lite":   32_768,
+    "gemini-3.5-flash-lite":   32_768,
 }
+
+# Consecutive-exception circuit breaker, per model — see the "no point trying
+# other keys" 404 handling below for the same idea applied to hard failures.
+# A single struggling/overloaded model can otherwise eat the ENTIRE
+# GEMINI_TIME_BUDGET_SECONDS on its own: 3 consecutive httpx read timeouts
+# at 35s each is already 105s, more than the whole budget, starving every
+# other model of a turn. Two consecutive exceptions on the same model is
+# treated the same as a 404 — move on, don't burn the rest of the budget
+# proving it a third time.
+GEMINI_MAX_CONSECUTIVE_EXCEPTIONS = 2
 
 
 async def call_gemini(user_prompt: str) -> tuple[str, str]:
@@ -1695,6 +1713,9 @@ async def call_gemini(user_prompt: str) -> tuple[str, str]:
     # is dead, skip its remaining key attempts without aborting the rest of
     # the queue (other models must still get their turn).
     dead_models: set[str] = set()
+    # Tracks consecutive exceptions per model (resets to 0 on any non-exception
+    # outcome for that model) — feeds GEMINI_MAX_CONSECUTIVE_EXCEPTIONS below.
+    consecutive_exceptions: dict[str, int] = {}
 
     loop_start = time.perf_counter()
 
@@ -1715,7 +1736,6 @@ async def call_gemini(user_prompt: str) -> tuple[str, str]:
             max_out = _GEMINI_MAX_OUTPUT.get(model, 65_536)
             generation_config = {
                 "maxOutputTokens": max_out,
-                "temperature": 0.1,
                 # NOTE: responseMimeType:"application/json" is intentionally NOT set.
                 # When set, Gemini hard-truncates output mid-JSON at the token limit,
                 # causing JSON parse failures on long reports. Without it, Gemini
@@ -1726,11 +1746,17 @@ async def call_gemini(user_prompt: str) -> tuple[str, str]:
             # Gemini 2.5 family uses thinkingBudget:0; Gemini 3.x uses thinkingLevel.
             # Mixing these across families causes a 400 error.
             _GEMINI_25 = {"gemini-2.5-flash", "gemini-2.5-flash-lite"}
-            _GEMINI_3X = {"gemini-3-flash-preview", "gemini-3.5-flash"}
+            _GEMINI_3X = {"gemini-3.6-flash", "gemini-3.5-flash", "gemini-3.5-flash-lite", "gemini-3-flash-preview"}
             if model in _GEMINI_25:
                 generation_config["thinkingConfig"] = {"thinkingBudget": 0}
+                # temperature is still respected on the 2.5 family.
+                generation_config["temperature"] = 0.1
             elif model in _GEMINI_3X:
                 generation_config["thinkingConfig"] = {"thinkingLevel": "minimal"}
+                # temperature/top_p/top_k are deprecated on Gemini 3.x — Google's
+                # guidance is to leave them unset rather than pass a value, since
+                # a future model version is documented to error on them instead
+                # of silently ignoring them.
             # Per-attempt timeout is intentionally short relative to
             # GEMINI_TIME_BUDGET_SECONDS above. The old value (120s) meant a
             # single slow/overloaded response could burn almost the entire
@@ -1754,6 +1780,10 @@ async def call_gemini(user_prompt: str) -> tuple[str, str]:
                         "generationConfig": generation_config,
                     },
                 )
+            # A response came back at all (even an error status) — this was not
+            # a timeout/connection failure, so the model isn't the thing to blame.
+            # Reset its consecutive-exception counter.
+            consecutive_exceptions[model] = 0
             if res.status_code == 503:
                 log.warning("Gemini 503 (overloaded) model=%s key=...%s — trying next", model, key[-4:])
                 mark_rate_limited(f"{key}:{model}", 30_000)  # back off this key+model for 30s
@@ -1847,7 +1877,28 @@ async def call_gemini(user_prompt: str) -> tuple[str, str]:
                 return text, model
             log.warning("Gemini: empty response from model=%s key=...%s", model, key[-4:])
         except Exception as exc:
-            log.warning("Gemini exception model=%s key=...%s: %s", model, key[-4:], exc)
+            # httpx timeout exceptions (ReadTimeout, ConnectTimeout, PoolTimeout)
+            # stringify to "" — logging str(exc) alone silently prints nothing
+            # and makes real timeouts indistinguishable from "something odd
+            # happened". Always include the exception's class name so a bare
+            # 35s read timeout shows up as exactly that, not a blank message.
+            log.warning(
+                "Gemini exception model=%s key=...%s: %s%s",
+                model, key[-4:], type(exc).__name__,
+                f": {exc}" if str(exc) else " (no message — check timeout/network)",
+            )
+            # Circuit breaker: a struggling/overloaded model can otherwise burn
+            # the entire GEMINI_TIME_BUDGET_SECONDS on repeated timeouts against
+            # itself, starving every other model in GEMINI_MODELS of a turn —
+            # see GEMINI_MAX_CONSECUTIVE_EXCEPTIONS above.
+            consecutive_exceptions[model] = consecutive_exceptions.get(model, 0) + 1
+            if consecutive_exceptions[model] >= GEMINI_MAX_CONSECUTIVE_EXCEPTIONS:
+                log.warning(
+                    "Gemini: model=%s failed %d times in a row with exceptions — "
+                    "skipping its remaining keys, moving to next model",
+                    model, consecutive_exceptions[model],
+                )
+                dead_models.add(model)
             continue
 
     log.error("Gemini: all key×model combinations exhausted")

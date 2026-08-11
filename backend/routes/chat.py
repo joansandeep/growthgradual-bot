@@ -1448,24 +1448,28 @@ _GEMINI_CHAT_MODELS = [
     # Ordered by free-tier RPD so the highest-quota model is tried first.
     # Source: Google AI Studio rate limits dashboard (verified 2026-06-24)
     # gemini-3.1-flash-lite:  15 RPM / 250K TPM / 500 RPD  ← workhorse; highest quota
-    # gemini-2.5-flash-lite:  10 RPM / 250K TPM /  20 RPD
-    # gemini-2.5-flash:        5 RPM / 250K TPM /  20 RPD
+    # gemini-3.5-flash-lite:  15 RPM / 250K TPM / 500 RPD
     # gemini-3-flash-preview:  5 RPM / 250K TPM /  20 RPD  (API string for "Gemini 3 Flash" in console)
+    # gemini-3.6-flash:        5 RPM / 250K TPM /  20 RPD
     # gemini-3.5-flash:        5 RPM / 250K TPM /  20 RPD
     # Removed: gemini-1.5-flash / gemini-1.5-flash-8b (404, retired)
     #          gemini-2.0-flash / gemini-2.0-flash-lite (0/0/0 quota, retired June 2026)
+    # Removed 2026-08-11: gemini-2.5-flash / gemini-2.5-flash-lite now return
+    # HTTP 404 ("deprecated/unavailable") on every key for this project — see
+    # report.py's call_gemini() for the confirming log trace. Swapped in the
+    # GA 3.x equivalents (gemini-3.5-flash-lite, gemini-3.6-flash) instead.
     "gemini-3.1-flash-lite",   # 15 RPM / 250K TPM / 500 RPD — highest free quota
-    "gemini-2.5-flash-lite",   # 10 RPM / 250K TPM /  20 RPD
-    "gemini-2.5-flash",        #  5 RPM / 250K TPM /  20 RPD
+    "gemini-3.5-flash-lite",   # 15 RPM / 250K TPM / 500 RPD
     "gemini-3-flash-preview",  #  5 RPM / 250K TPM /  20 RPD
+    "gemini-3.6-flash",        #  5 RPM / 250K TPM /  20 RPD — GA default as of July 2026
     "gemini-3.5-flash",        #  5 RPM / 250K TPM /  20 RPD
 ]
 
 # Models that need explicit thinking suppression to avoid wasting output tokens.
 # gemini-3.1-flash-lite defaults to minimal thinking — no param needed.
 # Mixing thinkingBudget (2.5) and thinkingLevel (3.x) in one request → HTTP 400.
-_GEMINI_THINKING_BUDGET_MODELS = {"gemini-2.5-flash", "gemini-2.5-flash-lite"}
-_GEMINI_THINKING_LEVEL_MODELS  = {"gemini-3-flash-preview", "gemini-3.5-flash"}
+_GEMINI_THINKING_BUDGET_MODELS = set()  # no 2.5-family models left in this list
+_GEMINI_THINKING_LEVEL_MODELS  = {"gemini-3-flash-preview", "gemini-3.6-flash", "gemini-3.5-flash", "gemini-3.5-flash-lite"}
 
 
 async def gemini_sse(system_prompt: str, messages: list[dict]) -> AsyncGenerator[str, None]:
@@ -1483,13 +1487,26 @@ async def gemini_sse(system_prompt: str, messages: list[dict]) -> AsyncGenerator
     attempts = [(k, m) for m in _GEMINI_CHAT_MODELS for k in available_keys]
     log.info("Gemini chat: %d key(s) × %d models = %d attempts", len(available_keys), len(_GEMINI_CHAT_MODELS), len(attempts))
 
+    # Consecutive-exception circuit breaker per model — a struggling/overloaded
+    # model can otherwise eat every key attempt in a row on nothing but read
+    # timeouts before the next model in _GEMINI_CHAT_MODELS ever gets a turn.
+    consecutive_exceptions: dict[str, int] = {}
+    GEMINI_CHAT_MAX_CONSECUTIVE_EXCEPTIONS = 2
+    dead_models: set[str] = set()
+
     for key, model in attempts:
+        if model in dead_models:
+            continue
         combo = f"{key}:{model}"
         if is_rate_limited(combo):
             continue
         try:
             log.debug("Gemini chat: model=%s key=...%s", model, key[-4:])
-            gen_cfg: dict = {"maxOutputTokens": 2048, "temperature": 0.5}
+            # temperature/top_p/top_k are deprecated on Gemini 3.x (every model
+            # left in _GEMINI_CHAT_MODELS) — Google's guidance is to leave them
+            # unset; a future model version is documented to error on them
+            # rather than silently ignore them, so we don't set one here.
+            gen_cfg: dict = {"maxOutputTokens": 2048}
             # Suppress thinking tokens — wastes the 2048-token output budget.
             # Gemini 2.5 uses thinkingBudget; Gemini 3.x uses thinkingLevel.
             # Mixing both params in one request → HTTP 400.
@@ -1507,6 +1524,9 @@ async def gemini_sse(system_prompt: str, messages: list[dict]) -> AsyncGenerator
                     },
                 )
 
+            # A response came back at all — not a timeout — so reset the
+            # streak for this model.
+            consecutive_exceptions[model] = 0
             if res.status_code == 429:
                 retry_after = int(res.headers.get("retry-after", "60"))
                 wait_ms = max(retry_after * 1000, 60_000)
@@ -1552,7 +1572,22 @@ async def gemini_sse(system_prompt: str, messages: list[dict]) -> AsyncGenerator
             return
 
         except Exception as exc:
-            log.warning("Gemini exception model=%s key=...%s: %s", model, key[-4:], exc)
+            # httpx timeout exceptions (ReadTimeout/ConnectTimeout/PoolTimeout)
+            # stringify to "" — always include the class name so a bare 45s
+            # read timeout doesn't show up as a silent, undiagnosable blank.
+            log.warning(
+                "Gemini exception model=%s key=...%s: %s%s",
+                model, key[-4:], type(exc).__name__,
+                f": {exc}" if str(exc) else " (no message — check timeout/network)",
+            )
+            consecutive_exceptions[model] = consecutive_exceptions.get(model, 0) + 1
+            if consecutive_exceptions[model] >= GEMINI_CHAT_MAX_CONSECUTIVE_EXCEPTIONS:
+                log.warning(
+                    "Gemini chat: model=%s failed %d times in a row with exceptions — "
+                    "skipping its remaining keys, moving to next model",
+                    model, consecutive_exceptions[model],
+                )
+                dead_models.add(model)
             continue
 
     raise RuntimeError("All Gemini key×model combinations failed or rate-limited")
