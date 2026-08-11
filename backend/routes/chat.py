@@ -327,6 +327,56 @@ FINANCE_TERMS = [
     "recent", "current", "now", "live", "trend",
 ]
 
+# Terms that, on their own, unambiguously mean "Indian stock/investing markets" —
+# no other business/agency/personal-finance context realistically uses them.
+# Classification hinges on these; the generic FINANCE_TERMS list above is too
+# broad on its own (see STRONG_FINANCE_TERMS note below).
+STRONG_FINANCE_TERMS = [
+    "nifty", "sensex", "bse", "nse", "ipo", "rbi", "sebi", "amfi",
+    "nifty 50", "nifty bank", "nifty it", "nifty auto", "nifty fmcg",
+    "stock", "share", "equity", "mutual fund", "nav", "sip", "dividend",
+    "demat", "etf", "reit", "aif", "pms", "fii", "dii", "gmp",
+    "ipo allotment", "grey market", "buyback", "rights issue", "qip", "ofs",
+    "block deal", "bulk deal", "bond", "gilt", "treasury", "g-sec",
+    "repo rate", "monetary policy", "rupee depreciation", "trade deficit",
+    "lic", "hdfc", "icici", "sbi", "axis", "kotak", "reliance", "tata",
+    "infosys", "wipro", "tcs", "adani", "bajaj", "zerodha", "groww",
+    "paytm", "zomato", "ola", "swiggy", "nykaa", "delhivery",
+    "penny stock", "mid cap", "small cap", "large cap", "bluechip",
+    "52 week", "all time high", "ath", "f&o", "fno", "derivative",
+    "futures", "options", "expiry", "bearish", "bullish", "breakout",
+    "support", "resistance", "roe", "roce", "npa", "credit growth",
+]
+
+# Words that strongly signal "this is about running MY business/agency/service,
+# not the stock market" — even though they overlap vocabulary-wise with generic
+# finance words like "revenue," "profit," or "market." If present, treat the
+# query as general regardless of how many weak FINANCE_TERMS matched, since
+# these are decisive context clues a stock-market persona has no business
+# answering (e.g. hiring plans, client counts, service pricing).
+BUSINESS_OPS_OVERRIDE_TERMS = [
+    "client", "clients", "customer", "customers", "employee", "employees",
+    "hire", "hiring", "hired", "staff", "team of", "my team", "my agency",
+    "my business", "my company", "my startup", "startup idea", "business idea",
+    "freelance", "freelancer", "agency", "digital marketing", "app development",
+    "website development", "web development", "saas", "retainer", "clientele",
+    "service business", "consulting business", "my clients",
+]
+
+
+def classify_query(msg: str) -> str:
+    m = msg.lower()
+    if any(t in m for t in BUSINESS_OPS_OVERRIDE_TERMS):
+        return "general"
+    if any(t in m for t in STRONG_FINANCE_TERMS):
+        return "finance"
+    # No unambiguous market term present — fall back to the broad list, but
+    # require at least 2 distinct hits so a single generic word like "profit"
+    # or "current" (common in any business/general question) doesn't alone
+    # misroute the query into the stock-market persona.
+    weak_hits = {t for t in FINANCE_TERMS if t in m}
+    return "finance" if len(weak_hits) >= 2 else "general"
+
 SKIP_SEARCH_PREFIXES = [
     "what is ", "define ", "explain how ", "how does ",
     "what are the basics", "difference between",
@@ -635,11 +685,6 @@ async def rewrite_query_for_search(last_msg: str, history: list[dict]) -> list[s
         log.debug("Query rewrite failed (non-critical): %s", exc)
 
     return optimize_search_query(last_msg)
-
-
-def classify_query(msg: str) -> str:
-    m = msg.lower()
-    return "finance" if any(t in m for t in FINANCE_TERMS) else "general"
 
 
 # ─── Country detection for Tavily's `country` boost param ──────────────────
