@@ -1665,8 +1665,9 @@ export default function GrowthGradualChat() {
                   {
                     role: 'user',
                     content:
-                      `Based on this Q&A about Indian finance/markets, suggest exactly 3 short follow-up questions ` +
-                      `a user might ask next. Add a relevant emoji before each question. ` +
+                      `Based on this Q&A, suggest exactly 3 short follow-up questions ` +
+                      `a user might ask next, staying on the same topic as the Q&A below. ` +
+                      `Add a relevant emoji before each question. ` +
                       `Return ONLY a JSON array of 3 strings, no explanation, no markdown.\n\n` +
                       `Q: ${q.slice(0, 200)}\nA: ${finalText.slice(0, 600)}`,
                   },

@@ -503,7 +503,7 @@ def _finalize_query(text: str, current_year: int | None = None) -> str:
     return cleaned
 
 
-def optimize_search_query(text: str, current_year: int | None = None) -> list[str]:
+def optimize_search_query(text: str, current_year: int | None = None, qtype: str = "general") -> list[str]:
     """
     Deterministic, LLM-free conversion of a user prompt into one or more
     concise Tavily-style search queries.
@@ -524,6 +524,15 @@ def optimize_search_query(text: str, current_year: int | None = None) -> list[st
       ties both halves into one combined ask — that's the difference
       between "Promoter exits and sector rotation" (2 independent topics)
       and "Reliance and Tata Motors comparison" (1 joint comparison).
+      Splitting is only attempted for finance queries (qtype="finance") —
+      its examples and design (comparing named entities/sectors) don't
+      generalize to a general-purpose narrative message. A general query
+      describing one continuous situation ("I'm at 1L/month and I hired
+      two people and my profit is...") isn't two search intents just
+      because it contains the word "and"; splitting it at the first "and"
+      produces one truncated fragment and one garbled grab-bag of the
+      remaining unrelated clauses, neither of which is a usable search
+      query. See the finance-only guard below.
 
     NOTE: being rule-based, this won't paraphrase/reorder as fluently as an
     LLM would (e.g. it won't expand "FTAs" to "free trade agreements" or
@@ -536,14 +545,15 @@ def optimize_search_query(text: str, current_year: int | None = None) -> list[st
         return [text]
 
     stripped_end = text.rstrip(" ?.!")
-    m = _MULTI_INTENT_SPLIT_RE.match(text)
-    if m and not _JOINT_SUFFIX_RE.search(stripped_end):
-        first, second = m.group(1).strip(), m.group(2).strip()
-        if first and second:
-            return [
-                _finalize_query(first, current_year),
-                _finalize_query(second, current_year),
-            ]
+    if qtype == "finance":
+        m = _MULTI_INTENT_SPLIT_RE.match(text)
+        if m and not _JOINT_SUFFIX_RE.search(stripped_end):
+            first, second = m.group(1).strip(), m.group(2).strip()
+            if first and second:
+                return [
+                    _finalize_query(first, current_year),
+                    _finalize_query(second, current_year),
+                ]
 
     return [_finalize_query(text, current_year)]
 
@@ -621,7 +631,7 @@ def _sort_and_filter_by_freshness(results: list[dict], keep_old: bool = True) ->
     return [r for _, r in dated] + undated
 
 
-async def rewrite_query_for_search(last_msg: str, history: list[dict]) -> list[str]:
+async def rewrite_query_for_search(last_msg: str, history: list[dict], qtype: str = "general") -> list[str]:
     """
     Turns `last_msg` into one or more Tavily-ready search queries.
 
@@ -633,15 +643,15 @@ async def rewrite_query_for_search(last_msg: str, history: list[dict]) -> list[s
       deterministically by optimize_search_query() — no LLM call, and no
       change in per-request latency/cost from before.
 
-    Falls back to optimize_search_query(last_msg) on any error.
+    Falls back to optimize_search_query(last_msg, qtype=qtype) on any error.
     """
     if not _is_ambiguous_followup(last_msg):
-        return optimize_search_query(last_msg)
+        return optimize_search_query(last_msg, qtype=qtype)
 
     # Build a compact context from the last 4 turns (2 user + 2 assistant)
     recent = [m for m in history if m.get("role") in ("user", "assistant")][-4:]
     if not recent:
-        return optimize_search_query(last_msg)
+        return optimize_search_query(last_msg, qtype=qtype)
 
     context_lines = "\n".join(
         f"{m['role'].upper()}: {str(m['content'])[:300]}" for m in recent
@@ -660,7 +670,7 @@ async def rewrite_query_for_search(last_msg: str, history: list[dict]) -> list[s
     # Use Groq (fast, cheap) for this lightweight rewrite task
     keys = get_groq_keys()
     if not keys:
-        return optimize_search_query(last_msg)
+        return optimize_search_query(last_msg, qtype=qtype)
 
     key = keys[0]
     try:
@@ -684,7 +694,7 @@ async def rewrite_query_for_search(last_msg: str, history: list[dict]) -> list[s
     except Exception as exc:
         log.debug("Query rewrite failed (non-critical): %s", exc)
 
-    return optimize_search_query(last_msg)
+    return optimize_search_query(last_msg, qtype=qtype)
 
 
 # ─── Country detection for Tavily's `country` boost param ──────────────────
@@ -1894,7 +1904,7 @@ async def chat(request: Request):
     if do_search or has_rag:
         # Pass history excluding the current (last) user message so context is prior turns
         prior_history = messages[:-1] if messages and messages[-1].get("role") == "user" else messages
-        search_queries = await rewrite_query_for_search(last_user_msg, prior_history)
+        search_queries = await rewrite_query_for_search(last_user_msg, prior_history, qtype=qtype)
     search_query = search_queries[0]  # representative query, used for RAG + logging
 
     log.info(

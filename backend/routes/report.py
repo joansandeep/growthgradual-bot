@@ -1641,7 +1641,11 @@ MIN_REPORT_CHARS = 22_000
 # tens of minutes, which starves the request well past any reasonable client
 # or proxy timeout and leaves the user watching a spinner indefinitely.
 # Past this budget we stop trying and fall back to the best candidate seen.
-GEMINI_TIME_BUDGET_SECONDS = 75
+# NOTE: this must stay comfortably larger than a handful of per-attempt
+# timeouts (see the httpx.Timeout(read=35, ...) below) — 75s against a 120s
+# per-attempt timeout meant only 1-2 keys could ever be tried before this
+# budget was exhausted, regardless of how many keys were configured.
+GEMINI_TIME_BUDGET_SECONDS = 100
 # Cap on keys tried per model before moving on — with many keys configured,
 # exhausting all of them against one struggling/overloaded model is rarely
 # worth it; better to give the remaining models their turn sooner.
@@ -1727,7 +1731,21 @@ async def call_gemini(user_prompt: str) -> tuple[str, str]:
                 generation_config["thinkingConfig"] = {"thinkingBudget": 0}
             elif model in _GEMINI_3X:
                 generation_config["thinkingConfig"] = {"thinkingLevel": "minimal"}
-            async with httpx.AsyncClient(timeout=120) as client:
+            # Per-attempt timeout is intentionally short relative to
+            # GEMINI_TIME_BUDGET_SECONDS above. The old value (120s) meant a
+            # single slow/overloaded response could burn almost the entire
+            # 75s loop budget on just 1-2 of the 22 configured keys —
+            # observed in production as "Gemini: time budget exhausted"
+            # after only 2 attempts, followed by total report failure even
+            # though 20+ untried keys remained. 35s read timeout matches
+            # this function's own "~30s per attempt" assumption (see the
+            # GEMINI_TIME_BUDGET_SECONDS comment above) with a small margin
+            # for a genuinely large, successfully-streaming report — while
+            # still failing a truly stuck/overloaded key fast enough for
+            # the loop to reach more keys/models within budget.
+            async with httpx.AsyncClient(
+                timeout=httpx.Timeout(connect=5, read=35, write=10, pool=5)
+            ) as client:
                 res = await client.post(
                     f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={key}",
                     json={
