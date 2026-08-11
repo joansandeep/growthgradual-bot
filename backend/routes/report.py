@@ -281,6 +281,16 @@ RBI held rates, then on June 11 the US struck Iran, then on June 19 Accenture cu
 exactly the pattern to avoid — that is a table wearing prose. Reserve paragraph prose for genuine
 analysis and connective reasoning between data points, not for listing the data points themselves.
 
+NEVER DRAW DIAGRAMS OUT OF TEXT CHARACTERS: do not represent a funnel, flowchart, pipeline, or any
+other multi-step sequence using bracketed stage names and box/arrow symbols on their own lines (e.g.
+"[Stage One]" / "■" / "▼" / "→" stacked as a pseudo-diagram). This renders as literal, broken-looking
+characters in the PDF, not an actual diagram — there is no rendering support for ASCII/unicode art in
+the report body. Any step-by-step sequence (a funnel, a process, a pipeline) must instead become
+either: (a) a numbered markdown list with a short bolded stage name and 1-2 sentences per step (this
+is the default — use it for most sequences), or (b) an arrow chart if the sequence is really a
+before-vs-after metric change for named items, or (c) a simple table with columns like Stage | What
+Happens | Output. Whichever you pick, it also counts toward the STEP 4 chart/table floor above.
+
 STEP 1 — AGGRESSIVELY SCAN sources for ANY chartable numbers:
   • Returns/performance of multiple funds, stocks, sectors → bar chart
   • Rankings with numbers (top 5 SIPs by return, top gainers) → bar chart
@@ -440,14 +450,25 @@ STEP 3 — Place [CHART_n] inline in the report markdown right after the paragra
 STEP 4 — MINIMUM 6 charts/tables per report, no exceptions unless sources are genuinely numeric-free.
   This report runs long (10-12 pages), and visuals — not walls of text — are what fill that length
   well and make the report interesting to read. Target 7-10 total when the sources support it; treat
-  6 as the floor, not an aspiration. Before finalizing, count your "charts" array: if it has fewer
-  than 6 entries, go back through the sources/file data and STEP 1's per-scenario list again — there
+  6 as the floor, not an aspiration. BEFORE FINALIZING, DO THIS COUNT EXPLICITLY: add up the total
+  number of entries across BOTH your "charts" array AND every markdown table you wrote in the report
+  body — that combined number, not just the charts array alone, is what must be ≥6. If the combined
+  total is under 6, go back through the sources/file data and STEP 1's per-scenario list again — there
   is almost always another chartable angle you skipped (a ratio, a trend, a breakdown, a comparison
   across a different pairing of the same entities) rather than genuinely no more data. Only report
   fewer than 6 if the sources are so thin there is truly nothing left to chart — that should be rare,
   not the default outcome. Vary the shapes (bar, stacked bar, line, pie, arrow, scatter) rather than
   repeating the same shape for every chart; use the stacked-bar shape above whenever a breakdown
   is compared across multiple labels.
+
+  THIN CHARTS COUNT AGAINST YOU, NOT FOR YOU: a bar/pie chart needs ≥3 distinct labels on its
+  category axis, and this applies to grouped/multi-series bar charts too — "2 groups × 3 series each"
+  is still only 2 category-axis labels and reads as sparse, not as 6 data points. If a comparison
+  naturally has only 2 anchor points (e.g. "current state" vs "target state" for the same set of
+  metrics), do NOT force it into a single grouped bar chart — instead either (a) split it into one
+  small chart per metric where each has ≥3 meaningful labels, (b) use an arrow chart per metric
+  (Previous → Target, one arrow per named metric = multiple items, not one 2-bar group), or (c) drop
+  the chart and present it as a table, which still counts toward the STEP 4 floor above.
 
   TABLES SHOULD OFTEN CARRY A COMPANION CHART, NOT STAND ALONE: per the TABLE vs CHART rule above,
   whenever a table's data has one ranked/comparable column that would read clearly as a visual on its
@@ -550,6 +571,16 @@ to give the report a visual anchor — a conceptual/editorial illustration, neve
 ✓ Reference each with [WEB_IMG_n] inline in the report body, at the point in the section it illustrates
   — same placeholder mechanics as [CHART_n], numbered in the order the "images" array lists them.
 ✗ Never invent a caption number/stat not already stated elsewhere in the report as its own bullet/table/chart.
+✓ FINAL SELF-CHECK before submitting each image prompt — read your own prompt back and ask: "Could this
+  exact sentence describe literally any office/industry, or does it name something only THIS report's
+  topic would produce?" A prompt like "a modern office with a desk, monitor, and whiteboard" or "a
+  minimalist meeting room with a screen" passes visually as fine but is still a reskinned version of the
+  banned clichés — generic room + generic tech + generic furniture, with no detail that ties it to the
+  report's actual subject. If your prompt would still make sense with the company/industry name swapped
+  out for a random unrelated one, rewrite it: name the specific artifact, material, tool, or activity from
+  THIS report (the specific deliverable being built, the specific niche being sold to, the specific
+  document/dashboard/product on screen — described generically, never as real branded UI) before
+  finalizing.
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 REPORT STRUCTURE — PLAN THE SECTIONS YOURSELF, EVERY TIME, FROM THE ACTUAL QUESTION:
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
