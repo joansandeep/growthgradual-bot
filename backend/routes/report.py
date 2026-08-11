@@ -1631,10 +1631,21 @@ def _is_rest_api_key(key: str) -> bool:
 
 
 GEMINI_MODELS = [
-    "gemini-3.6-flash",        # 65 536 output tokens — GA, current default Flash
-    "gemini-3.5-flash",        # 65 536 output tokens — previous-gen flash
-    "gemini-3-flash-preview",  # 65 536 output tokens — Gemini 3 preview
-    "gemini-3.5-flash-lite",   # 32 768 output tokens — last resort (smallest window)
+    # Order matters: this is a priority queue, tried top-to-bottom. Reordered
+    # 2026-08-11 — production logs showed gemini-3.6-flash and gemini-3.5-flash
+    # consistently ReadTimeout (not 503 — a silent hang to the 35s cutoff) on
+    # every single report request, while gemini-3-flash-preview succeeded
+    # reliably every time with the same keys. Trying the two problem models
+    # first was costing ~140s (2 models × 2 keys × 35s) of dead time on every
+    # report before ever reaching the model that actually works. If Google
+    # resolves whatever's causing 3.6-flash/3.5-flash to hang (or your
+    # account's access to them changes), move them back above
+    # gemini-3-flash-preview — they're higher quality/newer, just currently
+    # unusable for this deployment.
+    "gemini-3-flash-preview",  # 65 536 output tokens — confirmed working; try first
+    "gemini-3.5-flash-lite",   # 32 768 output tokens — smaller window but confirmed fast, cheap fallback
+    "gemini-3.6-flash",        # 65 536 output tokens — GA, but currently timing out for this account — kept as last-resort in case it recovers
+    "gemini-3.5-flash",        # 65 536 output tokens — GA, but currently timing out for this account — kept as last-resort in case it recovers
 ]
 
 # Minimum acceptable report length — see the "target 3500-4500 words" mandate
