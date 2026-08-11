@@ -36,6 +36,7 @@ from routes.pdf import router as pdf_router
 from routes.okf import router as okf_router
 from routes.email import router as email_router
 from routes.rag import router as rag_router
+from utils.keys import get_gemini_keys, get_groq_keys, load_persisted_bans
 
 app = FastAPI(title="Growth Gradual API", version="1.0.0")
 
@@ -114,6 +115,9 @@ async def on_startup():
     log.info("  Groq keys: %d  |  Tavily keys: %d  |  Gemini keys: %d", groq_n, tavily_n, gemini_n)
     log.info("  Listening on http://0.0.0.0:8000")
     log.info("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+    # Restore any still-active 24h key bans from before this restart — see
+    # utils/keys.py module docstring for why this matters on frequent redeploys.
+    await load_persisted_bans(get_gemini_keys(), get_groq_keys())
     # Start background RAG keepalive (supplements external cron)
     asyncio.create_task(_keepalive_rag())
     log.info("  RAG keepalive task started (interval: 10 min)")

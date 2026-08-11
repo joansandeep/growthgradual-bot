@@ -1642,18 +1642,20 @@ GEMINI_MODELS = [
 # provider) enforce the same floor.
 MIN_REPORT_CHARS = 22_000
 
-# Hard wall-clock budget for the ENTIRE call_gemini() attempt loop, across all
-# keys and models combined. Without this, a Gemini outage (mass 503s) or a
-# string of "too short" rejections walks every key×model combination
-# sequentially — with 22 keys × 4 models × up to ~30s per attempt, that's
-# tens of minutes, which starves the request well past any reasonable client
-# or proxy timeout and leaves the user watching a spinner indefinitely.
-# Past this budget we stop trying and fall back to the best candidate seen.
-# NOTE: this must stay comfortably larger than a handful of per-attempt
-# timeouts (see the httpx.Timeout(read=35, ...) below) — 75s against a 120s
-# per-attempt timeout meant only 1-2 keys could ever be tried before this
-# budget was exhausted, regardless of how many keys were configured.
-GEMINI_TIME_BUDGET_SECONDS = 100
+# NOTE: this used to also enforce a hard wall-clock budget across the whole
+# attempt loop (GEMINI_TIME_BUDGET_SECONDS = 100s). That budget was cutting
+# the loop off after only ~3 attempts against a single struggling model —
+# before most keys, and often before any other model, ever got tried. In
+# particular it meant keys that were actually being rate-limited/banned
+# never got far enough in the loop to be marked as such (see
+# utils/keys.py's mark_rate_limited/persist logic) — so the same dead keys
+# kept getting reached first on the next request too. Removed: the loop now
+# runs until it finds a working response or genuinely exhausts every
+# key×model combination, bounded only by the per-attempt timeout and the
+# per-model consecutive-exception circuit breaker below (not by a global
+# clock). If this turns out to run too long against a client/proxy timeout,
+# reintroduce a budget that's a multiple of (max keys per model × per-attempt
+# timeout × number of models) rather than an arbitrary flat 100s.
 # Cap on keys tried per model before moving on — with many keys configured,
 # exhausting all of them against one struggling/overloaded model is rarely
 # worth it; better to give the remaining models their turn sooner.
@@ -1670,12 +1672,11 @@ _GEMINI_MAX_OUTPUT = {
 
 # Consecutive-exception circuit breaker, per model — see the "no point trying
 # other keys" 404 handling below for the same idea applied to hard failures.
-# A single struggling/overloaded model can otherwise eat the ENTIRE
-# GEMINI_TIME_BUDGET_SECONDS on its own: 3 consecutive httpx read timeouts
-# at 35s each is already 105s, more than the whole budget, starving every
-# other model of a turn. Two consecutive exceptions on the same model is
-# treated the same as a 404 — move on, don't burn the rest of the budget
-# proving it a third time.
+# Now that the loop has no global time budget (see module-level note above),
+# this is what stops a genuinely dead/unreachable model from working through
+# its entire GEMINI_MAX_KEYS_PER_MODEL allotment one slow timeout at a time —
+# two consecutive exceptions on the same model is treated the same as a 404
+# and the loop moves on to the next model instead of proving it a third time.
 GEMINI_MAX_CONSECUTIVE_EXCEPTIONS = 2
 
 
@@ -1720,12 +1721,6 @@ async def call_gemini(user_prompt: str) -> tuple[str, str]:
     loop_start = time.perf_counter()
 
     for key, model in attempts:
-        if time.perf_counter() - loop_start > GEMINI_TIME_BUDGET_SECONDS:
-            log.warning(
-                "Gemini: time budget (%ds) exhausted — stopping attempt loop early",
-                GEMINI_TIME_BUDGET_SECONDS,
-            )
-            break
         if model in dead_models:
             continue
         if is_rate_limited(f"{key}:{model}"):
@@ -1757,18 +1752,11 @@ async def call_gemini(user_prompt: str) -> tuple[str, str]:
                 # guidance is to leave them unset rather than pass a value, since
                 # a future model version is documented to error on them instead
                 # of silently ignoring them.
-            # Per-attempt timeout is intentionally short relative to
-            # GEMINI_TIME_BUDGET_SECONDS above. The old value (120s) meant a
-            # single slow/overloaded response could burn almost the entire
-            # 75s loop budget on just 1-2 of the 22 configured keys —
-            # observed in production as "Gemini: time budget exhausted"
-            # after only 2 attempts, followed by total report failure even
-            # though 20+ untried keys remained. 35s read timeout matches
-            # this function's own "~30s per attempt" assumption (see the
-            # GEMINI_TIME_BUDGET_SECONDS comment above) with a small margin
-            # for a genuinely large, successfully-streaming report — while
-            # still failing a truly stuck/overloaded key fast enough for
-            # the loop to reach more keys/models within budget.
+            # 35s read timeout: generous enough for a genuinely large,
+            # successfully-streaming report, while still failing a truly
+            # stuck/overloaded key within a reasonable time so the loop
+            # (now unbounded by a global clock — see the module-level note
+            # above) can move on to the next key/model.
             async with httpx.AsyncClient(
                 timeout=httpx.Timeout(connect=5, read=35, write=10, pool=5)
             ) as client:
@@ -1888,7 +1876,7 @@ async def call_gemini(user_prompt: str) -> tuple[str, str]:
                 f": {exc}" if str(exc) else " (no message — check timeout/network)",
             )
             # Circuit breaker: a struggling/overloaded model can otherwise burn
-            # the entire GEMINI_TIME_BUDGET_SECONDS on repeated timeouts against
+            # through its entire key allotment on repeated timeouts against
             # itself, starving every other model in GEMINI_MODELS of a turn —
             # see GEMINI_MAX_CONSECUTIVE_EXCEPTIONS above.
             consecutive_exceptions[model] = consecutive_exceptions.get(model, 0) + 1
@@ -1901,7 +1889,8 @@ async def call_gemini(user_prompt: str) -> tuple[str, str]:
                 dead_models.add(model)
             continue
 
-    log.error("Gemini: all key×model combinations exhausted")
+    total_elapsed = time.perf_counter() - loop_start
+    log.error("Gemini: all key×model combinations exhausted (%.0fs total)", total_elapsed)
     return "", ""
 
 # ── AI image generation (Imagen + Gemini) ───────────────────────────────────
