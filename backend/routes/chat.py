@@ -414,6 +414,19 @@ _FILLER_PHRASES = [
     "easy to understand",
     "detailed analysis",
     "in detail",
+    "how can you",
+    "how do you",
+    "how can i",
+    "how do i",
+    "can you",
+    "could you",
+    "please provide",
+    "provide me with",
+    "give me",
+    "show me",
+    "tell me about",
+    "i want",
+    "i need",
     "explain",
     "analyze",
     "analyse",
@@ -426,8 +439,21 @@ _FILLER_PHRASES = [
     "uhni",
     "reasoning",
 ]
+# A stopword immediately touching a filler word almost always belonged to the
+# filler phrase, not the actual subject (e.g. "report with charts on Nifty" —
+# "with"/"on" only existed to connect the filler nouns to each other). Left
+# behind after a bare filler-word strip, these produce the same class of
+# broken query as the "&" bug: "give me a detailed report with charts on
+# Nifty Bank" -> "give me a with on Nifty Bank" once "detailed"/"report"/
+# "charts" are removed but their neighboring stopwords aren't. Consuming one
+# optional stopword on either side of each filler match (not just the filler
+# word itself) fixes this at the source instead of trying to detect orphans
+# after the fact.
+_QUERY_STOPWORDS = r"(?:a|an|the|with|on|of|for|to|in|at|&|and|or)"
 _FILLER_RE = re.compile(
-    r"\b(" + "|".join(re.escape(p) for p in _FILLER_PHRASES) + r")\b",
+    r"\b(?:" + _QUERY_STOPWORDS + r"\s+)?"
+    r"(" + "|".join(re.escape(p) for p in _FILLER_PHRASES) + r")"
+    r"(?:\s+" + _QUERY_STOPWORDS + r")?\b",
     re.IGNORECASE,
 )
 
@@ -474,10 +500,29 @@ _HISTORICAL_SUFFIX = " quarter-wise comparison historical data"
 
 
 def _clean_query_text(text: str) -> str:
-    """Strip filler words/phrases and collapse leftover whitespace/punctuation."""
+    """Strip filler words/phrases and collapse leftover whitespace/punctuation.
+
+    Filler removal can strand a connector that was only ever joining two
+    filler words — e.g. "explain & analyze" has both "explain" and "analyze"
+    in _FILLER_PHRASES, but the "&" between them survives the substitution
+    untouched, leaving "how can you & the sector rotation..." once whitespace
+    collapses. Tavily returns zero results for a query with a stray bare "&"
+    like that (confirmed from production logs), so any orphaned connector
+    left dangling after filler removal — "&", "and", "or", "," floating
+    between spaces with no real word immediately after a stripped one —
+    needs its own cleanup pass, not just whitespace collapsing.
+    """
     cleaned = _FILLER_RE.sub(" ", text)
-    cleaned = re.sub(r"\s{2,}", " ", cleaned).strip(" .,:;-")
-    return cleaned
+    # Remove a connector that's now flanked by spaces on both sides (i.e. it
+    # used to sit between two words and one of them just got stripped).
+    cleaned = re.sub(r"(?<=\s)(&|and|or)(?=\s)", " ", cleaned, flags=re.IGNORECASE)
+    cleaned = re.sub(r"\s{2,}", " ", cleaned).strip(" .,:;-&")
+    # A connector can also end up leading/trailing after the strip above
+    # (e.g. "& the sector rotation" -> "the sector rotation" needed a second
+    # pass since strip() only trims exact chars, not the word "and").
+    cleaned = re.sub(r"^(and|or)\s+", "", cleaned, flags=re.IGNORECASE)
+    cleaned = re.sub(r"\s+(and|or)$", "", cleaned, flags=re.IGNORECASE)
+    return cleaned.strip()
 
 
 def _finalize_query(text: str, current_year: int | None = None) -> str:
