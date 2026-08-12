@@ -367,7 +367,7 @@ STEP 1 — AGGRESSIVELY SCAN sources for ANY chartable numbers:
   → NEVER mix price values and percentage changes in the same chart series or bar group.
      BAD: series=[{name:"Gold",data:[{label:"Current Price",value:125957},{label:"Change",value:-3}]}, ...]
      GOOD: Make ONE chart for price trend (line, % change), ONE separate bar chart for key stats like 1-month return %
-  → Also add a bar chart comparing key stats (1-month return %, 52-week high/low, current price) — but ONLY if you have ≥3 distinct comparable stats from the sources
+  → Also add a bar chart comparing key stats (1-month return %, 52-week high/low, current price) — but ONLY if you have ≥4 distinct comparable stats from the sources
 
   COMPOSITION / BREAKDOWN TOPICS — USE A STACKED BAR WHEN IT FITS:
   When a label (e.g. a quarter, a fund, a sector) breaks down into 2+ parts of
@@ -396,20 +396,20 @@ STEP 1 — AGGRESSIVELY SCAN sources for ANY chartable numbers:
   • Mutual fund topic → pie chart of category allocation OR bar of returns by category
 
 STEP 2 — ONLY create a chart if ALL conditions are met:
-  ✓ At least 3 data points (bar/pie) or 4 time points (line), 2 items (arrow), 4 items (scatter)
+  ✓ At least 4 data points (bar/dot), 3 (pie), or 4 time points (line), 2 items (arrow), 4 items (scatter)
   ✓ All labels are DIFFERENT from each other
   ✓ All values are DIFFERENT from each other (not all the same)
   ✓ Values come from the source data — do NOT invent numbers
   ✗ NEVER create a chart from a single number
   ✗ NEVER duplicate labels
   ✗ NEVER use future/projected values you invented
-  ✗ A bar chart needs ≥3 named distinct items; a pie chart needs ≥2; an arrow chart
+  ✗ A bar/dot chart needs ≥4 named distinct items; a pie chart needs ≥2; an arrow chart
     needs ≥2; a scatter chart needs ≥4 — this is enforced server-side and anything
     short of that WILL be silently dropped, wasting the slot.
   → If the topic naturally centers on 2 entities (e.g. "HDFC vs ICICI"), actively
     scan the rest of the sources for OTHER comparable entities mentioned anywhere
     (peer banks, sector averages, other funds in the same category, etc.) and add
-    them as additional bars/slices so the chart clears the ≥3-item bar. If no
+    them as additional bars/slices so the chart clears the ≥4-item bar. If no
     third comparable entity exists anywhere in the sources, skip the chart
     entirely rather than rendering a thin 2-item one.
   → PARTIAL DATA: If some entities in a comparison lack a specific metric (e.g. SBI
@@ -427,7 +427,7 @@ STEP 2 — ONLY create a chart if ALL conditions are met:
   figure for all of them (e.g. "IndiGo, Vedanta, and Whirlpool saw combined promoter
   sales of Rs.12,000 crore" — three companies, one number), that is NOT a 3-item bar
   chart — it's a single data point wearing three names. Charting it will be silently
-  dropped server-side (need ≥3 DISTINCT values, not ≥3 names sharing one value), wasting
+  dropped server-side (need ≥4 DISTINCT values, not ≥4 names sharing one value), wasting
   a chart slot you could have used elsewhere. Instead:
   → FIRST, actively re-scan the sources for each entity's INDIVIDUAL figure — company-specific
     press coverage often gives per-entity numbers even when a summary sentence combines them.
@@ -469,12 +469,12 @@ STEP 4 — MINIMUM 8 charts/tables per report, no exceptions unless sources are 
   repeating the same shape for every chart; use the stacked-bar shape above whenever a breakdown
   is compared across multiple labels.
 
-  THIN CHARTS COUNT AGAINST YOU, NOT FOR YOU: a bar/pie chart needs ≥3 distinct labels on its
+  THIN CHARTS COUNT AGAINST YOU, NOT FOR YOU: a bar/dot chart needs ≥4 distinct labels (pie needs ≥3) on its
   category axis, and this applies to grouped/multi-series bar charts too — "2 groups × 3 series each"
   is still only 2 category-axis labels and reads as sparse, not as 6 data points. If a comparison
   naturally has only 2 anchor points (e.g. "current state" vs "target state" for the same set of
   metrics), do NOT force it into a single grouped bar chart — instead either (a) split it into one
-  small chart per metric where each has ≥3 meaningful labels, (b) use an arrow chart per metric
+  small chart per metric where each has ≥4 meaningful labels, (b) use an arrow chart per metric
   (Previous → Target, one arrow per named metric = multiple items, not one 2-bar group), or (c) drop
   the chart and present it as a table, which still counts toward the STEP 4 floor above.
 
@@ -2391,8 +2391,8 @@ async def generate_report(request: Request):
     # kept producing its usual 2-3 charts regardless of what was asked. Now,
     # when this fires, an extra directive below raises the floor explicitly.
     _WANTS_MORE_DATA_RE = re.compile(
-        r"\b(more|richer|deeper|additional|extra)\s+(data\s*points?|charts?|graphs?|"
-        r"visuals?|infographics?|numbers|metrics|statistics)\b"
+        r"\b(more|richer|deeper|additional|extra|add)\s+(data\s*points?|charts?|graphs?|"
+        r"visuals?|infographics?|numbers|metrics|statistics|figures)\b"
         r"|\binfographics?\b"
         r"|\bmore\s+granular\b",
         re.IGNORECASE,
@@ -2476,7 +2476,7 @@ async def generate_report(request: Request):
     has_file_data = bool(file_context.strip()) or bool(extracted_image_context.strip())
 
     if has_file_data and not sources:
-        from routes.chat import tavily_search as _tavily_search, _looks_like_ai_overview, needs_web_search as _needs_web_search
+        from routes.chat import tavily_search_multi as _tavily_search_multi, _looks_like_ai_overview, needs_web_search as _needs_web_search
         if _needs_web_search(question, has_files=True):
             # Question implies it wants more than just the file (e.g. asks for
             # market context, comparisons, recent news) — supplement with web data.
@@ -2484,8 +2484,9 @@ async def generate_report(request: Request):
             search_query = _augment_query_for_historical_data(
                 _build_followup_search_query(question, conversation_context)
             )
-            searched = await _tavily_search(
-                search_query, max_results=20, min_results=10,
+            searched = await _tavily_search_multi(
+                [search_query, f"{search_query} data statistics figures"],
+                max_results=20, min_results=10,
                 historical_intent=bool(_HISTORICAL_INTENT_RE.search(question)),
             )
             sources = [
@@ -2500,15 +2501,16 @@ async def generate_report(request: Request):
             log.info("Report: file-first mode — question doesn't need web search, using file data only")
     elif not sources:
         log.info("Report: no sources — running own Tavily search for %r", question[:60])
-        from routes.chat import tavily_search as _tavily_search, _looks_like_ai_overview
+        from routes.chat import tavily_search_multi as _tavily_search_multi, _looks_like_ai_overview
         search_query = _augment_query_for_historical_data(
             _build_followup_search_query(question, conversation_context)
         )
         if search_query != question:
             log.info("Report: search query enriched (%d → %d chars): %r",
                       len(question), len(search_query), search_query[:150])
-        searched = await _tavily_search(
-            search_query, max_results=20,
+        searched = await _tavily_search_multi(
+            [search_query, f"{search_query} data statistics figures"],
+            max_results=20,
             historical_intent=bool(_HISTORICAL_INTENT_RE.search(question)),
         )
         sources = [
@@ -2596,8 +2598,8 @@ async def generate_report(request: Request):
     # use 25 sources and real-fetch all of them — the model's context window
     # has plenty of headroom, and more real page text = more genuine data
     # points to chart/table instead of the same handful of numbers reused.
-    ENRICH_SOURCE_COUNT = 25
-    ENRICH_FETCH_CHARS = 3000
+    ENRICH_SOURCE_COUNT = 32
+    ENRICH_FETCH_CHARS = 4200
 
     async def enrich(src: dict, idx: int) -> dict:
         if src.get("url", "").startswith("internal://"):
@@ -2768,14 +2770,16 @@ async def generate_report(request: Request):
         + ("6. Insert [FILE_IMG_n] references inline where you reference data visible in that extracted image/chart.\n" if embedded_file_images else "")
         + (
             "7. THE USER EXPLICITLY ASKED FOR MORE DATA POINTS / CHARTS / GRAPHS — go beyond the usual "
-            "STEP 4 floor of 6: produce AT LEAST 8-10 [CHART_n]/table entries if the source material "
+            "STEP 4 floor of 8: produce AT LEAST 10-14 [CHART_n]/table entries if the source material "
             "(file data, web sources, or — when NO_WEB_SOURCES — figures/ratios you can validly derive "
             "from the numbers already given) supports that many distinct chartable angles. For every "
             "metric mentioned in the text, also surface it as a keyStats entry or a chart data point "
             "rather than leaving it as a bare sentence. Where the same underlying numbers support more "
             "than one lens (e.g. absolute values AND ratios/percentages, current-state AND trend-over-"
             "time, per-unit AND aggregate), chart more than one of those lenses instead of picking just "
-            "one. This does NOT license inventing numbers — every extra chart/stat still must trace back "
+            "one. Also push past the usual 5-8-point guidance per chart where the sources allow it — "
+            "if 10+ comparable entities/periods exist for one metric, chart all of them rather than a "
+            "top-5 subset. This does NOT license inventing numbers — every extra chart/stat still must trace back "
             "to a real source figure or a straightforward derived calculation from figures already given "
             "(e.g. revenue ÷ client count = ARPU is fine; a number with no basis is not).\n"
             if wants_more_data_viz else ""
@@ -3017,7 +3021,7 @@ async def generate_report(request: Request):
         # just binary.
         if chart_type in ("bar", "dot", "pie") and n_series == 1:
             n_labels = len(series[0].get("data") or [])
-            min_labels = 2 if chart_type == "pie" else 3
+            min_labels = 2 if chart_type == "pie" else 4
             if chart_type in ("bar", "dot") and n_labels == 2:
                 vals = [_num(pt) for pt in series[0].get("data") or []]
                 is_diverging = len(vals) == 2 and (vals[0] > 0) != (vals[1] > 0)
@@ -3025,7 +3029,7 @@ async def generate_report(request: Request):
                     # e.g. FII outflow (-735) vs DII inflow (+705) — a genuine
                     # 2-way diverging comparison, not a "thin" chart. Can't be
                     # a pie (negative values aren't representable as slices),
-                    # so it's allowed through as a bar despite the usual ≥3 rule.
+                    # so it's allowed through as a bar despite the usual ≥4 rule.
                     min_labels = 2
             if n_labels < min_labels:
                 log.warning("Chart rejected — only %d distinct items (need ≥%d for %s chart): %s",
@@ -3181,7 +3185,7 @@ async def generate_report(request: Request):
         return chart_list
 
     def _recover_thin_bar_as_pie(ch: dict) -> dict:
-        """A single-series bar chart with exactly 2 items fails the ≥3-item
+        """A single-series bar chart with exactly 2 items fails the ≥4-item
         bar rule but is a perfectly legitimate pie IF both values are a genuine
         non-negative share-of-whole (e.g. "IPO listings: green vs red" 12 vs 8).
         A pie can't represent a negative value, so signed/diverging pairs (e.g.
