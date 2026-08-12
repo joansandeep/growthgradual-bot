@@ -1377,7 +1377,7 @@ def build_pdf(report: str, title: str, question: str, summary: str,
         # width available on the page.
         suffix = " · Growth Gradual"
         footer_max_w = PAGE_W - 2 * MARGIN - 70 - c.stringWidth(suffix, "Helvetica", 7)
-        footer_title = _fit_cell(c, title or "Market Intelligence Report", "Helvetica", 7, footer_max_w)
+        footer_title = _fit_cell(c, _safe_text(title) or "Market Intelligence Report", "Helvetica", 7, footer_max_w)
         footer_label = f"{footer_title}{suffix}"
         c.drawString(MARGIN, 7, footer_label)
         c.drawRightString(PAGE_W - MARGIN, 7, f"Page {page_num[0]}")
@@ -2208,6 +2208,28 @@ async def generate_pdf(request: Request):
     if not report:
         log.warning("PDF: no report content in request")
         return JSONResponse({"error": "No report content"}, status_code=400)
+
+    # Defense-in-depth: routes/report.py's failure paths (all keys exhausted,
+    # no sources for a live-data question, unparseable model response, etc.)
+    # now return a non-2xx status so the frontend's `!r.ok` check catches
+    # them before ever calling this endpoint — but a stale frontend build,
+    # a direct API caller, or the email-report route could still forward one
+    # of those sentinel error strings as if it were real report content.
+    # Building a full branded PDF around "All LLM keys exhausted or
+    # rate-limited. Try again in a minute." is exactly what produced the
+    # broken-looking "Research Intelligence" PDF seen in production — reject
+    # it here too instead of rendering it.
+    _known_failure_messages = (
+        "All LLM keys exhausted or rate-limited. Try again in a minute.",
+        "Could not retrieve data for this topic. Please try again.",
+        "Invalid request body.",
+    )
+    if report.strip() in _known_failure_messages or report.strip().startswith("## Report Generation Error"):
+        log.warning("PDF: refusing to render known report-generation-failure sentinel as a PDF")
+        return JSONResponse(
+            {"error": "The report failed to generate, so there's nothing to export yet. Please try generating the report again."},
+            status_code=422,
+        )
 
     title: str      = body.get("title", "")
     question: str   = body.get("question", "Research Report")

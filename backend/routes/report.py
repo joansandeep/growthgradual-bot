@@ -2331,7 +2331,10 @@ async def generate_report(request: Request):
     try:
         body = await request.json()
     except Exception:
-        return JSONResponse({"report": "Invalid request body.", "charts": [], "keyStats": [], "summary": "", "title": ""})
+        return JSONResponse(
+            {"error": "Invalid request body.", "report": "Invalid request body.", "charts": [], "keyStats": [], "summary": "", "title": ""},
+            status_code=400,
+        )
 
     question: str       = body.get("question", "")
     sources: list[dict] = body.get("sources", [])
@@ -2514,7 +2517,12 @@ async def generate_report(request: Request):
         ))
         if needs_current_data:
             log.warning("Report: still no sources after self-search, and question needs live data — failing")
-            return JSONResponse({"report": "Could not retrieve data for this topic. Please try again.", "charts": [], "keyStats": [], "summary": "", "title": ""})
+            return JSONResponse(
+                {"error": "Could not retrieve data for this topic. Please try again.",
+                 "report": "Could not retrieve data for this topic. Please try again.",
+                 "charts": [], "keyStats": [], "summary": "", "title": ""},
+                status_code=502,
+            )
         log.info("Report: no web sources found, but question doesn't require live data — "
                   "generating report from model knowledge instead of failing")
 
@@ -2753,10 +2761,14 @@ async def generate_report(request: Request):
     raw, model_used = await call_gemini(user_prompt)
     if not raw:
         log.error("Report: all LLM providers exhausted")
-        return JSONResponse({
-            "report": "All LLM keys exhausted or rate-limited. Try again in a minute.",
-            "charts": [], "keyStats": [], "summary": "", "title": "",
-        })
+        return JSONResponse(
+            {
+                "error": "All LLM keys exhausted or rate-limited. Try again in a minute.",
+                "report": "All LLM keys exhausted or rate-limited. Try again in a minute.",
+                "charts": [], "keyStats": [], "summary": "", "title": "",
+            },
+            status_code=503,
+        )
 
     # Strip markdown fences
     clean = raw.strip()
@@ -3013,6 +3025,30 @@ async def generate_report(request: Request):
         if len(values) > 1 and len(set(values)) <= 1:
             log.warning("Chart rejected — identical values: %s", values[:6])
             return False
+
+        # Reject bar/arrow charts where values plotted on one shared linear
+        # axis span such an extreme range that the smallest one is visually
+        # indistinguishable from zero next to the largest — e.g. "Employee
+        # Count: 2" and "Avg Revenue/Client: 8,333" together (ratio ~4,000x)
+        # render as one bar/arrow reaching the axis max and everything else
+        # as an invisible sliver at the origin, i.e. what looks like a mostly
+        # blank chart. This subsumes the old bar-only, opposite-sign-only
+        # check below it (kept for its specific log message) — the failure
+        # mode is really "one value dwarfs another on a shared axis", which
+        # doesn't require opposite signs, and arrow charts (a start→end
+        # line on the same kind of axis) are just as susceptible as bar.
+        if chart_type in ("bar", "arrow"):
+            abs_vals = [abs(v) for v in values if v != 0]
+            if len(abs_vals) >= 2:
+                ratio = max(abs_vals) / min(abs_vals)
+                if ratio > 100:
+                    log.warning(
+                        "Chart rejected — values span %.0fx on one shared axis "
+                        "(smallest would be visually invisible next to the largest): "
+                        "min=%.2f max=%.2f in '%s'",
+                        ratio, min(abs_vals), max(abs_vals), ch.get("title", "?"),
+                    )
+                    return False
 
         # Reject bar charts where a single series mixes wildly different scales
         # (e.g. price 125957 and % change -3 as two bars in the same series)
@@ -3411,8 +3447,9 @@ async def generate_report(request: Request):
 
         log.error("Report: could not salvage JSON — returning error message")
         return JSONResponse({
+            "error": "The AI response could not be parsed. Please try a more specific question.",
             "title": _sanitize_title("", question),
             "report": "## Report Generation Error\n\nThe AI response could not be parsed. Please try a more specific question.",
             "charts": [], "images": [], "keyStats": [], "summary": "", "fileImages": embedded_file_images,
-        })
+        }, status_code=502)
 
