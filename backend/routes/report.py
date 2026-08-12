@@ -1993,25 +1993,28 @@ async def _call_gemini_flash_image(client: httpx.AsyncClient, model: str, key: s
     )
 
 
-async def generate_gemini_image(prompt: str) -> bytes | None:
+async def generate_gemini_image(prompt: str) -> tuple[bytes | None, str]:
     """Generate a single PNG/JPEG image from a text prompt. Tries Pollinations
     AI first (free, unlimited, no API key — see _call_pollinations_image),
     then falls back to Imagen and Gemini's flash-image models in case
-    Pollinations is briefly down. Returns raw image bytes, or None on
-    failure — callers must treat a miss as "skip this image", never as a
-    hard error."""
+    Pollinations is briefly down. Returns (image bytes, source label) — bytes
+    is None on failure, callers must treat a miss as "skip this image", never
+    as a hard error. The source label ("pollinations"/"imagen"/"gemini") is
+    for logging only — see the caller's summary log, which used to hardcode
+    "via Gemini" regardless of which provider actually produced the image
+    (misleading, since Pollinations succeeds the vast majority of the time)."""
     async with httpx.AsyncClient(timeout=60) as client:
         img = await _call_pollinations_image(client, prompt)
     if img:
         log.info("Image gen: generated via Pollinations (%d bytes)", len(img))
-        return img
+        return img, "pollinations"
     log.warning("Image gen: Pollinations failed, falling back to Imagen/Gemini")
 
     keys = get_gemini_keys()
     rest_keys = [k for k in keys if _is_rest_api_key(k)]
     if not rest_keys:
         log.warning("Image gen: no usable API keys configured")
-        return None
+        return None, ""
 
     all_models = [(m, "imagen") for m in IMAGEN_MODELS] + [(m, "gemini") for m in GEMINI_IMAGE_MODELS]
     attempts = [
@@ -2062,7 +2065,7 @@ async def generate_gemini_image(prompt: str) -> bytes | None:
                     elapsed = (time.perf_counter() - t0) * 1000
                     log.info("Image gen: generated in %.0fms model=%s key=...%s", elapsed, model, key[-4:])
                     import base64 as _b64mod
-                    return _b64mod.b64decode(b64)
+                    return _b64mod.b64decode(b64), "imagen"
                 log.warning("Image gen: prediction had no image bytes model=%s key=...%s", model, key[-4:])
             else:
                 candidates = body.get("candidates") or []
@@ -2087,13 +2090,13 @@ async def generate_gemini_image(prompt: str) -> bytes | None:
                         elapsed = (time.perf_counter() - t0) * 1000
                         log.info("Image gen: generated in %.0fms model=%s key=...%s", elapsed, model, key[-4:])
                         import base64 as _b64mod
-                        return _b64mod.b64decode(inline["data"])
+                        return _b64mod.b64decode(inline["data"]), "gemini"
                 log.warning("Image gen: no image data in response model=%s key=...%s", model, key[-4:])
         except Exception as exc:
             log.warning("Image gen exception model=%s key=...%s: %s", model, key[-4:], exc)
             continue
     log.warning("Image gen: all key×model combinations exhausted for prompt=%r", prompt[:80])
-    return None
+    return None, ""
 
 
 async def _generate_ai_report_images(raw_images: list, max_images: int = 2) -> tuple[list[dict], list[bool]]:
@@ -2140,15 +2143,26 @@ async def _generate_ai_report_images(raw_images: list, max_images: int = 2) -> t
 
     import base64 as _b64
     final: list[dict] = []
-    for (orig_idx, prompt, caption), img_bytes in zip(candidates, results):
-        if isinstance(img_bytes, Exception) or not img_bytes:
+    sources_used: list[str] = []
+    for (orig_idx, prompt, caption), result in zip(candidates, results):
+        if isinstance(result, Exception) or not result:
+            continue
+        img_bytes, source = result
+        if not img_bytes:
             continue
         b64 = _b64.b64encode(img_bytes).decode("ascii")
         final.append({"url": f"data:image/png;base64,{b64}", "caption": caption})
         mask[orig_idx] = True
+        if source:
+            sources_used.append(source)
 
     if final:
-        log.info("Report: generated %d/%d AI image(s) via Gemini", len(final), len(candidates))
+        # Was hardcoded "via Gemini" regardless of which provider actually
+        # produced the image — misleading, since Pollinations (tried first,
+        # see generate_gemini_image) succeeds the vast majority of the time
+        # and Gemini/Imagen only ever run as a fallback.
+        src_summary = ", ".join(sorted(set(sources_used))) or "unknown"
+        log.info("Report: generated %d/%d AI image(s) via %s", len(final), len(candidates), src_summary)
     return final, mask
 
 
@@ -3236,8 +3250,15 @@ async def generate_report(request: Request):
         images, was_forced = _force_fallback_images(images, image_candidates, model_used)
         if was_forced:
             images_valid_mask = [True] * len(images)
-        elif not image_candidates:
-            log.info("Report: no image candidates were available for this query — report will have 0 images")
+        elif not image_candidates and not images:
+            # Was previously logged whenever the FALLBACK candidate pool was
+            # empty, regardless of whether the model's own AI-generated
+            # `images` (see _generate_ai_report_images above) already had
+            # entries — produced the misleading pairing "generated 1/1 AI
+            # image(s)" immediately followed by "...report will have 0
+            # images" for the very same report. Only log the "0 images"
+            # claim when it's actually true.
+            log.info("Report: no web image candidates available and no AI images were generated — report will have 0 images")
         report_text = _remap_web_image_placeholders(report_text, images_valid_mask)
 
         if "\\n" in report_text:
