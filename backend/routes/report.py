@@ -447,17 +447,25 @@ STEP 3 — Place [CHART_n] inline in the report markdown right after the paragra
   paragraph (3+ sentences) or a paragraph + bullet list precedes the chart. This prevents blank whitespace
   gaps in the PDF.
 
-STEP 4 — MINIMUM 6 charts/tables per report, no exceptions unless sources are genuinely numeric-free.
+STEP 4 — MINIMUM 8 charts/tables per report, no exceptions unless sources are genuinely numeric-free.
   This report runs long (10-12 pages), and visuals — not walls of text — are what fill that length
-  well and make the report interesting to read. Target 7-10 total when the sources support it; treat
-  6 as the floor, not an aspiration. BEFORE FINALIZING, DO THIS COUNT EXPLICITLY: add up the total
+  well and make the report interesting to read. Target 9-12 total when the sources support it; treat
+  8 as the floor, not an aspiration. BEFORE FINALIZING, DO THIS COUNT EXPLICITLY: add up the total
   number of entries across BOTH your "charts" array AND every markdown table you wrote in the report
-  body — that combined number, not just the charts array alone, is what must be ≥6. If the combined
-  total is under 6, go back through the sources/file data and STEP 1's per-scenario list again — there
+  body — that combined number, not just the charts array alone, is what must be ≥8. If the combined
+  total is under 8, go back through the sources/file data and STEP 1's per-scenario list again — there
   is almost always another chartable angle you skipped (a ratio, a trend, a breakdown, a comparison
   across a different pairing of the same entities) rather than genuinely no more data. Only report
-  fewer than 6 if the sources are so thin there is truly nothing left to chart — that should be rare,
-  not the default outcome. Vary the shapes (bar, stacked bar, line, pie, arrow, scatter) rather than
+  fewer than 8 if the sources are so thin there is truly nothing left to chart — that should be rare,
+  not the default outcome.
+
+  DATA POINTS PER CHART: a chart with only 2-3 points looks thin and rarely justifies its own card.
+  For bar/dot/line charts, include every relevant item the sources support — aim for 5-8+ labels/points
+  per chart rather than stopping at the first 2-3 that come to mind (e.g. rank all the funds/sectors/
+  companies mentioned, not just the top 2). A 2-point chart is only acceptable for a genuine single-pair
+  comparison (this year vs last year) or an arrow/scatter chart, where 2 points is not a real limitation.
+
+  Vary the shapes (bar, stacked bar, line, area, dot, pie, arrow, scatter) rather than
   repeating the same shape for every chart; use the stacked-bar shape above whenever a breakdown
   is compared across multiple labels.
 
@@ -491,7 +499,7 @@ STEP 4 — MINIMUM 6 charts/tables per report, no exceptions unless sources are 
 
 Chart spec shape:
 {
-  "type": "bar" | "line" | "pie" | "arrow" | "scatter",
+  "type": "bar" | "line" | "pie" | "arrow" | "scatter" | "dot",
   "title": "<specific title e.g. 'Top 5 SIP Funds — 3-Year Returns' not 'Chart 1'>",
   "unit": "%" | "₹" | "Cr" | "B" | "$" | "x" | "",
   "xLabel": "<what the x-axis categories are, e.g. 'Fund' or 'Sector' or 'Session Date'>",
@@ -507,6 +515,9 @@ Chart spec shape:
 multi-series chart (see COMPARISON TOPICS above) — no extra fields needed:
   → arrow: series = [{"name":"Previous","data":[...]}, {"name":"Revised"/"Current","data":[...]}]
   → scatter: series = [{"name":"<x-metric>","data":[...]}, {"name":"<y-metric>","data":[...]}]
+"dot" is a single-series chart, same shape as "bar" (one series, label/value pairs) — use it
+instead of "bar" for a ranked list of 6+ items where a lighter dot-and-stem mark reads cleaner
+than full-width columns (e.g. a long list of stocks/sectors ranked by one metric).
 AXIS LABELS ARE MANDATORY for every bar/line/arrow/scatter chart — always fill in "xLabel" and
 "yLabel" with a short (1-4 word) description of what each axis represents. A chart with numeric
 tick marks but no axis title leaves the reader guessing what the numbers mean — never omit these
@@ -3004,10 +3015,10 @@ async def generate_report(request: Request):
         # "green vs red IPO listings") since a 2-way split is still a
         # legitimate, common pie — unlike a 2-bar chart it isn't thin, it's
         # just binary.
-        if chart_type in ("bar", "pie") and n_series == 1:
+        if chart_type in ("bar", "dot", "pie") and n_series == 1:
             n_labels = len(series[0].get("data") or [])
             min_labels = 2 if chart_type == "pie" else 3
-            if chart_type == "bar" and n_labels == 2:
+            if chart_type in ("bar", "dot") and n_labels == 2:
                 vals = [_num(pt) for pt in series[0].get("data") or []]
                 is_diverging = len(vals) == 2 and (vals[0] > 0) != (vals[1] > 0)
                 if is_diverging:
@@ -3051,7 +3062,7 @@ async def generate_report(request: Request):
         # mode is really "one value dwarfs another on a shared axis", which
         # doesn't require opposite signs, and arrow charts (a start→end
         # line on the same kind of axis) are just as susceptible as bar.
-        if chart_type in ("bar", "arrow"):
+        if chart_type in ("bar", "dot", "arrow"):
             abs_vals = [abs(v) for v in values if v != 0]
             if len(abs_vals) >= 2:
                 ratio = max(abs_vals) / min(abs_vals)
@@ -3066,7 +3077,7 @@ async def generate_report(request: Request):
 
         # Reject bar charts where a single series mixes wildly different scales
         # (e.g. price 125957 and % change -3 as two bars in the same series)
-        if chart_type == "bar":
+        if chart_type in ("bar", "dot"):
             for s in series:
                 pts_vals = [_num(pt) for pt in (s.get("data") or [])]
                 if len(pts_vals) >= 2:

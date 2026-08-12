@@ -108,6 +108,12 @@ def _dw_type(spec: dict) -> str:
         # Datawrapper's arrow/range plot expects (start column, end column).
         return "d3-arrow-plot"
 
+    if chart_type == "dot":
+        # A ranked single-series list where a lighter mark reads better than
+        # full-width bars (long label lists, or values clustered together
+        # where bar-height differences are hard to compare at a glance).
+        return "d3-dot-plot"
+
     if chart_type == "pie":
         n_slices = len((series[0].get("data") or [])) if series else 0
         # A 2-slice pie reads better as a donut (emphasises one share vs. the rest)

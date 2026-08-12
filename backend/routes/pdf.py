@@ -1035,6 +1035,186 @@ def _pie(c, spec, x0, y0, w, h):
         c.drawRightString(lx + 12 + 110, iy - 1, f"{pct:.1f}%")
 
 
+def _dot(c, spec, x0, y0, w, h):
+    """Dot plot — a lighter-weight alternative to a bar chart for ranked
+    single-series lists (one dot per label on a shared value axis, joined
+    to the baseline by a thin stem). Good for long label lists where full
+    bars would look heavy."""
+    series_list = spec.get("series") or [{}]
+    data = series_list[0].get("data") or []
+    if not data:
+        return
+    unit = _safe_text(spec.get("unit", ""))
+    vals = [_coerce_value(d.get("value", 0)) for d in data]
+    max_v = max((abs(v) for v in vals), default=1) or 1
+    n = len(data)
+
+    PL, PB = 52, 40
+    pw = w - PL - 12
+    ph = h - PB - 20
+    sp = pw / n
+
+    for f in (0.25, 0.5, 0.75, 1.0):
+        gy = y0 + PB + f * ph
+        c.setStrokeColorRGB(0.88, 0.9, 0.94); c.setLineWidth(0.4)
+        c.line(x0 + PL, gy, x0 + PL + pw, gy)
+        c.setFillColorRGB(*GREY); c.setFont("Helvetica", 6.5)
+        c.drawRightString(x0 + PL - 3, gy - 2.5, f"{f * max_v:.1f}{unit}" if max_v < 10 else f"{f * max_v:.0f}{unit}")
+
+    c.setStrokeColorRGB(0.78, 0.82, 0.88); c.setLineWidth(0.8)
+    c.line(x0 + PL, y0 + PB, x0 + PL + pw, y0 + PB)
+
+    for i, d in enumerate(data):
+        v = _coerce_value(d.get("value", 0))
+        cx2 = x0 + PL + i * sp + sp / 2
+        cy2 = y0 + PB + (abs(v) / max_v) * ph
+        color = CHART_COLORS[i % len(CHART_COLORS)]
+        c.setStrokeColorRGB(*color); c.setLineWidth(1.2)
+        c.line(cx2, y0 + PB, cx2, cy2)
+        c.setFillColorRGB(*color)
+        c.circle(cx2, cy2, 4.2, fill=1, stroke=0)
+        vs = f"{v:.1f}{unit}" if max_v < 10 else f"{v:.0f}{unit}"
+        c.setFillColorRGB(*BODY_TXT); c.setFont("Helvetica-Bold", 6)
+        c.drawCentredString(cx2, cy2 + 7, vs)
+
+        lbl = d.get("label", "")
+        c.setFillColorRGB(*GREY)
+        if len(lbl) > 8:
+            c.saveState(); c.translate(cx2, y0 + PB - 4); c.rotate(30)
+            c.setFont("Helvetica", 6); c.drawString(0, 0, lbl[:16])
+            c.restoreState()
+        else:
+            c.setFont("Helvetica", 6.5)
+            c.drawCentredString(cx2, y0 + PB - 11, lbl[:12])
+
+    _axis_titles(c, spec, x0, y0, PL, PB, pw, ph)
+
+
+def _arrow(c, spec, x0, y0, w, h):
+    """Before/after arrow plot — one row per label, a dot at the 'from'
+    value and a dot at the 'to' value joined by an arrow. Falls back to a
+    grouped bar look if the spec doesn't have exactly two series (the
+    Previous/Revised shape report.py's schema promises for type='arrow')."""
+    series = spec.get("series") or []
+    if len(series) < 2:
+        _bar(c, spec, x0, y0, w, h)
+        return
+    from_data = series[0].get("data") or []
+    to_data   = series[1].get("data") or []
+    n = min(len(from_data), len(to_data))
+    if n == 0:
+        return
+    unit = _safe_text(spec.get("unit", ""))
+    all_v = [_coerce_value(d.get("value", 0)) for d in from_data[:n]] + \
+            [_coerce_value(d.get("value", 0)) for d in to_data[:n]]
+    mn, mx = min(all_v), max(all_v)
+    rng = (mx - mn) or max(abs(mx) * 0.1, 1.0)
+    pad = rng * 0.12
+    mn -= pad; mx += pad; rng = mx - mn
+
+    PL, PT = 10, 14
+    row_h  = max(16, min(28, (h - PT - 22) / n))
+    pw     = w - PL - 90   # leave room for row label on the left, value labels on the right
+    top    = y0 + h - PT
+
+    from_color, to_color = CHART_COLORS[0], GOLD
+    for i in range(n):
+        ry = top - i * row_h
+        fv = _coerce_value(from_data[i].get("value", 0))
+        tv = _coerce_value(to_data[i].get("value", 0))
+        fx = x0 + PL + 90 + ((fv - mn) / rng) * pw
+        tx = x0 + PL + 90 + ((tv - mn) / rng) * pw
+        lbl = from_data[i].get("label", "")[:16]
+        c.setFillColorRGB(*BODY_TXT); c.setFont("Helvetica", 7)
+        c.drawRightString(x0 + PL + 86, ry - 2, lbl)
+        # connecting line with arrowhead pointing at 'to'
+        c.setStrokeColorRGB(0.65, 0.68, 0.74); c.setLineWidth(1.3)
+        c.line(fx, ry, tx, ry)
+        ah = 3.2
+        direction = 1 if tx >= fx else -1
+        p = c.beginPath()
+        p.moveTo(tx, ry)
+        p.lineTo(tx - direction * ah, ry + ah * 0.7)
+        p.lineTo(tx - direction * ah, ry - ah * 0.7)
+        p.close()
+        c.setFillColorRGB(0.65, 0.68, 0.74)
+        c.drawPath(p, fill=1, stroke=0)
+        # dots
+        c.setFillColorRGB(*from_color); c.circle(fx, ry, 3.2, fill=1, stroke=0)
+        c.setFillColorRGB(*to_color); c.circle(tx, ry, 3.2, fill=1, stroke=0)
+        # value label near the 'to' dot
+        vs = f"{tv:+.1f}{unit}" if unit == "%" else f"{tv:.1f}{unit}"
+        c.setFillColorRGB(*BODY_TXT); c.setFont("Helvetica-Bold", 6.5)
+        c.drawString(x0 + PL + 90 + pw + 4, ry - 2, vs)
+
+    # legend
+    lx = x0 + PL + 90
+    ly = y0 + h - 4
+    for color, name in ((from_color, series[0].get("name", "Previous")),
+                         (to_color, series[1].get("name", "Current"))):
+        c.setFillColorRGB(*color); c.circle(lx + 3, ly - 2, 3, fill=1, stroke=0)
+        c.setFillColorRGB(*BODY_TXT); c.setFont("Helvetica", 6.5)
+        c.drawString(lx + 9, ly - 4, name[:18])
+        lx += 9 + c.stringWidth(name[:18], "Helvetica", 6.5) + 16
+
+
+def _scatter(c, spec, x0, y0, w, h):
+    """Two-metric relationship plot — series[0] gives the x-metric value per
+    label, series[1] gives the y-metric value for the SAME label (matched by
+    index), per the shape report.py's schema promises for type='scatter'."""
+    series = spec.get("series") or []
+    if len(series) < 2:
+        _bar(c, spec, x0, y0, w, h)
+        return
+    xs_data = series[0].get("data") or []
+    ys_data = series[1].get("data") or []
+    n = min(len(xs_data), len(ys_data))
+    if n == 0:
+        return
+    xs = [_coerce_value(d.get("value", 0)) for d in xs_data[:n]]
+    ys = [_coerce_value(d.get("value", 0)) for d in ys_data[:n]]
+    labels = [d.get("label", "") for d in xs_data[:n]]
+
+    x_unit = _safe_text(spec.get("unit", ""))
+    xmn, xmx = min(xs), max(xs)
+    ymn, ymx = min(ys), max(ys)
+    xr = (xmx - xmn) or max(abs(xmx) * 0.1, 1.0)
+    yr = (ymx - ymn) or max(abs(ymx) * 0.1, 1.0)
+    xmn -= xr * 0.1; xmx += xr * 0.1; xr = xmx - xmn
+    ymn -= yr * 0.1; ymx += yr * 0.1; yr = ymx - ymn
+
+    PL, PB = 52, 30
+    pw = w - PL - 16
+    ph = h - PB - 20
+
+    for f in (0.0, 0.25, 0.5, 0.75, 1.0):
+        gy = y0 + PB + f * ph
+        c.setStrokeColorRGB(0.88, 0.9, 0.94); c.setLineWidth(0.4)
+        c.line(x0 + PL, gy, x0 + PL + pw, gy)
+        c.setFillColorRGB(*GREY); c.setFont("Helvetica", 6.5)
+        c.drawRightString(x0 + PL - 3, gy - 2.5, f"{ymn + f * yr:.1f}")
+        gx = x0 + PL + f * pw
+        c.setStrokeColorRGB(0.92, 0.93, 0.96); c.setLineWidth(0.4)
+        c.line(gx, y0 + PB, gx, y0 + PB + ph)
+
+    c.setStrokeColorRGB(0.78, 0.82, 0.88); c.setLineWidth(0.8)
+    c.line(x0 + PL, y0 + PB, x0 + PL + pw, y0 + PB)
+    c.line(x0 + PL, y0 + PB, x0 + PL, y0 + PB + ph)
+
+    for i in range(n):
+        px2 = x0 + PL + ((xs[i] - xmn) / xr) * pw
+        py2 = y0 + PB + ((ys[i] - ymn) / yr) * ph
+        color = CHART_COLORS[i % len(CHART_COLORS)]
+        c.setFillColorRGB(*color)
+        c.circle(px2, py2, 4.0, fill=1, stroke=0)
+        if labels[i]:
+            c.setFont("Helvetica", 5.8)
+            c.setFillColorRGB(*BODY_TXT)
+            c.drawString(px2 + 5, py2 + 2, labels[i][:14])
+
+    _axis_titles(c, spec, x0, y0, PL, PB, pw, ph)
+
+
 def _datawrapper_image(c, spec, x0, y0, w, h):
     """Draw a fetched Datawrapper PNG export, scaled to fit the card, centred.
 
@@ -1293,6 +1473,12 @@ def _draw_chart(c, spec, x0, y0, w, h):
         _pie(c, spec, x0, y0, w, h)
     elif t == "line":
         _line(c, spec, x0, y0, w, h)
+    elif t == "arrow":
+        _arrow(c, spec, x0, y0, w, h)
+    elif t == "scatter":
+        _scatter(c, spec, x0, y0, w, h)
+    elif t == "dot":
+        _dot(c, spec, x0, y0, w, h)
     else:
         _bar(c, spec, x0, y0, w, h)
 
