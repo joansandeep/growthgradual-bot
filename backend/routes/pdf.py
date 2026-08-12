@@ -1608,7 +1608,7 @@ def build_pdf(report: str, title: str, question: str, summary: str,
     page_num[0] += 1
     c.setFillColorRGB(0.55, 0.60, 0.80); c.setFont("Helvetica", 7)
     c.drawRightString(PAGE_W - MARGIN, 16, f"Page {page_num[0]}")
-    c.drawString(MARGIN, 16, f"{_fit_cell(c, title or 'Market Intelligence Report', 'Helvetica', 7, PAGE_W - 2 * MARGIN - 70 - c.stringWidth(' · Growth Gradual', 'Helvetica', 7))} · Growth Gradual")
+    c.drawString(MARGIN, 16, f"{_fit_cell(c, _safe_text(title) or 'Market Intelligence Report', 'Helvetica', 7, PAGE_W - 2 * MARGIN - 70 - c.stringWidth(' · Growth Gradual', 'Helvetica', 7))} · Growth Gradual")
     c.showPage()
 
     # ═══════════════════════════════════════════════════════════════════════════
@@ -1734,11 +1734,25 @@ def build_pdf(report: str, title: str, question: str, summary: str,
     _seen_table_sigs: set[str] = set()  # dedup identical tables (LLM sometimes repeats them)
     _seen_line_sigs: set[str] = set()   # dedup identical bullets/numbered items/paragraphs
 
+    # Data Sources is the last REQUIRED ANCHOR in the system prompt's section
+    # order — "the ONLY sources listing... nothing more". In practice the
+    # model occasionally tacks on a stray token after that table anyway (a
+    # [CHART_n] placeholder with no heading/context above it, an extra
+    # paragraph, etc.), which renders as an orphaned, unlabeled chart sitting
+    # alone on a trailing page with no surrounding text — seen in production.
+    # Once we've rendered the Data Sources heading + its one table, drop
+    # every token that follows instead of rendering it.
+    _past_data_sources = [False]
+    _reached_data_sources_heading = False
+
     def _line_sig(text: str) -> str:
         return re.sub(r"\s+", " ", text.lower().strip(" .,-—:"))
 
     for tok in tokens:
         tp = tok["type"]
+
+        if _past_data_sources[0]:
+            continue
 
         # ── Chart placeholder ────────────────────────────────────────────────
         if tp == "chart_placeholder":
@@ -1779,7 +1793,7 @@ def build_pdf(report: str, title: str, question: str, summary: str,
                     c.setFillColorRGB(*accent())
                     c.rect(MARGIN, title_y - 2, 4, 14, fill=1, stroke=0)
                     c.setFillColorRGB(*NAVY); c.setFont("Helvetica-Bold", 9)
-                    c.drawString(MARGIN + 10, title_y, ch.get("title", "")[:80])
+                    c.drawString(MARGIN + 10, title_y, _safe_text(ch.get("title", ""))[:80])
                     c.setStrokeColorRGB(0.9, 0.92, 0.96); c.setLineWidth(0.6)
                     c.line(MARGIN + 8, title_y - 6, MARGIN + CW - 8, title_y - 6)
                     chart_top = title_y - 10
@@ -1927,6 +1941,10 @@ def build_pdf(report: str, title: str, question: str, summary: str,
             # itself, since we render our own "SECTION 0N" overline instead —
             # avoids a duplicated/mismatched number ("SECTION 02" over "2. Title").
             text_display = re.sub(r"^\d+\.\s*", "", text)
+            if text_display.strip().lower() in ("data sources", "sources", "data source"):
+                _reached_data_sources_heading = True
+            else:
+                _reached_data_sources_heading = False
 
             # Drop in an infographic stat-card strip right as we LEAVE a
             # section that turned out data-rich (a table, or 3+ bullets/
@@ -2183,6 +2201,11 @@ def build_pdf(report: str, title: str, question: str, summary: str,
                         ty2 -= LINE_H
                 nl(ROW_H)
             nl(8)
+            if _reached_data_sources_heading:
+                # This table is the Data Sources table — it's the last thing
+                # allowed to render. See the module-level note where
+                # _past_data_sources is declared.
+                _past_data_sources[0] = True
 
     # Fallback chart rendering is intentionally suppressed.
     # The LLM system prompt places all charts inline via [CHART_n] placeholders.
