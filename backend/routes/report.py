@@ -680,6 +680,16 @@ GLOBAL RULES:
   This sign is load-bearing: the PDF renderer colors these green/red based on the leading character, so an
   unsigned number renders in neutral ink and loses the visual cue entirely. Absolute levels that aren't a
   change (e.g. an index closing level, a P/E ratio) do not need a sign.
+- PERCENTAGE-POINT vs PERCENT CHANGE: when the metric itself is already a percentage (e.g. a pledge
+  level of 91.5% falling to 42.1%), the "change" field is ambiguous between two different numbers —
+  the raw point difference (91.5 - 42.1 = 49.4) and the relative percent change ((42.1-91.5)/91.5 =
+  -54%). These are NOT interchangeable and must never be mislabeled. If you report the point
+  difference, suffix it "pp" (e.g. "-49.4pp"), never "%" — a bare "%" on a point difference reads as
+  a much smaller relative move than actually occurred. If you report relative percent change instead,
+  compute it with the formula above, not the point difference. Pick one convention for a given metric
+  and use the matching suffix everywhere it recurs (stat card, prose, keyStats) — do not let one
+  section say "-49.4%" (meaning points) while another says "45%" (loosely meaning the same move) —
+  state the actual computed number, not a rounded-off approximation of it.
 - FORMATTING DENSITY — MANDATORY: no section may run more than 2 consecutive paragraphs without
   a structural break — a bullet list, a table, or a chart. EVERY body section needs its OWN bullet
   list, table, or chart — "the report has bullets somewhere" does not satisfy a specific section's

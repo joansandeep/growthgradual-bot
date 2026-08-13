@@ -417,6 +417,22 @@ def _safe_text(text: str) -> str:
     )
 
 
+def _truncate_words(text: str, limit: int) -> str:
+    """Truncate to at most `limit` chars WITHOUT cutting a word in half.
+    Backs up to the last whitespace boundary within the limit and appends
+    an ellipsis, instead of a hard str[:limit] slice that leaves dangling
+    fragments like 'subsequen' when the source text runs long (common for
+    LLM-written image captions)."""
+    text = (text or "").strip()
+    if len(text) <= limit:
+        return text
+    cut = text[:limit]
+    last_space = cut.rfind(" ")
+    if last_space > limit * 0.4:  # don't over-trim short captions
+        cut = cut[:last_space]
+    return cut.rstrip(" ,;:.-") + "…"
+
+
 # ─── Inline markdown stripping ────────────────────────────────────────────────
 def _strip_inline(text: str) -> str:
     # Remove bold/italic markers
@@ -1547,8 +1563,16 @@ def build_pdf(report: str, title: str, question: str, summary: str,
     section_headings = []
     for _tok in _tokenise(report):
         if _tok["type"] == "h2":
-            section_headings.append(_strip_inline(_tok["text"]))
-        if len(section_headings) >= 6:
+            heading_text = _strip_inline(_tok["text"])
+            # Report bodies often self-number headings ("1. Historical
+            # Context...") while the TOC below assigns its own sequential
+            # badge number starting at 1 for "Executive Summary". Keeping
+            # both produces mismatched double-numbering (badge "2" next to
+            # heading text starting with "1."). Strip any leading "N." /
+            # "N)" prefix so the badge is the single source of numbering.
+            heading_text = re.sub(r"^\d+[\.\)]\s*", "", heading_text)
+            section_headings.append(heading_text)
+        if len(section_headings) >= 9:
             break
 
     STAT_ROW_H = 74   # reserved height for the bottom stat-card row
@@ -1905,7 +1929,7 @@ def build_pdf(report: str, title: str, question: str, summary: str,
                     if iw < 10 or ih < 10:
                         log.warning("WEB_IMG_%d scaled too small (%.1fx%.1f) — skipping", wi + 1, iw, ih)
                         continue
-                    cap = (img_info.get("caption") or "")[:120]
+                    cap = _truncate_words(img_info.get("caption") or "", 120)
                     cap_h = 18 if cap else 0
                     need(ih + 26 + cap_h, current_section[0])
                     nl(10)
@@ -1921,7 +1945,8 @@ def build_pdf(report: str, title: str, question: str, summary: str,
                     c.drawImage(img_reader, cx, y[0] - ih - 10, width=iw, height=ih, mask="auto")
                     if cap:
                         c.setFillColorRGB(0.4, 0.42, 0.46); c.setFont("Helvetica-Oblique", 7.5)
-                        c.drawCentredString(MARGIN + CW / 2, y[0] - ih - 10 - cap_h + 5, cap)
+                        cap_fit = _fit_cell(c, cap, "Helvetica-Oblique", 7.5, CW - 20)
+                        c.drawCentredString(MARGIN + CW / 2, y[0] - ih - 10 - cap_h + 5, cap_fit)
                     y[0] = y[0] - ih - 22 - cap_h - 10
                 except Exception as exc:
                     import traceback as _tb
@@ -2414,7 +2439,7 @@ async def generate_pdf(request: Request):
                     if len(content_bytes) > max_bytes or len(content_bytes) < 500:
                         log.debug("AI_IMG[%d] size %d out of range", i + 1, len(content_bytes))
                         return
-                    out[i] = {"data": b64_payload, "caption": (info.get("caption") or "")[:120]}
+                    out[i] = {"data": b64_payload, "caption": _truncate_words(info.get("caption") or "", 120)}
                     log.info("AI_IMG[%d] decoded %d bytes from inline data URI", i + 1, len(content_bytes))
                 except Exception as exc:
                     log.warning("AI_IMG[%d] data URI decode failed: %s", i + 1, exc)
@@ -2451,7 +2476,7 @@ async def generate_pdf(request: Request):
                         log.debug("WEB_IMG size %d out of range for %s", len(content_bytes), url[:80])
                         return
                     out[i] = {"data": base64.b64encode(content_bytes).decode("ascii"),
-                              "caption": (info.get("caption") or "")[:120]}
+                              "caption": _truncate_words(info.get("caption") or "", 120)}
                     log.info("WEB_IMG[%d] fetched %d bytes from %s", i + 1, len(content_bytes), url[:60])
                 except Exception as exc:
                     log.warning("WEB_IMG[%d] fetch failed for %s: %s", i + 1, url[:80], exc)
