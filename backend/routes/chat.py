@@ -5,6 +5,7 @@ Body: { messages: [{role, content}], fileContext?: string }
 import asyncio
 import base64
 import hashlib
+import itertools
 import json
 import logging
 import os
@@ -1114,6 +1115,17 @@ async def tavily_search_multi(
     query is worse for Tavily than several focused ones.
     Single-query input is a no-op passthrough to tavily_search() — no change
     in behavior for the common case.
+
+    Merge order is ROUND-ROBIN across queries (angle 1's #1 result, angle 2's
+    #1, angle 3's #1, ... then angle 1's #2, ...), not a straight
+    concatenation of each query's full result list. Downstream callers (e.g.
+    report generation) only ever read a fixed-size prefix of what this
+    returns — see ENRICH_SOURCE_COUNT in routes/report.py — so if angle 1
+    alone fills that whole prefix, the other angles were pointless: their
+    results get computed (and billed) but never actually seen by the model.
+    Round-robin guarantees every angle gets a proportional share of whatever
+    prefix a caller ends up keeping, regardless of how many results any one
+    angle happens to return.
     """
     if len(queries) == 1:
         return await tavily_search(
@@ -1131,9 +1143,12 @@ async def tavily_search_multi(
 
     seen_urls: set[str] = set()
     merged: list[dict] = []
-    for res in result_lists:
-        for r in res:
-            if r.get("url") and r["url"] not in seen_urls:
+    # zip_longest so a shorter list (e.g. an angle that came back thin)
+    # doesn't truncate the round-robin early — it just stops contributing
+    # once exhausted while the other angles keep going.
+    for round_items in itertools.zip_longest(*result_lists):
+        for r in round_items:
+            if r and r.get("url") and r["url"] not in seen_urls:
                 seen_urls.add(r["url"])
                 merged.append(r)
     return merged

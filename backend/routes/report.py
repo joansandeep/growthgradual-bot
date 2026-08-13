@@ -2373,6 +2373,66 @@ def _augment_query_for_historical_data(query: str) -> str:
     return query
 
 
+# ─── Multi-angle source search ──────────────────────────────────────────────
+# Reports used to run exactly ONE Tavily query, then fan THAT SAME query out
+# across every configured key (see tavily_search in chat.py). Tavily's
+# relevance ranking is a function of the query text, not the key used to ask
+# it — so every key came back with nearly the same top ~20 results, and
+# deduping by URL barely grew the pool. That capped every report, regardless
+# of how many keys were configured, at roughly one query's worth of source
+# material — which is why reports were consistently thin on data points,
+# tables, and chartable numbers no matter how hard the prompt pushed for them.
+#
+# The fix is query diversity, not more keys: split the report topic into a
+# few angle-specific queries (financial metrics, peer/sector comparison,
+# historical trend, the base question itself) and run them through
+# tavily_search_multi — the exact multi-query fan-out chat.py already uses
+# for multi-intent follow-ups. Each angle gets its own relevance ranking, so
+# the merged, deduped pool ends up with genuinely different sources instead
+# of near-duplicates of the same 20.
+#
+# Deliberately capped at 4 queries and scoped to finance-flavoured questions:
+# uncapped growth here multiplies total Tavily calls by (queries × keys), and
+# angle-splitting a non-finance question (e.g. "give me a business idea")
+# just injects irrelevant search noise rather than more usable data.
+def _build_multi_angle_search_queries(
+    question: str, conversation_context: str, qtype: str,
+) -> list[str]:
+    base = _augment_query_for_historical_data(
+        _build_followup_search_query(question, conversation_context)
+    )
+
+    if qtype != "finance":
+        return [base]
+
+    # Short topic phrase to build angle variants from — first clause of the
+    # raw question, not the (possibly follow-up-grounded) base query, so each
+    # angle stays anchored to what was actually asked rather than compounding
+    # onto already-appended hint text.
+    topic = re.split(r"[.\n]", question, maxsplit=1)[0].strip()[:80] or base
+
+    queries = [base]
+
+    # Financial metrics / hard-numbers angle — almost always useful for
+    # stat cards and data tables regardless of the specific topic.
+    queries.append(f"{topic} key financial metrics data numbers")
+
+    # Peer/sector comparison angle — skip if the base query already reads as
+    # a comparison (e.g. "HDFC vs ICICI"), to avoid a near-duplicate query.
+    if not re.search(r"\bvs\.?\b|\bversus\b|compar", base, re.IGNORECASE):
+        queries.append(f"{topic} sector peer comparison")
+
+    # Historical/trend angle — skip if the base query was already augmented
+    # for historical data above (that would just repeat the same hint twice).
+    if not _HISTORICAL_INTENT_RE.search(base):
+        queries.append(f"{topic} historical trend performance data")
+
+    # Cap at 4 — each additional query multiplies total Tavily calls by the
+    # full key count (see tavily_search's per-query key fan-out), so this
+    # is a deliberate ceiling, not an arbitrary one.
+    return queries[:4]
+
+
 # Signals that a question is actually about specific company/companies'
 # stock rather than the market in general — valuation multiples, debt,
 # margins, or an explicit "X vs Y" comparison. Deliberately broader than
@@ -2562,16 +2622,23 @@ async def generate_report(request: Request):
     has_file_data = bool(file_context.strip()) or bool(extracted_image_context.strip())
 
     if has_file_data and not sources:
-        from routes.chat import tavily_search as _tavily_search, _looks_like_ai_overview, needs_web_search as _needs_web_search
+        from routes.chat import (
+            tavily_search_multi as _tavily_search_multi,
+            _looks_like_ai_overview, needs_web_search as _needs_web_search,
+            classify_query as _classify_query,
+        )
         if _needs_web_search(question, has_files=True):
             # Question implies it wants more than just the file (e.g. asks for
             # market context, comparisons, recent news) — supplement with web data.
             log.info("Report: file-first mode — supplementing with web search")
-            search_query = _augment_query_for_historical_data(
-                _build_followup_search_query(question, conversation_context)
+            search_queries = _build_multi_angle_search_queries(
+                question, conversation_context, _classify_query(question),
             )
-            searched = await _tavily_search(
-                search_query, max_results=20, min_results=10,
+            if len(search_queries) > 1:
+                log.info("Report: file-first mode — %d-angle search: %r",
+                          len(search_queries), [q[:60] for q in search_queries])
+            searched = await _tavily_search_multi(
+                search_queries, max_results=15, min_results=10,
                 historical_intent=bool(_HISTORICAL_INTENT_RE.search(question)),
             )
             sources = [
@@ -2586,15 +2653,18 @@ async def generate_report(request: Request):
             log.info("Report: file-first mode — question doesn't need web search, using file data only")
     elif not sources:
         log.info("Report: no sources — running own Tavily search for %r", question[:60])
-        from routes.chat import tavily_search as _tavily_search, _looks_like_ai_overview
-        search_query = _augment_query_for_historical_data(
-            _build_followup_search_query(question, conversation_context)
+        from routes.chat import (
+            tavily_search_multi as _tavily_search_multi,
+            _looks_like_ai_overview, classify_query as _classify_query,
         )
-        if search_query != question:
-            log.info("Report: search query enriched (%d → %d chars): %r",
-                      len(question), len(search_query), search_query[:150])
-        searched = await _tavily_search(
-            search_query, max_results=20,
+        search_queries = _build_multi_angle_search_queries(
+            question, conversation_context, _classify_query(question),
+        )
+        if search_queries != [question]:
+            log.info("Report: search enriched into %d angle(s): %r",
+                      len(search_queries), [q[:100] for q in search_queries])
+        searched = await _tavily_search_multi(
+            search_queries, max_results=15,
             historical_intent=bool(_HISTORICAL_INTENT_RE.search(question)),
         )
         sources = [
@@ -2602,7 +2672,8 @@ async def generate_report(request: Request):
              "snippet": r["snippet"], "fullContent": r.get("fullContent", "")}
             for r in searched
         ]
-        log.info("Report: self-search returned %d sources", len(sources))
+        log.info("Report: self-search returned %d sources across %d angle(s)",
+                  len(sources), len(search_queries))
     else:
         from routes.chat import _looks_like_ai_overview
 
