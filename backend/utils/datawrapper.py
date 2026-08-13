@@ -108,12 +108,6 @@ def _dw_type(spec: dict) -> str:
         # Datawrapper's arrow/range plot expects (start column, end column).
         return "d3-arrow-plot"
 
-    if chart_type == "dot":
-        # A ranked single-series list where a lighter mark reads better than
-        # full-width bars (long label lists, or values clustered together
-        # where bar-height differences are hard to compare at a glance).
-        return "d3-dot-plot"
-
     if chart_type == "pie":
         n_slices = len((series[0].get("data") or [])) if series else 0
         # A 2-slice pie reads better as a donut (emphasises one share vs. the rest)
@@ -269,7 +263,17 @@ def _export_dims(dw_type: str) -> tuple[str, str]:
     - Column/bar/line/area charts already work well at 900x500 (the shape
       this constant was originally tuned for) — leave them as-is.
     """
-    if dw_type == "tables":
+    if dw_type in ("tables", "d3-arrow-plot"):
+        # Tables grow with row count — see the tables case above.
+        # Arrow/range-plots draw one horizontal row per category the same
+        # way tables draw one row per record — a 2-3 row arrow-plot in a
+        # fixed 500px box only fills the top ~15% of the frame, reading as
+        # a mostly-blank chart (seen repeatedly in production: "Shift in
+        # 2026 Market Outlook", "Change in Average SME IPO Issue Size" —
+        # both 3-row arrow-plots rendering as a few marks floating in a
+        # sea of white space). "auto" lets Datawrapper size the export to
+        # the actual row count instead of a fixed aspect meant for
+        # column/bar/line charts.
         return "900", "auto"
     if dw_type in ("d3-pies", "d3-donuts"):
         return "700", "650"
@@ -427,6 +431,18 @@ async def publish_chart(client: httpx.AsyncClient, spec: dict) -> dict | None:
             # "hide-value-labels" (inverse boolean), separate from the
             # bar-chart "value-label-visibility" set above.
             metadata["visualize"]["hide-value-labels"] = False
+            # Datawrapper's default for line/area charts also direct-labels
+            # the series NAME right at the line's endpoint (confirmed
+            # Datawrapper behavior — "direct labeling... by default for
+            # line charts... on desktop"). Combined with the numeric value
+            # labels just enabled above, and a long x-axis category label
+            # often sitting at that same last point (e.g. "₹4.25L
+            # (Break-even)"), the two text elements collide into an
+            # illegible overlapping mess at the right edge of the chart —
+            # seen in production. The value labels already carry the data,
+            # and a single-series chart's own title already says what it
+            # is, so the endpoint name label is redundant — turn it off.
+            metadata["visualize"]["labeling"] = "none"
         if unit == "%":
             metadata["visualize"]["value-label-format"] = "0.0%"
         elif unit in ("Cr", "₹", "Rs"):

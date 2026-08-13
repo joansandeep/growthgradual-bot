@@ -367,7 +367,7 @@ STEP 1 — AGGRESSIVELY SCAN sources for ANY chartable numbers:
   → NEVER mix price values and percentage changes in the same chart series or bar group.
      BAD: series=[{name:"Gold",data:[{label:"Current Price",value:125957},{label:"Change",value:-3}]}, ...]
      GOOD: Make ONE chart for price trend (line, % change), ONE separate bar chart for key stats like 1-month return %
-  → Also add a bar chart comparing key stats (1-month return %, 52-week high/low, current price) — but ONLY if you have ≥4 distinct comparable stats from the sources
+  → Also add a bar chart comparing key stats (1-month return %, 52-week high/low, current price) — but ONLY if you have ≥3 distinct comparable stats from the sources
 
   COMPOSITION / BREAKDOWN TOPICS — USE A STACKED BAR WHEN IT FITS:
   When a label (e.g. a quarter, a fund, a sector) breaks down into 2+ parts of
@@ -396,20 +396,20 @@ STEP 1 — AGGRESSIVELY SCAN sources for ANY chartable numbers:
   • Mutual fund topic → pie chart of category allocation OR bar of returns by category
 
 STEP 2 — ONLY create a chart if ALL conditions are met:
-  ✓ At least 4 data points (bar/dot), 3 (pie), or 4 time points (line), 2 items (arrow), 4 items (scatter)
+  ✓ At least 3 data points (bar/pie) or 4 time points (line), 2 items (arrow), 4 items (scatter)
   ✓ All labels are DIFFERENT from each other
   ✓ All values are DIFFERENT from each other (not all the same)
   ✓ Values come from the source data — do NOT invent numbers
   ✗ NEVER create a chart from a single number
   ✗ NEVER duplicate labels
   ✗ NEVER use future/projected values you invented
-  ✗ A bar/dot chart needs ≥4 named distinct items; a pie chart needs ≥2; an arrow chart
+  ✗ A bar chart needs ≥3 named distinct items; a pie chart needs ≥2; an arrow chart
     needs ≥2; a scatter chart needs ≥4 — this is enforced server-side and anything
     short of that WILL be silently dropped, wasting the slot.
   → If the topic naturally centers on 2 entities (e.g. "HDFC vs ICICI"), actively
     scan the rest of the sources for OTHER comparable entities mentioned anywhere
     (peer banks, sector averages, other funds in the same category, etc.) and add
-    them as additional bars/slices so the chart clears the ≥4-item bar. If no
+    them as additional bars/slices so the chart clears the ≥3-item bar. If no
     third comparable entity exists anywhere in the sources, skip the chart
     entirely rather than rendering a thin 2-item one.
   → PARTIAL DATA: If some entities in a comparison lack a specific metric (e.g. SBI
@@ -427,7 +427,7 @@ STEP 2 — ONLY create a chart if ALL conditions are met:
   figure for all of them (e.g. "IndiGo, Vedanta, and Whirlpool saw combined promoter
   sales of Rs.12,000 crore" — three companies, one number), that is NOT a 3-item bar
   chart — it's a single data point wearing three names. Charting it will be silently
-  dropped server-side (need ≥4 DISTINCT values, not ≥4 names sharing one value), wasting
+  dropped server-side (need ≥3 DISTINCT values, not ≥3 names sharing one value), wasting
   a chart slot you could have used elsewhere. Instead:
   → FIRST, actively re-scan the sources for each entity's INDIVIDUAL figure — company-specific
     press coverage often gives per-entity numbers even when a summary sentence combines them.
@@ -447,51 +447,28 @@ STEP 3 — Place [CHART_n] inline in the report markdown right after the paragra
   paragraph (3+ sentences) or a paragraph + bullet list precedes the chart. This prevents blank whitespace
   gaps in the PDF.
 
-STEP 4 — CHART/TABLE COUNT SHOULD TRACK HOW MUCH THE TOPIC ACTUALLY SUPPORTS, NOT A FIXED NUMBER.
+STEP 4 — MINIMUM 6 charts/tables per report, no exceptions unless sources are genuinely numeric-free.
   This report runs long (10-12 pages), and visuals — not walls of text — are what fill that length
-  well and make the report interesting to read. But the right count varies genuinely by topic: a
-  single-stock deep-dive might genuinely support 5-6 solid charts, a multi-sector or multi-index
-  comparison might support 12+. Do NOT treat any specific number as a target to hit on every report —
-  if every report you write lands on the same count, that itself is a sign you're optimizing for a
-  number instead of for what the sources actually contain. A lean report where every chart is dense
-  and clearly on-topic is better than a padded one that hits a round number. As a rough floor: fewer
-  than 5 chart/table entries is usually a sign you under-mined the sources (go back through STEP 1's
-  per-scenario list — there is almost always another chartable angle: a ratio, a trend, a breakdown, a
-  comparison across a different pairing of the same entities) — but there is no ceiling to chase and no
-  specific number above 5 that every report needs to reach.
-
-  THIS NEVER LICENSES AN OFF-TOPIC CHART: every chart, table, and keyStats entry must be about the
-  entities/subject actually named in the question — never a different company, a different index, or
-  unrelated trivia (e.g. an unrelated company's revenue, a founder's age, a company's founding year,
-  population figures) introduced solely because it happened to appear somewhere in a source and gives
-  you an easy extra data point. If a Reliance-vs-Tata-Motors report is short on charts, the fix is
-  another angle ON Reliance and Tata Motors specifically (a sub-segment breakdown, a different metric
-  pairing, a different time slice) — never a chart about HCL, Infosys, or the age of an unrelated
-  entrepreneur just because a source mentioned them in passing. A short, entirely on-topic report is
-  always correct; a longer one padded with tangential material never is.
-
-  DATA POINTS PER CHART: a chart with only 2-3 points looks thin and rarely justifies its own card.
-  For bar/dot/line charts, include every relevant item the sources support — aim for 5-8+ labels/points
-  per chart rather than stopping at the first 2-3 that come to mind (e.g. rank all the funds/sectors/
-  companies mentioned, not just the top 2). A 2-point chart is only acceptable for a genuine single-pair
-  comparison (this year vs last year) or an arrow chart (before/after by nature) — an arrow chart with
-  only 2 points is fine. A scatter chart with only 2 entities is NOT fine and will be rejected server-side
-  (scatter needs ≥4 named entities with both metrics present) — if you only have 2 comparable entities for
-  a two-metric relationship (e.g. comparing just 2 companies' ROE vs Debt/Equity), that is a 2-series BAR
-  chart (one bar per metric per company) or a small table, never a scatter plot.
-
-  Vary the shapes (bar, stacked bar, line, area, dot, pie, arrow, scatter) rather than
+  well and make the report interesting to read. Target 7-10 total when the sources support it; treat
+  6 as the floor, not an aspiration. BEFORE FINALIZING, DO THIS COUNT EXPLICITLY: add up the total
+  number of entries across BOTH your "charts" array AND every markdown table you wrote in the report
+  body — that combined number, not just the charts array alone, is what must be ≥6. If the combined
+  total is under 6, go back through the sources/file data and STEP 1's per-scenario list again — there
+  is almost always another chartable angle you skipped (a ratio, a trend, a breakdown, a comparison
+  across a different pairing of the same entities) rather than genuinely no more data. Only report
+  fewer than 6 if the sources are so thin there is truly nothing left to chart — that should be rare,
+  not the default outcome. Vary the shapes (bar, stacked bar, line, pie, arrow, scatter) rather than
   repeating the same shape for every chart; use the stacked-bar shape above whenever a breakdown
   is compared across multiple labels.
 
-  THIN CHARTS COUNT AGAINST YOU, NOT FOR YOU: a bar/dot chart needs ≥4 distinct labels (pie needs ≥3) on its
+  THIN CHARTS COUNT AGAINST YOU, NOT FOR YOU: a bar/pie chart needs ≥3 distinct labels on its
   category axis, and this applies to grouped/multi-series bar charts too — "2 groups × 3 series each"
   is still only 2 category-axis labels and reads as sparse, not as 6 data points. If a comparison
   naturally has only 2 anchor points (e.g. "current state" vs "target state" for the same set of
   metrics), do NOT force it into a single grouped bar chart — instead either (a) split it into one
-  small chart per metric where each has ≥4 meaningful labels, (b) use an arrow chart per metric
+  small chart per metric where each has ≥3 meaningful labels, (b) use an arrow chart per metric
   (Previous → Target, one arrow per named metric = multiple items, not one 2-bar group), or (c) drop
-  the chart and present it as a table — a table counts the same as a chart for the purposes of STEP 4 above.
+  the chart and present it as a table, which still counts toward the STEP 4 floor above.
 
   TABLES SHOULD OFTEN CARRY A COMPANION CHART, NOT STAND ALONE: per the TABLE vs CHART rule above,
   whenever a table's data has one ranked/comparable column that would read clearly as a visual on its
@@ -514,7 +491,7 @@ STEP 4 — CHART/TABLE COUNT SHOULD TRACK HOW MUCH THE TOPIC ACTUALLY SUPPORTS, 
 
 Chart spec shape:
 {
-  "type": "bar" | "line" | "pie" | "arrow" | "scatter" | "dot",
+  "type": "bar" | "line" | "pie" | "arrow" | "scatter",
   "title": "<specific title e.g. 'Top 5 SIP Funds — 3-Year Returns' not 'Chart 1'>",
   "unit": "%" | "₹" | "Cr" | "B" | "$" | "x" | "",
   "xLabel": "<what the x-axis categories are, e.g. 'Fund' or 'Sector' or 'Session Date'>",
@@ -530,13 +507,18 @@ Chart spec shape:
 multi-series chart (see COMPARISON TOPICS above) — no extra fields needed:
   → arrow: series = [{"name":"Previous","data":[...]}, {"name":"Revised"/"Current","data":[...]}]
   → scatter: series = [{"name":"<x-metric>","data":[...]}, {"name":"<y-metric>","data":[...]}]
-"dot" is a single-series chart, same shape as "bar" (one series, label/value pairs) — use it
-instead of "bar" for a ranked list of 6+ items where a lighter dot-and-stem mark reads cleaner
-than full-width columns (e.g. a long list of stocks/sectors ranked by one metric).
 AXIS LABELS ARE MANDATORY for every bar/line/arrow/scatter chart — always fill in "xLabel" and
 "yLabel" with a short (1-4 word) description of what each axis represents. A chart with numeric
 tick marks but no axis title leaves the reader guessing what the numbers mean — never omit these
 two fields.
+
+CHART TITLE MUST NOT REPEAT THE SECTION HEADING IT SITS UNDER: a chart's title bakes directly into
+its rendered image and appears immediately below the section heading it's placed in — repeating
+that heading verbatim (or with only the leading "N. " stripped) reads as a visible duplicate line
+to the reader, e.g. a "## 5.2 The Impact of Fees on Terminal Wealth" heading followed by a chart
+titled "5.2 The Impact of Fees on Terminal Wealth" instead of something specific like "Expense
+Ratio Bands by Fund Type". The chart title should name what the chart specifically shows (the
+metric and comparison), never restate the heading text above it.
 
 PERIOD FRAMING: whenever the underlying data is a month-to-date or year-to-date figure, say so
 explicitly in the chart title (e.g. "Nifty 50 — MTD Performance", "Sectoral Returns, YTD") rather
@@ -753,21 +735,13 @@ GLOBAL RULES:
   genuine opportunity per report (a concept, place, product, process, or scene worth visualizing),
   not only as a last resort where no chart/table fits. A report with zero images should be the
   exception (a narrow, purely numeric question with nothing visual to illustrate), not the default.
-- keyStats: real metrics with values and change indicators — typically somewhere around 8-14 for a
-  data-rich topic, fewer for a narrower one, but let the content decide rather than aiming at a fixed
-  count. These power the infographic stat-card
+- keyStats: 10-14 real metrics with values and change indicators. These power the infographic stat-card
   strips rendered throughout the PDF (cover page, plus additional strips dropped in automatically
   wherever a section turns out data-dense — the renderer decides placement from actual content, not
   a fixed "after Executive Summary" spot) — treat them as the report's visual backbone, not an
   afterthought. Pull the single most important number from EVERY major section (Introduction context
   stat, each 3.x subsection's headline number, a Risks-adjacent stat if one exists) so the strips
-  actually represent the whole report rather than only the intro. EVERY keyStat must be about the
-  entities/subject the question actually asks about — never an unrelated company's figures, a
-  founder's age, a population statistic, or any other number that only happens to appear in a source
-  but isn't actually about this report's subject (e.g. do not put another company's revenue on the
-  cover of a two-company comparison report just because a source mentioned it). Fewer genuinely
-  on-topic stats always beats padding toward a round number. Each
-  keyStat needs: label (short,
+  actually represent the whole report rather than only the intro. Each keyStat needs: label (short,
   e.g. "NIFTY BANK"), value (e.g. "+6.41%" or "23,865.75"), and change (signed, e.g. "+6.41%") where
   applicable.
 - PULL-QUOTES / INSIGHT CALLOUTS: use a markdown blockquote (a line starting with "> ") 2-4 times
@@ -1490,7 +1464,22 @@ def _extract_markdown_tables(report_text: str, existing_charts: list) -> tuple[s
 
                 charts.append({
                     "type":    "table",
-                    "title":   last_heading or "Data Table",
+                    # Was `last_heading or "Data Table"` — last_heading is
+                    # literally the same "## 1.1 Comparative Tax Slabs..."
+                    # heading text that pdf.py renders as its own banner
+                    # directly above this table, and that title also bakes
+                    # into the Datawrapper table's own PNG export (see
+                    # utils/datawrapper.py — table charts have their title
+                    # in the image, not a separate ReportLab bar). Result:
+                    # the same heading text visibly repeated twice in a row
+                    # — the section banner, then the boxed table's own title
+                    # underneath it (seen repeatedly in production: "1.1
+                    # Comparative Tax Slabs for FY27", "2.2 The Old Tax
+                    # Regime Scenario...", "4.2 Case Study: The Established
+                    # Homeowner" — all duplicated verbatim). The heading
+                    # above already introduces the table; give it a title
+                    # here only when there's no heading context at all.
+                    "title":   "" if last_heading else "Data Table",
                     "columns": header_cells,
                     "rows":    rows,
                 })
@@ -2414,8 +2403,8 @@ async def generate_report(request: Request):
     # kept producing its usual 2-3 charts regardless of what was asked. Now,
     # when this fires, an extra directive below raises the floor explicitly.
     _WANTS_MORE_DATA_RE = re.compile(
-        r"\b(more|richer|deeper|additional|extra|add)\s+(data\s*points?|charts?|graphs?|"
-        r"visuals?|infographics?|numbers|metrics|statistics|figures)\b"
+        r"\b(more|richer|deeper|additional|extra)\s+(data\s*points?|charts?|graphs?|"
+        r"visuals?|infographics?|numbers|metrics|statistics)\b"
         r"|\binfographics?\b"
         r"|\bmore\s+granular\b",
         re.IGNORECASE,
@@ -2499,7 +2488,7 @@ async def generate_report(request: Request):
     has_file_data = bool(file_context.strip()) or bool(extracted_image_context.strip())
 
     if has_file_data and not sources:
-        from routes.chat import tavily_search_multi as _tavily_search_multi, _looks_like_ai_overview, needs_web_search as _needs_web_search
+        from routes.chat import tavily_search as _tavily_search, _looks_like_ai_overview, needs_web_search as _needs_web_search
         if _needs_web_search(question, has_files=True):
             # Question implies it wants more than just the file (e.g. asks for
             # market context, comparisons, recent news) — supplement with web data.
@@ -2507,9 +2496,8 @@ async def generate_report(request: Request):
             search_query = _augment_query_for_historical_data(
                 _build_followup_search_query(question, conversation_context)
             )
-            searched = await _tavily_search_multi(
-                [search_query, f"{search_query} data statistics figures"],
-                max_results=20, min_results=10,
+            searched = await _tavily_search(
+                search_query, max_results=20, min_results=10,
                 historical_intent=bool(_HISTORICAL_INTENT_RE.search(question)),
             )
             sources = [
@@ -2524,33 +2512,17 @@ async def generate_report(request: Request):
             log.info("Report: file-first mode — question doesn't need web search, using file data only")
     elif not sources:
         log.info("Report: no sources — running own Tavily search for %r", question[:60])
-        from routes.chat import tavily_search_multi as _tavily_search_multi, _looks_like_ai_overview
+        from routes.chat import tavily_search as _tavily_search, _looks_like_ai_overview
         search_query = _augment_query_for_historical_data(
             _build_followup_search_query(question, conversation_context)
         )
         if search_query != question:
             log.info("Report: search query enriched (%d → %d chars): %r",
                       len(question), len(search_query), search_query[:150])
-        searched = await _tavily_search_multi(
-            [search_query, f"{search_query} data statistics figures"],
-            max_results=20,
+        searched = await _tavily_search(
+            search_query, max_results=20,
             historical_intent=bool(_HISTORICAL_INTENT_RE.search(question)),
         )
-        if not searched and search_query != question:
-            # The enriched/optimized query came back completely empty across
-            # every key. Rather than fail outright, retry once with the raw
-            # question as typed — an over-engineered query (extra suffixes,
-            # aggressive filler stripping) is a much more likely cause of a
-            # genuine zero-result search than the topic having no coverage
-            # at all, and a plain retry is cheap insurance against exactly
-            # that failure mode before we give up on live sources entirely.
-            log.warning("Report: enriched query returned 0 results — retrying with raw question")
-            searched = await _tavily_search_multi(
-                [question], max_results=20,
-                historical_intent=bool(_HISTORICAL_INTENT_RE.search(question)),
-            )
-            if searched:
-                log.info("Report: raw-question retry recovered %d sources", len(searched))
         sources = [
             {"title": r["title"], "url": r["url"],
              "snippet": r["snippet"], "fullContent": r.get("fullContent", "")}
@@ -2581,23 +2553,15 @@ async def generate_report(request: Request):
             question, re.IGNORECASE,
         ))
         if needs_current_data:
-            # Even for a "needs live data" question, hard-failing with a bare
-            # error is worse than a clearly-labeled degraded answer — the
-            # person asked a question and should get something back every
-            # time, not a dead end. Fall through to the same
-            # from-model-knowledge path used below, but flag it so the
-            # prompt makes the staleness explicit instead of silently
-            # answering as if the numbers were current.
-            log.warning(
-                "Report: still no sources after self-search + retry, question wants live data — "
-                "answering from model knowledge with an explicit staleness disclaimer instead of failing"
+            log.warning("Report: still no sources after self-search, and question needs live data — failing")
+            return JSONResponse(
+                {"error": "Could not retrieve data for this topic. Please try again.",
+                 "report": "Could not retrieve data for this topic. Please try again.",
+                 "charts": [], "keyStats": [], "summary": "", "title": ""},
+                status_code=502,
             )
-            no_live_data_disclaimer = True
-        else:
-            no_live_data_disclaimer = False
-        log.info("Report: no web sources found — generating report from model knowledge instead of failing")
-    else:
-        no_live_data_disclaimer = False
+        log.info("Report: no web sources found, but question doesn't require live data — "
+                  "generating report from model knowledge instead of failing")
 
     # ── Verified index data: scraped sources are hit-or-miss on precise
     # Nifty/Sensex/Bank Nifty levels (stale snippets, wrong page, etc.), so
@@ -2644,8 +2608,8 @@ async def generate_report(request: Request):
     # use 25 sources and real-fetch all of them — the model's context window
     # has plenty of headroom, and more real page text = more genuine data
     # points to chart/table instead of the same handful of numbers reused.
-    ENRICH_SOURCE_COUNT = 32
-    ENRICH_FETCH_CHARS = 4200
+    ENRICH_SOURCE_COUNT = 25
+    ENRICH_FETCH_CHARS = 3000
 
     async def enrich(src: dict, idx: int) -> dict:
         if src.get("url", "").startswith("internal://"):
@@ -2795,26 +2759,14 @@ async def generate_report(request: Request):
         + (
             f"\n\nSupplementary web sources ({len(enriched)} results):\n\n{src_text}\n\n"
             if not no_web_sources else
-            (
-                "\n\nNO LIVE SOURCES — DATA MAY BE STALE: a web search for this topic returned nothing "
-                "usable, even though it normally concerns current prices/levels/news. Write the report "
-                "from your own financial/business knowledge, but state plainly near the top (in the "
-                "Executive Summary) that this is general/background analysis rather than live market "
-                "data, and that the reader should verify current prices/figures independently before "
-                "acting on them — DO NOT present any specific price, index level, or %-change figure as "
-                "if it were today's/current, since none of that is verified here. Do NOT invent "
-                "citations, publication names, or URLs. Omit any References/Sources/Methodology section "
-                "entirely, since there are no sources to list.\n\n"
-                if no_live_data_disclaimer else
-                "\n\nNO WEB SOURCES: A web search for this topic returned nothing usable — this is "
-                "expected for a personal/advisory question rather than a news or market-data query. "
-                "Write the report entirely from your own financial/business knowledge and reasoning. "
-                "Do NOT invent citations, publication names, statistics, or URLs you were not actually "
-                "given — attribute nothing to a 'source' that doesn't exist here. Where a number is a "
-                "reasonable estimate or industry rule-of-thumb rather than a verified figure, say so "
-                "explicitly (e.g. 'typically', 'a common benchmark is', 'as a rough estimate'). Omit any "
-                "References/Sources/Methodology section entirely, since there are no sources to list.\n\n"
-            )
+            "\n\nNO WEB SOURCES: A web search for this topic returned nothing usable — this is "
+            "expected for a personal/advisory question rather than a news or market-data query. "
+            "Write the report entirely from your own financial/business knowledge and reasoning. "
+            "Do NOT invent citations, publication names, statistics, or URLs you were not actually "
+            "given — attribute nothing to a 'source' that doesn't exist here. Where a number is a "
+            "reasonable estimate or industry rule-of-thumb rather than a verified figure, say so "
+            "explicitly (e.g. 'typically', 'a common benchmark is', 'as a rough estimate'). Omit any "
+            "References/Sources/Methodology section entirely, since there are no sources to list.\n\n"
         )
         + image_candidates_block
         + "INSTRUCTIONS:\n"
@@ -2827,23 +2779,17 @@ async def generate_report(request: Request):
         "Default to zero images; most reports should return \"images\": [].\n"
         + ("6. Insert [FILE_IMG_n] references inline where you reference data visible in that extracted image/chart.\n" if embedded_file_images else "")
         + (
-            "7. THE USER EXPLICITLY ASKED FOR MORE DATA POINTS / CHARTS / GRAPHS — go noticeably deeper "
-            "than a typical report for this topic: mine every distinct chartable angle the source material "
+            "7. THE USER EXPLICITLY ASKED FOR MORE DATA POINTS / CHARTS / GRAPHS — go beyond the usual "
+            "STEP 4 floor of 6: produce AT LEAST 8-10 [CHART_n]/table entries if the source material "
             "(file data, web sources, or — when NO_WEB_SOURCES — figures/ratios you can validly derive "
-            "from the numbers already given) genuinely supports, rather than stopping at the first few "
-            "obvious ones. There is still no fixed number to hit — go as deep as the ACTUAL content "
-            "supports, not to a round target — but this request means err toward more angles, not fewer. "
-            "For every metric mentioned in the text, also surface it as a keyStats entry or a chart data point "
+            "from the numbers already given) supports that many distinct chartable angles. For every "
+            "metric mentioned in the text, also surface it as a keyStats entry or a chart data point "
             "rather than leaving it as a bare sentence. Where the same underlying numbers support more "
             "than one lens (e.g. absolute values AND ratios/percentages, current-state AND trend-over-"
             "time, per-unit AND aggregate), chart more than one of those lenses instead of picking just "
-            "one. Also push past the usual 5-8-point guidance per chart where the sources allow it — "
-            "if 10+ comparable entities/periods exist for one metric, chart all of them rather than a "
-            "top-5 subset. This does NOT license inventing numbers or going off-topic — every extra "
-            "chart/stat still must (a) trace back to a real source figure or a straightforward derived "
-            "calculation from figures already given (e.g. revenue ÷ client count = ARPU is fine; a number "
-            "with no basis is not), and (b) be genuinely about the entities/subject this question asks "
-            "about, never a different, unrelated company or tangential trivia added purely to raise the count.\n"
+            "one. This does NOT license inventing numbers — every extra chart/stat still must trace back "
+            "to a real source figure or a straightforward derived calculation from figures already given "
+            "(e.g. revenue ÷ client count = ARPU is fine; a number with no basis is not).\n"
             if wants_more_data_viz else ""
         )
         + "8. Respond ONLY with the JSON object — no markdown fences, no text outside JSON."
@@ -3056,7 +3002,13 @@ async def generate_report(request: Request):
         if ch.get("type") == "table":
             cols = ch.get("columns") or []
             rows = ch.get("rows") or []
-            return bool(ch.get("title")) and len(cols) >= 2 and len(rows) >= 2
+            # Title is intentionally allowed to be empty here — see
+            # _extract_markdown_tables, which now leaves it blank whenever
+            # the table sits directly under a heading (the heading already
+            # introduces it; a non-empty title would just duplicate that
+            # heading text verbatim in the chart's own baked-in image).
+            # A table with real columns/rows is still a fine chart without one.
+            return len(cols) >= 2 and len(rows) >= 2
         series = ch.get("series") or []
         if not series or not ch.get("type") or not ch.get("title"):
             return False
@@ -3081,17 +3033,17 @@ async def generate_report(request: Request):
         # "green vs red IPO listings") since a 2-way split is still a
         # legitimate, common pie — unlike a 2-bar chart it isn't thin, it's
         # just binary.
-        if chart_type in ("bar", "dot", "pie") and n_series == 1:
+        if chart_type in ("bar", "pie") and n_series == 1:
             n_labels = len(series[0].get("data") or [])
-            min_labels = 2 if chart_type == "pie" else 4
-            if chart_type in ("bar", "dot") and n_labels == 2:
+            min_labels = 2 if chart_type == "pie" else 3
+            if chart_type == "bar" and n_labels == 2:
                 vals = [_num(pt) for pt in series[0].get("data") or []]
                 is_diverging = len(vals) == 2 and (vals[0] > 0) != (vals[1] > 0)
                 if is_diverging:
                     # e.g. FII outflow (-735) vs DII inflow (+705) — a genuine
                     # 2-way diverging comparison, not a "thin" chart. Can't be
                     # a pie (negative values aren't representable as slices),
-                    # so it's allowed through as a bar despite the usual ≥4 rule.
+                    # so it's allowed through as a bar despite the usual ≥3 rule.
                     min_labels = 2
             if n_labels < min_labels:
                 log.warning("Chart rejected — only %d distinct items (need ≥%d for %s chart): %s",
@@ -3128,7 +3080,7 @@ async def generate_report(request: Request):
         # mode is really "one value dwarfs another on a shared axis", which
         # doesn't require opposite signs, and arrow charts (a start→end
         # line on the same kind of axis) are just as susceptible as bar.
-        if chart_type in ("bar", "dot", "arrow"):
+        if chart_type in ("bar", "arrow"):
             abs_vals = [abs(v) for v in values if v != 0]
             if len(abs_vals) >= 2:
                 ratio = max(abs_vals) / min(abs_vals)
@@ -3143,7 +3095,7 @@ async def generate_report(request: Request):
 
         # Reject bar charts where a single series mixes wildly different scales
         # (e.g. price 125957 and % change -3 as two bars in the same series)
-        if chart_type in ("bar", "dot"):
+        if chart_type == "bar":
             for s in series:
                 pts_vals = [_num(pt) for pt in (s.get("data") or [])]
                 if len(pts_vals) >= 2:
@@ -3247,7 +3199,7 @@ async def generate_report(request: Request):
         return chart_list
 
     def _recover_thin_bar_as_pie(ch: dict) -> dict:
-        """A single-series bar chart with exactly 2 items fails the ≥4-item
+        """A single-series bar chart with exactly 2 items fails the ≥3-item
         bar rule but is a perfectly legitimate pie IF both values are a genuine
         non-negative share-of-whole (e.g. "IPO listings: green vs red" 12 vs 8).
         A pie can't represent a negative value, so signed/diverging pairs (e.g.
@@ -3374,65 +3326,6 @@ async def generate_report(request: Request):
                 log.warning("Report: regex-extracted report field from raw JSON (pass 4)")
 
         charts = _strip_url_columns(charts)
-
-        # ── Enforced retry: this is a true SPARSENESS check, not a target to
-        # normalize every report toward. A fixed floor every report gets
-        # pushed to (e.g. "always 8") is exactly what produced off-topic
-        # padding (unrelated companies, founder ages, population stats) in
-        # earlier testing — reports vary genuinely by topic, and forcing a
-        # uniform count fights that. This only retries when the count is low
-        # enough to suggest the model gave up early rather than genuinely
-        # exhausted the sources — not to normalize every report to a round
-        # number. wants_more_data_viz raises the bar somewhat since the user
-        # explicitly asked for more, but even then this isn't a fixed target.
-        _sparse_chart_threshold = 7 if wants_more_data_viz else 5
-        if len(charts) < _sparse_chart_threshold:
-            log.warning("Report: only %d chart/table entries (sparse threshold %d) — retrying generation once",
-                        len(charts), _sparse_chart_threshold)
-            try:
-                _retry_prompt = (
-                    user_prompt
-                    + f"\n\nIMPORTANT — REVISION REQUIRED: your previous attempt at this same report "
-                    f"only produced {len(charts)} chart/table entries, which reads as under-mining the "
-                    f"sources rather than the topic genuinely being that thin. Go back through the source "
-                    f"material above and find a few more genuinely chartable angles you didn't use the "
-                    f"first time (a different ratio, a different pairing of the same entities, a breakdown "
-                    f"you summarized in prose instead of charting, an additional row/label for a chart you "
-                    f"already made thin). There is still no fixed number to hit — do not pad to reach a "
-                    f"round total. EVERY new entry must still be strictly on-topic — "
-                    f"about the entities/subject this question is actually asking about. Do NOT raise the "
-                    f"count by adding a chart about a different, unrelated company, an unrelated person's "
-                    f"age, a founding year, population figures, or any other tangential trivia that merely "
-                    f"appeared in a source. If you genuinely cannot find more ON-TOPIC data "
-                    f"points, submitting the same low count again is correct — an on-topic report stays "
-                    f"short when the topic is short; it never pads with anything off-topic.\n"
-                )
-                _raw2, _model_used2 = await call_gemini(_retry_prompt)
-                _clean2 = _raw2.strip()
-                if _clean2.startswith("```"):
-                    _clean2 = re.sub(r"^```(?:json)?\s*", "", _clean2)
-                    _clean2 = re.sub(r"```\s*$", "", _clean2).strip()
-                _parsed2 = json.loads(_clean2)
-                _charts2 = [
-                    _recover_pseudo_trend_line_as_bar(_recover_thin_bar_as_pie(c))
-                    for c in (_parsed2.get("charts") or [])
-                ]
-                _mask2 = _drop_duplicate_charts([_is_plausible_chart(c) for c in _charts2], _charts2)
-                _charts2 = [c for c, keep in zip(_charts2, _mask2) if keep]
-                _report_text2 = _strip_leaked_prompt_tail(_parsed2.get("report", ""))
-                _report_text2, _charts2 = _extract_inline_chart_jsons(_report_text2, _charts2)
-                _report_text2, _charts2 = _extract_markdown_tables(_report_text2, _charts2)
-                _charts2 = _strip_url_columns(_charts2)
-                if len(_charts2) > len(charts):
-                    log.info("Report: retry improved chart/table count %d → %d", len(charts), len(_charts2))
-                    charts, report_text, parsed = _charts2, _report_text2, _parsed2
-                    model_used = _model_used2
-                else:
-                    log.info("Report: retry did not improve on the original (%d vs %d) — keeping original",
-                              len(_charts2), len(charts))
-            except Exception as _retry_exc:
-                log.warning("Report: chart-count retry failed (%s) — keeping original", _retry_exc)
-
         charts = await attach_datawrapper_charts(charts)
         report_text = _strip_citation_markers(report_text)
         # Debug: verify [WEB_IMG_n] placeholders are in final report_text
