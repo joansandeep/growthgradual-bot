@@ -23,6 +23,8 @@ from utils.datawrapper import attach_datawrapper_charts
 from utils.market_data import (
     fetch_index_quotes, format_quotes_as_source,
     fetch_historical_index_quotes, format_historical_quotes_as_source,
+    fetch_stock_fundamentals, format_stock_fundamentals_as_source,
+    fetch_historical_stock_quotes, format_historical_quotes_as_source as format_historical_series_as_source,
 )
 from utils.tax_calc import extract_salary_figures, format_tax_comparison_as_source
 
@@ -2371,6 +2373,69 @@ def _augment_query_for_historical_data(query: str) -> str:
     return query
 
 
+# Signals that a question is actually about specific company/companies'
+# stock rather than the market in general — valuation multiples, debt,
+# margins, or an explicit "X vs Y" comparison. Deliberately broader than
+# _is_index_question below since it has to catch single-stock questions too
+# ("is TCS overvalued"), not just multi-company comparisons.
+_STOCK_COMPANY_INTENT_RE = re.compile(
+    r"\b(stock|share price|shares of|valuation|p/?e ratio|price[- ]to[- ]earnings|"
+    r"market cap|debt[- ]to[- ]equity|debt[- ]equity|roe|return on equity|"
+    r"eps\b|earnings per share|dividend yield|fundamentals?|"
+    r"undervalued|overvalued|buy or sell|investment case|"
+    r"\bvs\.?\b|\bversus\b)\b",
+    re.IGNORECASE,
+)
+
+# Common trailing corporate suffixes/legal forms — stripped when matching but
+# also used as a signal that a capitalized phrase names a company.
+_COMPANY_SUFFIX_RE = re.compile(
+    r"\b(Industries|Motors|Ltd\.?|Limited|Inc\.?|Corp\.?|Corporation|"
+    r"Company|Co\.?|Group|Holdings|Bank|Motors|Technologies|Tech|"
+    r"Pharma(?:ceuticals)?|Steel|Power|Energy|Airlines|Cement|Finance|"
+    r"Financial Services|Consumer Products)\b",
+    re.IGNORECASE,
+)
+
+# Leading words that are capitalized for sentence-grammar reasons, not
+# because they're part of a company name — drop matches that are only this.
+_LEADING_STOPWORDS = {
+    "The", "This", "That", "These", "Those", "Compare", "Analyze", "Is",
+    "Are", "What", "How", "Why", "Which", "Should", "Does",
+}
+
+
+def _extract_company_candidates(question: str) -> list[str]:
+    """Pulls plausible company-name phrases out of free text so stock
+    fundamentals can be looked up for whatever companies the user actually
+    named, instead of relying on a fixed list. Two passes:
+      1. Sequences of capitalized words (e.g. "Reliance Industries", "Tata
+         Motors") — catches most real company names.
+      2. Known corporate suffixes anchor a slightly wider window, so
+         "reliance industries" (lowercase, informal typing) still resolves
+         via the suffix match downstream in Yahoo's fuzzy search.
+    Deduplicated, capped at 6 to bound the number of lookups.
+    """
+    candidates: list[str] = []
+    for m in re.finditer(r"\b([A-Z][a-zA-Z&.]*(?:\s+[A-Z][a-zA-Z&.]*){0,3})\b", question):
+        phrase = m.group(1).strip()
+        words = phrase.split()
+        if words[0] in _LEADING_STOPWORDS:
+            words = words[1:]
+            phrase = " ".join(words)
+        if len(words) >= 1 and phrase and phrase not in candidates:
+            candidates.append(phrase)
+    # Dedup case-insensitively while preserving first-seen casing/order.
+    seen_lower: set[str] = set()
+    deduped: list[str] = []
+    for c in candidates:
+        key = c.lower()
+        if key not in seen_lower and len(c) > 2:
+            seen_lower.add(key)
+            deduped.append(c)
+    return deduped[:6]
+
+
 @router.post("")
 async def generate_report(request: Request):
     t0 = time.perf_counter()
@@ -2609,6 +2674,43 @@ async def generate_report(request: Request):
                     log.info("Report: prepended verified historical index series (%d symbols)", len(hist_series))
             except Exception as e:
                 log.warning("Report: historical index fetch failed, continuing without it: %s", e)
+
+    # Verified stock fundamentals: the same "scraped snippets are hit-or-miss
+    # on precise numbers" problem as the index block above, but for individual
+    # companies. Without this, a "Company A vs Company B" valuation/debt
+    # question has no authoritative numeric source to draw on, so the model
+    # falls back on vague hedged ranges from training knowledge ("typically
+    # trades at 25x-30x") instead of today's actual P/E, market cap, and
+    # debt-to-equity — and with no hard numbers to chart, it also tends to
+    # under-produce charts/tables for that section. Resolving whatever
+    # company names appear in the question to real tickers and pulling
+    # live fundamentals fixes both problems for ANY company, not just a
+    # hard-coded list.
+    if _STOCK_COMPANY_INTENT_RE.search(question):
+        try:
+            company_candidates = _extract_company_candidates(question)
+            if company_candidates:
+                stocks = await fetch_stock_fundamentals(company_candidates)
+                stock_source = format_stock_fundamentals_as_source(stocks)
+                if stock_source:
+                    sources = [stock_source] + sources
+                    log.info("Report: prepended verified stock fundamentals for %d/%d candidate name(s)",
+                              len(stocks), len(company_candidates))
+                # A price-trend line chart needs an actual multi-point series,
+                # not just today's snapshot — same rationale as the
+                # historical-index block above. Only worth fetching if we
+                # resolved at least one real ticker.
+                if stocks and _HISTORICAL_INTENT_RE.search(question):
+                    hist_stock_series = await fetch_historical_stock_quotes(
+                        [{"symbol": s["symbol"], "name": s["name"]} for s in stocks]
+                    )
+                    hist_stock_source = format_historical_series_as_source(hist_stock_series)
+                    if hist_stock_source:
+                        sources = [hist_stock_source] + sources
+                        log.info("Report: prepended verified historical stock price series (%d symbols)",
+                                  len(hist_stock_series))
+        except Exception as e:
+            log.warning("Report: stock fundamentals fetch failed, continuing without it: %s", e)
 
     # Verified tax calculation: same rationale as the index-quote block above.
     # Slab rates, standard deductions, and rebate thresholds change with every

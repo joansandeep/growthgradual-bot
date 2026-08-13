@@ -193,6 +193,198 @@ async def fetch_index_quotes() -> list[dict]:
     return out
 
 
+async def _yf_symbol_search(client: httpx.AsyncClient, company_name: str) -> Optional[dict]:
+    """Resolve a free-text company name (e.g. 'Reliance Industries') to a real
+    ticker via Yahoo's unauthenticated symbol-search endpoint. This is what
+    lets stock-fundamentals lookup generalize to ANY company mentioned in a
+    prompt instead of only a hard-coded list — same no-crumb-needed contract
+    as the chart endpoint above.
+    """
+    try:
+        r = await client.get(
+            "https://query1.finance.yahoo.com/v1/finance/search",
+            params={"q": company_name, "quotesCount": 5, "newsCount": 0},
+            headers=YF_HEADERS,
+            timeout=8.0,
+        )
+        if r.status_code != 200:
+            return None
+        for q in r.json().get("quotes", []):
+            # EQUITY only — skip ETFs/indices/crypto/futures matches so a name
+            # like "Tata Motors" doesn't resolve to some unrelated fund.
+            if q.get("quoteType") == "EQUITY" and q.get("symbol"):
+                return {"symbol": q["symbol"], "name": q.get("shortname") or q.get("longname") or company_name}
+        return None
+    except Exception as e:
+        log.debug("yf_symbol_search failed for %r: %s", company_name, e)
+        return None
+
+
+async def _yf_quote_summary(client: httpx.AsyncClient, symbol: str) -> Optional[dict]:
+    """Pulls valuation/debt/profitability fundamentals for one resolved
+    ticker via the v10 quoteSummary endpoint (price + summaryDetail +
+    defaultKeyStatistics + financialData modules). Best-effort: any missing
+    field is simply omitted rather than faked, same contract as the rest of
+    this module.
+    """
+    try:
+        r = await client.get(
+            f"https://query2.finance.yahoo.com/v10/finance/quoteSummary/{symbol}",
+            params={"modules": "price,summaryDetail,defaultKeyStatistics,financialData"},
+            headers=YF_HEADERS,
+            timeout=8.0,
+        )
+        if r.status_code != 200:
+            return None
+        result = (r.json().get("quoteSummary", {}).get("result") or [None])[0]
+        if not result:
+            return None
+
+        def raw(module: str, field: str):
+            v = (result.get(module, {}) or {}).get(field, {})
+            return v.get("raw") if isinstance(v, dict) else None
+
+        price = result.get("price", {}) or {}
+        out = {
+            "symbol": symbol,
+            "name": price.get("longName") or price.get("shortName") or symbol,
+            "currency": price.get("currency"),
+            "price": raw("price", "regularMarketPrice"),
+            "changePct": raw("price", "regularMarketChangePercent"),
+            "marketCap": raw("price", "marketCap"),
+            "peRatio": raw("summaryDetail", "trailingPE") or raw("defaultKeyStatistics", "trailingPE"),
+            "forwardPE": raw("summaryDetail", "forwardPE"),
+            "priceToBook": raw("defaultKeyStatistics", "priceToBook"),
+            "debtToEquity": raw("financialData", "debtToEquity"),
+            "returnOnEquityPct": (
+                raw("financialData", "returnOnEquity") * 100
+                if raw("financialData", "returnOnEquity") is not None else None
+            ),
+            "profitMarginPct": (
+                raw("financialData", "profitMargins") * 100
+                if raw("financialData", "profitMargins") is not None else None
+            ),
+            "revenueGrowthPct": (
+                raw("financialData", "revenueGrowth") * 100
+                if raw("financialData", "revenueGrowth") is not None else None
+            ),
+            "earningsGrowthPct": (
+                raw("financialData", "earningsGrowth") * 100
+                if raw("financialData", "earningsGrowth") is not None else None
+            ),
+            "epsTTM": raw("defaultKeyStatistics", "trailingEps"),
+            "dividendYieldPct": (
+                raw("summaryDetail", "dividendYield") * 100
+                if raw("summaryDetail", "dividendYield") is not None else None
+            ),
+            "fiftyTwoWeekHigh": raw("summaryDetail", "fiftyTwoWeekHigh"),
+            "fiftyTwoWeekLow": raw("summaryDetail", "fiftyTwoWeekLow"),
+            "totalCashPerShare": raw("financialData", "totalCashPerShare"),
+        }
+        # Require at least price + one fundamental field, otherwise this
+        # symbol adds no value over a plain price quote and should be
+        # treated as a miss so callers can skip it.
+        has_fundamental = any(
+            out[k] is not None for k in ("peRatio", "debtToEquity", "returnOnEquityPct", "marketCap")
+        )
+        if out["price"] is None or not has_fundamental:
+            return None
+        return out
+    except Exception as e:
+        log.debug("yf_quote_summary failed for %s: %s", symbol, e)
+        return None
+
+
+async def fetch_stock_fundamentals(company_names: list[str]) -> list[dict]:
+    """Resolves each free-text company name to a ticker and pulls verified
+    valuation/debt/profitability fundamentals for it. Best-effort per name —
+    a company that fails to resolve or has no fundamentals data is simply
+    omitted, never faked. Caps at 6 names so a noisy extraction upstream
+    can't turn into a slow report generation call.
+    """
+    out: list[dict] = []
+    seen_symbols: set[str] = set()
+    async with httpx.AsyncClient() as client:
+        for name in company_names[:6]:
+            match = await _yf_symbol_search(client, name)
+            if not match or match["symbol"] in seen_symbols:
+                continue
+            data = await _yf_quote_summary(client, match["symbol"])
+            if data:
+                seen_symbols.add(match["symbol"])
+                out.append(data)
+    log.info("market_data: resolved fundamentals for %d/%d company name(s)", len(out), len(company_names))
+    return out
+
+
+def format_stock_fundamentals_as_source(stocks: list[dict]) -> Optional[dict]:
+    """Wraps fetched per-company fundamentals as a synthetic, high-trust
+    source dict, same shape/contract as format_quotes_as_source() above."""
+    if not stocks:
+        return None
+    lines = []
+    for s in stocks:
+        parts = [f"{s['name']} ({s['symbol']})"]
+        if s.get("price") is not None:
+            chg = f" ({s['changePct']:+.2f}%)" if s.get("changePct") is not None else ""
+            parts.append(f"price {s['price']:.2f} {s.get('currency') or ''}{chg}".strip())
+        if s.get("marketCap") is not None:
+            parts.append(f"market cap {s['marketCap']:,.0f}")
+        if s.get("peRatio") is not None:
+            parts.append(f"trailing P/E {s['peRatio']:.2f}x")
+        if s.get("forwardPE") is not None:
+            parts.append(f"forward P/E {s['forwardPE']:.2f}x")
+        if s.get("priceToBook") is not None:
+            parts.append(f"P/B {s['priceToBook']:.2f}x")
+        if s.get("debtToEquity") is not None:
+            parts.append(f"debt-to-equity {s['debtToEquity']:.2f}")
+        if s.get("returnOnEquityPct") is not None:
+            parts.append(f"ROE {s['returnOnEquityPct']:.2f}%")
+        if s.get("profitMarginPct") is not None:
+            parts.append(f"net margin {s['profitMarginPct']:.2f}%")
+        if s.get("revenueGrowthPct") is not None:
+            parts.append(f"revenue growth (YoY) {s['revenueGrowthPct']:.2f}%")
+        if s.get("earningsGrowthPct") is not None:
+            parts.append(f"earnings growth (YoY) {s['earningsGrowthPct']:.2f}%")
+        if s.get("epsTTM") is not None:
+            parts.append(f"EPS (TTM) {s['epsTTM']:.2f}")
+        if s.get("dividendYieldPct") is not None:
+            parts.append(f"dividend yield {s['dividendYieldPct']:.2f}%")
+        if s.get("fiftyTwoWeekHigh") is not None and s.get("fiftyTwoWeekLow") is not None:
+            parts.append(f"52-week range {s['fiftyTwoWeekLow']:.2f}-{s['fiftyTwoWeekHigh']:.2f}")
+        lines.append(" | ".join(parts))
+    return {
+        "title": (
+            "VERIFIED LIVE STOCK FUNDAMENTALS (authoritative, sourced directly from exchange "
+            "data — use these exact figures for P/E, market cap, debt-to-equity, ROE, margins, "
+            "growth rates, EPS, dividend yield, and 52-week range for these companies; do not "
+            "substitute a vaguer 'typical'/'historical range' figure from another source when a "
+            "verified number is listed here for the same company and metric)"
+        ),
+        "url": "internal://verified-stock-fundamentals",
+        "snippet": " || ".join(lines)[:2000],
+        "fullContent": "\n".join(lines),
+    }
+
+
+async def fetch_historical_stock_quotes(
+    symbols: list[dict], range_str: str = "2y", interval: str = "3mo",
+) -> list[dict]:
+    """Same idea as fetch_historical_index_quotes() but for individually
+    resolved company tickers, e.g. symbols=[{"symbol": "RELIANCE.NS", "name":
+    "Reliance Industries"}]. Returns a real closing-price series per company
+    so the report can build an actual price-trend line chart instead of
+    guessing at a trajectory.
+    """
+    out: list[dict] = []
+    async with httpx.AsyncClient() as client:
+        for s in symbols[:6]:
+            points = await _yf_chart_history(client, s["symbol"], range_str, interval)
+            if points and len(points) >= 2:
+                out.append({"label": s.get("name") or s["symbol"], "points": points})
+    return out
+
+
 def format_quotes_as_source(quotes: list[dict]) -> Optional[dict]:
     """Wraps fetched quotes as a synthetic, high-trust "source" dict in the
     same shape as Tavily results, so it can be prepended to the sources list
