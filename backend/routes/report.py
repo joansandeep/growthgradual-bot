@@ -24,6 +24,7 @@ from utils.market_data import (
     fetch_index_quotes, format_quotes_as_source,
     fetch_historical_index_quotes, format_historical_quotes_as_source,
 )
+from utils.tax_calc import extract_salary_figures, format_tax_comparison_as_source
 
 router = APIRouter()
 log = logging.getLogger("report")
@@ -244,6 +245,14 @@ CRITICAL DATA INTEGRITY RULES — VIOLATIONS DEGRADE REPORT QUALITY:
 ✗ If a specific number is NOT in the sources, write "data not available from sources" rather than guessing.
 ✓ You MAY use your knowledge for definitions, context, explanations, and general market dynamics.
 ✓ Every key metric in keyStats and every chart data point must be traceable to the scraped source content.
+✓ TOPICAL RELEVANCE, NOT JUST TRACEABILITY: a keyStat or chart point must be traceable to the sources
+  AND be about the actual subject(s) named in the report question/title. A number that appears
+  somewhere in the source pool but belongs to a different company/topic (e.g. a stray "Infosys initial
+  investment" figure showing up in a Reliance-vs-Tata-Motors report) is NOT a valid keyStat just because
+  it was technically present in a scraped page — leave it out. If the sources are thin on verified,
+  on-topic figures for the named subject(s), it is correct to return FEWER keyStats (even 3-4) rather
+  than padding the array to reach a count by reaching for adjacent/unrelated numbers. A short, accurate
+  keyStats list beats a full one padded with off-topic data.
 ✓ The longer length target below is a DEPTH requirement, not a license to pad: hit it by explaining
   mechanisms, context, comparisons, and implications more thoroughly — never by inventing extra figures.
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -2600,6 +2609,37 @@ async def generate_report(request: Request):
                     log.info("Report: prepended verified historical index series (%d symbols)", len(hist_series))
             except Exception as e:
                 log.warning("Report: historical index fetch failed, continuing without it: %s", e)
+
+    # Verified tax calculation: same rationale as the index-quote block above.
+    # Slab rates, standard deductions, and rebate thresholds change with every
+    # Union Budget, so neither the model's training data nor a random
+    # personal-finance blog snippet can be trusted for exact figures — and
+    # the arithmetic itself (multi-slab computation, rebate cliffs, break-even
+    # search) is exactly the kind of thing an LLM gets subtly wrong even when
+    # it has the right rates. Compute it deterministically and hand the model
+    # verified numbers to build the report around; the report's structure,
+    # framing, and which of these numbers to emphasize is still entirely the
+    # model's call.
+    _is_tax_question = bool(re.search(
+        r"\b(income\s*tax|tax\s*regime|old\s*regime|new\s*regime|"
+        r"tax\s*slab|80c|section\s*24|hra\s*exemption|tax\s*saving|"
+        r"tax\s*liability|tax\s*break[\s-]?even)\b",
+        question, re.IGNORECASE,
+    ))
+    if _is_tax_question:
+        try:
+            salary_figures = extract_salary_figures(question)
+            if not salary_figures:
+                # No specific salary named — give the model a representative
+                # spread rather than silently computing nothing.
+                salary_figures = [1_000_000, 1_500_000, 2_000_000]
+            tax_source = format_tax_comparison_as_source(salary_figures)
+            if tax_source:
+                sources = [tax_source] + sources
+                log.info("Report: prepended verified tax calculation for %d salary figure(s)",
+                          len(salary_figures))
+        except Exception as e:
+            log.warning("Report: tax calculation failed, continuing without it: %s", e)
 
     # Fetch real page content (not just Tavily's snippet) for as many sources
     # as we reasonably can — this is where the actual chartable numbers live.
