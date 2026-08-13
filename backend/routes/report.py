@@ -463,7 +463,11 @@ STEP 4 — MINIMUM 8 charts/tables per report, no exceptions unless sources are 
   For bar/dot/line charts, include every relevant item the sources support — aim for 5-8+ labels/points
   per chart rather than stopping at the first 2-3 that come to mind (e.g. rank all the funds/sectors/
   companies mentioned, not just the top 2). A 2-point chart is only acceptable for a genuine single-pair
-  comparison (this year vs last year) or an arrow/scatter chart, where 2 points is not a real limitation.
+  comparison (this year vs last year) or an arrow chart (before/after by nature) — an arrow chart with
+  only 2 points is fine. A scatter chart with only 2 entities is NOT fine and will be rejected server-side
+  (scatter needs ≥4 named entities with both metrics present) — if you only have 2 comparable entities for
+  a two-metric relationship (e.g. comparing just 2 companies' ROE vs Debt/Equity), that is a 2-series BAR
+  chart (one bar per metric per company) or a small table, never a scatter plot.
 
   Vary the shapes (bar, stacked bar, line, area, dot, pie, arrow, scatter) rather than
   repeating the same shape for every chart; use the stacked-bar shape above whenever a breakdown
@@ -2513,6 +2517,21 @@ async def generate_report(request: Request):
             max_results=20,
             historical_intent=bool(_HISTORICAL_INTENT_RE.search(question)),
         )
+        if not searched and search_query != question:
+            # The enriched/optimized query came back completely empty across
+            # every key. Rather than fail outright, retry once with the raw
+            # question as typed — an over-engineered query (extra suffixes,
+            # aggressive filler stripping) is a much more likely cause of a
+            # genuine zero-result search than the topic having no coverage
+            # at all, and a plain retry is cheap insurance against exactly
+            # that failure mode before we give up on live sources entirely.
+            log.warning("Report: enriched query returned 0 results — retrying with raw question")
+            searched = await _tavily_search_multi(
+                [question], max_results=20,
+                historical_intent=bool(_HISTORICAL_INTENT_RE.search(question)),
+            )
+            if searched:
+                log.info("Report: raw-question retry recovered %d sources", len(searched))
         sources = [
             {"title": r["title"], "url": r["url"],
              "snippet": r["snippet"], "fullContent": r.get("fullContent", "")}
@@ -2543,15 +2562,23 @@ async def generate_report(request: Request):
             question, re.IGNORECASE,
         ))
         if needs_current_data:
-            log.warning("Report: still no sources after self-search, and question needs live data — failing")
-            return JSONResponse(
-                {"error": "Could not retrieve data for this topic. Please try again.",
-                 "report": "Could not retrieve data for this topic. Please try again.",
-                 "charts": [], "keyStats": [], "summary": "", "title": ""},
-                status_code=502,
+            # Even for a "needs live data" question, hard-failing with a bare
+            # error is worse than a clearly-labeled degraded answer — the
+            # person asked a question and should get something back every
+            # time, not a dead end. Fall through to the same
+            # from-model-knowledge path used below, but flag it so the
+            # prompt makes the staleness explicit instead of silently
+            # answering as if the numbers were current.
+            log.warning(
+                "Report: still no sources after self-search + retry, question wants live data — "
+                "answering from model knowledge with an explicit staleness disclaimer instead of failing"
             )
-        log.info("Report: no web sources found, but question doesn't require live data — "
-                  "generating report from model knowledge instead of failing")
+            no_live_data_disclaimer = True
+        else:
+            no_live_data_disclaimer = False
+        log.info("Report: no web sources found — generating report from model knowledge instead of failing")
+    else:
+        no_live_data_disclaimer = False
 
     # ── Verified index data: scraped sources are hit-or-miss on precise
     # Nifty/Sensex/Bank Nifty levels (stale snippets, wrong page, etc.), so
@@ -2749,14 +2776,26 @@ async def generate_report(request: Request):
         + (
             f"\n\nSupplementary web sources ({len(enriched)} results):\n\n{src_text}\n\n"
             if not no_web_sources else
-            "\n\nNO WEB SOURCES: A web search for this topic returned nothing usable — this is "
-            "expected for a personal/advisory question rather than a news or market-data query. "
-            "Write the report entirely from your own financial/business knowledge and reasoning. "
-            "Do NOT invent citations, publication names, statistics, or URLs you were not actually "
-            "given — attribute nothing to a 'source' that doesn't exist here. Where a number is a "
-            "reasonable estimate or industry rule-of-thumb rather than a verified figure, say so "
-            "explicitly (e.g. 'typically', 'a common benchmark is', 'as a rough estimate'). Omit any "
-            "References/Sources/Methodology section entirely, since there are no sources to list.\n\n"
+            (
+                "\n\nNO LIVE SOURCES — DATA MAY BE STALE: a web search for this topic returned nothing "
+                "usable, even though it normally concerns current prices/levels/news. Write the report "
+                "from your own financial/business knowledge, but state plainly near the top (in the "
+                "Executive Summary) that this is general/background analysis rather than live market "
+                "data, and that the reader should verify current prices/figures independently before "
+                "acting on them — DO NOT present any specific price, index level, or %-change figure as "
+                "if it were today's/current, since none of that is verified here. Do NOT invent "
+                "citations, publication names, or URLs. Omit any References/Sources/Methodology section "
+                "entirely, since there are no sources to list.\n\n"
+                if no_live_data_disclaimer else
+                "\n\nNO WEB SOURCES: A web search for this topic returned nothing usable — this is "
+                "expected for a personal/advisory question rather than a news or market-data query. "
+                "Write the report entirely from your own financial/business knowledge and reasoning. "
+                "Do NOT invent citations, publication names, statistics, or URLs you were not actually "
+                "given — attribute nothing to a 'source' that doesn't exist here. Where a number is a "
+                "reasonable estimate or industry rule-of-thumb rather than a verified figure, say so "
+                "explicitly (e.g. 'typically', 'a common benchmark is', 'as a rough estimate'). Omit any "
+                "References/Sources/Methodology section entirely, since there are no sources to list.\n\n"
+            )
         )
         + image_candidates_block
         + "INSTRUCTIONS:\n"
@@ -3312,6 +3351,57 @@ async def generate_report(request: Request):
                 log.warning("Report: regex-extracted report field from raw JSON (pass 4)")
 
         charts = _strip_url_columns(charts)
+
+        # ── Enforced retry: the "8+ charts/tables" (or 10-14 on explicit
+        # request) floor in the prompt is advisory only — nothing before
+        # this point stops the model from finishing with 4 or 5 and no one
+        # noticing. Five Tavily keys and a wider search only help if the
+        # model actually uses what came back; this is the missing
+        # server-side check that catches it when it doesn't, and pays for
+        # one extra generation call only on the reports that actually fall
+        # short instead of on every request.
+        _required_chart_floor = 10 if wants_more_data_viz else 8
+        if len(charts) < _required_chart_floor:
+            log.warning("Report: only %d chart/table entries (need ≥%d) — retrying generation once",
+                        len(charts), _required_chart_floor)
+            try:
+                _retry_prompt = (
+                    user_prompt
+                    + f"\n\nIMPORTANT — REVISION REQUIRED: your previous attempt at this same report "
+                    f"only produced {len(charts)} chart/table entries. This report requires AT LEAST "
+                    f"{_required_chart_floor}. Go back through the source material above and find at "
+                    f"least {_required_chart_floor - len(charts)} more genuinely chartable data points "
+                    f"you didn't use the first time (a different ratio, a different pairing of the same "
+                    f"entities, a breakdown you summarized in prose instead of charting, an additional "
+                    f"row/label for a chart you already made thin) — do not submit another attempt with "
+                    f"a chart/table count this low.\n"
+                )
+                _raw2, _model_used2 = await call_gemini(_retry_prompt)
+                _clean2 = _raw2.strip()
+                if _clean2.startswith("```"):
+                    _clean2 = re.sub(r"^```(?:json)?\s*", "", _clean2)
+                    _clean2 = re.sub(r"```\s*$", "", _clean2).strip()
+                _parsed2 = json.loads(_clean2)
+                _charts2 = [
+                    _recover_pseudo_trend_line_as_bar(_recover_thin_bar_as_pie(c))
+                    for c in (_parsed2.get("charts") or [])
+                ]
+                _mask2 = _drop_duplicate_charts([_is_plausible_chart(c) for c in _charts2], _charts2)
+                _charts2 = [c for c, keep in zip(_charts2, _mask2) if keep]
+                _report_text2 = _strip_leaked_prompt_tail(_parsed2.get("report", ""))
+                _report_text2, _charts2 = _extract_inline_chart_jsons(_report_text2, _charts2)
+                _report_text2, _charts2 = _extract_markdown_tables(_report_text2, _charts2)
+                _charts2 = _strip_url_columns(_charts2)
+                if len(_charts2) > len(charts):
+                    log.info("Report: retry improved chart/table count %d → %d", len(charts), len(_charts2))
+                    charts, report_text, parsed = _charts2, _report_text2, _parsed2
+                    model_used = _model_used2
+                else:
+                    log.info("Report: retry did not improve on the original (%d vs %d) — keeping original",
+                              len(_charts2), len(charts))
+            except Exception as _retry_exc:
+                log.warning("Report: chart-count retry failed (%s) — keeping original", _retry_exc)
+
         charts = await attach_datawrapper_charts(charts)
         report_text = _strip_citation_markers(report_text)
         # Debug: verify [WEB_IMG_n] placeholders are in final report_text
