@@ -2641,6 +2641,22 @@ async def generate_report(request: Request):
         except Exception as e:
             log.warning("Report: tax calculation failed, continuing without it: %s", e)
 
+    # Format hint for the frontend: does this request actually ask for
+    # something a static PDF cannot do (animation, interactivity, motion,
+    # a "creative"/custom UI)? This does NOT change report generation at
+    # all — same LLM call, same markdown/charts/keyStats/images shape — it
+    # only tells the client which renderer to call afterwards:
+    # /report/pdf (ReportLab, static) or /report/html (animated/interactive,
+    # see routes/html_report.py). Defaults to "pdf" so existing behavior for
+    # every request that doesn't mention this is completely unchanged.
+    _WANTS_INTERACTIVE_RE = re.compile(
+        r"\b(animat(?:ed|ion)|interactive|creative\s+ui|motion|"
+        r"scroll(?:ing)?\s+animat|dynamic\s+(?:report|ui|dashboard)|"
+        r"web\s*page|webpage|micro-?interactions?|hover\s+effects?)\b",
+        re.IGNORECASE,
+    )
+    recommended_format = "html" if _WANTS_INTERACTIVE_RE.search(question) else "pdf"
+
     # Fetch real page content (not just Tavily's snippet) for as many sources
     # as we reasonably can — this is where the actual chartable numbers live.
     # Tavily's fan-out routinely returns ~30 sources; we used to discard
@@ -3397,6 +3413,7 @@ async def generate_report(request: Request):
             "keyStats":   parsed.get("keyStats", []),
             "summary":    parsed.get("summary", ""),
             "fileImages": embedded_file_images,  # extracted charts/images only — never full pages
+            "recommendedFormat": recommended_format,
         })
     except Exception as exc:
         log.error("Report: JSON parse failed: %s  (raw length: %d)", exc, len(raw))
@@ -3485,6 +3502,7 @@ async def generate_report(request: Request):
                 "keyStats":   salvaged.get("keyStats", []),
                 "summary":    salvaged.get("summary", ""),
                 "fileImages": embedded_file_images,
+                "recommendedFormat": recommended_format,
             })
 
         try:
@@ -3531,6 +3549,7 @@ async def generate_report(request: Request):
                 "keyStats":   repaired_parsed.get("keyStats", []),
                 "summary":    repaired_parsed.get("summary", ""),
                 "fileImages": embedded_file_images,
+                "recommendedFormat": recommended_format,
             })
         except Exception as e:
             log.warning("Report: JSON repair attempt failed (%s)", e)

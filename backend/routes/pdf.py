@@ -1077,7 +1077,16 @@ def _datawrapper_image(c, spec, x0, y0, w, h):
         # Axis titles only make sense for XY chart types — pies/donuts/tables
         # have no x/y axes to label, so skip reserving margin for them.
         dw_type = str(spec.get("type", "bar")).lower()
-        wants_axis_titles = dw_type not in ("pie", "donut", "table")
+        # Scatter plots are the one chart type Datawrapper gives *native*
+        # per-axis titles to (baked into the exported PNG from the CSV's own
+        # column headers — see publish_chart/_spec_to_csv). Drawing our own
+        # xLabel/yLabel overlay on top of that, as we do for bar/line/arrow
+        # charts (which have no native axis titles at all), just stacks a
+        # second, differently-worded label over the real one — e.g. the
+        # native "Rating" title plus an overlaid "Cost (Rs.)" both fighting
+        # for the same y-axis. Skip the overlay for scatter; the PNG already
+        # has the real thing.
+        wants_axis_titles = dw_type not in ("pie", "donut", "table", "scatter")
         x_label = _safe_text((spec.get("xLabel") or "").strip()) if wants_axis_titles else ""
         y_label = _safe_text((spec.get("yLabel") or "").strip()) if wants_axis_titles else ""
         if not y_label and wants_axis_titles:
