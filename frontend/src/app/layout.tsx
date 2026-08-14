@@ -5,6 +5,7 @@ import TickerTape from '@/components/TickerTape';
 import NewsFAB from '@/components/NewsFAB';
 import { STOCKS } from '@/data';
 import { AuthProvider } from '@/contexts/AuthContext';
+import AuthGate from '@/components/AuthGate';
 
 export const metadata: Metadata = {
   title: 'Growth Gradual — Indian Financial Intelligence',
@@ -26,7 +27,9 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
           <Navbar />
           <TickerTape stocks={STOCKS} />
           <main className="main-container">
-            {children}
+            <AuthGate>
+              {children}
+            </AuthGate>
           </main>
           {/* News feed as floating round button */}
           <NewsFAB />

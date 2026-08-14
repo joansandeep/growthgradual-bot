@@ -5,14 +5,12 @@ import { usePathname } from 'next/navigation';
 import { useEffect, useState } from 'react';
 import { CATEGORIES } from '@/data';
 import { useAuth } from '@/contexts/AuthContext';
-import AuthModal from '@/components/AuthModal';
 
 export default function Navbar() {
   const pathname = usePathname();
   const [time, setTime] = useState('');
   const [marketOpen, setMarketOpen] = useState<boolean | null>(null);
   const { user, loading, signOut } = useAuth();
-  const [showAuthModal, setShowAuthModal] = useState(false);
   const [showAccountMenu, setShowAccountMenu] = useState(false);
 
   useEffect(() => {
@@ -135,28 +133,9 @@ export default function Navbar() {
               fontFamily:'JetBrains Mono,monospace', letterSpacing:'0.5px',
             }}>NSE · BSE · MCX</span>
 
-            {/* Auth control */}
+            {/* Auth control — logged-out visitors see the full-page AuthGate
+                instead, so this only needs to render once authenticated */}
             <div style={{ position: 'relative' }}>
-              {!loading && !user && (
-                <button
-                  onClick={() => setShowAuthModal(true)}
-                  style={{
-                    background: 'rgba(200,146,42,0.1)',
-                    border: '1px solid rgba(200,146,42,0.3)',
-                    borderRadius: '20px',
-                    padding: '5px 14px',
-                    fontSize: '10px',
-                    fontWeight: 700,
-                    fontFamily: "'DM Sans',sans-serif",
-                    letterSpacing: '0.5px',
-                    textTransform: 'uppercase',
-                    color: '#a5720f',
-                    cursor: 'pointer',
-                  }}
-                >
-                  Log in
-                </button>
-              )}
 
               {!loading && user && (
                 <>
@@ -218,7 +197,7 @@ export default function Navbar() {
           </div>
         </div>
 
-        {showAuthModal && <AuthModal onClose={() => setShowAuthModal(false)} />}
+
 
         {/* Nav links row — hidden on chat page */}
         <div className="nav-links" style={{

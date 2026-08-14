@@ -3,12 +3,14 @@
 import { useState, useEffect } from 'react';
 import { usePathname, useRouter } from 'next/navigation';
 import FeedPage from '@/components/FeedPage';
+import { useAuth } from '@/contexts/AuthContext';
 
 export default function NewsFAB() {
   const [open, setOpen] = useState(false);
   const pathname = usePathname();
   const router = useRouter();
   const isChatPage = pathname === '/';
+  const { user, loading } = useAuth();
 
   // Allow other parts of the app (e.g. the chat "Market News" welcome card)
   // to open this same news panel without duplicating its UI.
@@ -45,6 +47,8 @@ export default function NewsFAB() {
       router.push('/');
     }
   };
+
+  if (loading || !user) return null;
 
   return (
     <>
