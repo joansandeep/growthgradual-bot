@@ -9,6 +9,7 @@ Serves:
 """
 import asyncio
 import logging
+import re
 import time
 from pathlib import Path
 
@@ -27,6 +28,30 @@ logging.basicConfig(
     datefmt="%H:%M:%S",
 )
 log = logging.getLogger("main")
+
+# httpx logs the full request URL at INFO level for every call it makes.
+# Several providers (Gemini's REST API in particular) pass the API key as a
+# `?key=...` query-string param rather than a header, so those full-URL log
+# lines were leaking live, usable API keys into plaintext logs — anywhere
+# those logs get shipped (aggregators, support tickets, etc.) is effectively
+# a credential leak. Redact any `key=` query param before the record is
+# emitted rather than silencing httpx's request logging entirely.
+_KEY_PARAM_RE = re.compile(r"([?&]key=)[^&\s\"]+", re.IGNORECASE)
+
+
+class _RedactApiKeysFilter(logging.Filter):
+    def filter(self, record: logging.LogRecord) -> bool:
+        if isinstance(record.msg, str) and "key=" in record.msg:
+            record.msg = _KEY_PARAM_RE.sub(r"\1***REDACTED***", record.msg)
+        if record.args:
+            record.args = tuple(
+                _KEY_PARAM_RE.sub(r"\1***REDACTED***", a) if isinstance(a, str) else a
+                for a in record.args
+            )
+        return True
+
+
+logging.getLogger("httpx").addFilter(_RedactApiKeysFilter())
 
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware

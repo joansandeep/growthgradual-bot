@@ -957,6 +957,24 @@ async def _tavily_one_call(
         data = await client.search(**search_kwargs)
         raw_results = data.get("results") or []
 
+        # A time_range filter stacked on top of country/topic biasing can
+        # over-constrain an otherwise ordinary query down to zero matches
+        # (e.g. "Nifty 50 performance this week" -> time_range="week" +
+        # country="india" + topic="finance" legitimately returning nothing
+        # even though the topic is heavily covered). Rather than surface
+        # that as "no results", retry once with the freshness filter
+        # dropped — recency is still enforced afterward by
+        # _sort_and_filter_by_freshness, so this only widens the candidate
+        # pool instead of abandoning recency entirely.
+        if not raw_results and time_range:
+            log.info(
+                "Tavily key ...%s: 0 results with time_range=%r for %r — "
+                "retrying without time_range", key[-4:], time_range, query[:60],
+            )
+            retry_kwargs = {k: v for k, v in search_kwargs.items() if k != "time_range"}
+            data = await client.search(**retry_kwargs)
+            raw_results = data.get("results") or []
+
         before = len(raw_results)
         raw_results = [r for r in raw_results if not _is_junk_domain(r.get("url", ""))]
         dropped = before - len(raw_results)
@@ -1200,6 +1218,21 @@ async def _tavily_search_httpx_fallback(
                 if not res.is_success:
                     continue
                 data = res.json()
+
+                # Same over-constrained-time_range recovery as the SDK path
+                # in _tavily_one_call: a freshness filter stacked on top of
+                # country/topic biasing can zero out an otherwise ordinary
+                # query, so retry once without it before moving on.
+                if not (data.get("results") or []) and time_range:
+                    log.info(
+                        "Tavily httpx fallback key ...%s: 0 results with time_range=%r — "
+                        "retrying without time_range", key[-4:], time_range,
+                    )
+                    retry_body = {k: v for k, v in body.items() if k != "time_range"}
+                    res = await client.post("https://api.tavily.com/search", json=retry_body)
+                    if res.is_success:
+                        data = res.json()
+
                 if images_out is not None:
                     for img in (data.get("images") or []):
                         if isinstance(img, dict):
@@ -1220,6 +1253,11 @@ async def _tavily_search_httpx_fallback(
                     for r in (data.get("results") or [])
                     if not _is_junk_domain(r.get("url", ""))
                 ]
+                if not results:
+                    # Genuinely nothing for this key even after the
+                    # time_range retry — try the next key rather than
+                    # returning an empty result set early.
+                    continue
                 elapsed = (time.perf_counter() - t0) * 1000
                 log.info("Tavily httpx fallback: %d results in %.0fms", len(results), elapsed)
                 return [_clean_result_content(r) for r in results]
