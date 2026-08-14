@@ -32,7 +32,7 @@ INDEX_SYMBOLS = [
     ("^bsesn", "^BSESN", "SENSEX"),
     ("^nsebank", "^NSEBANK", "NIFTY BANK"),
     ("^cnxit", "^CNXIT", "NIFTY IT"),
-    ("^cnxmid", "^CNXMID", "NIFTY MIDCAP"),
+    ("^nseminidcap50", "^NSEMDCP50", "NIFTY MIDCAP"),  # was ^CNXMID — not a real Yahoo ticker, always 404'd
 ]
 
 
