@@ -95,8 +95,13 @@ interface QuoteResult {
 }
 
 // Strategy A: Yahoo Finance crumb-based v7 quote (requires cookie+crumb fetch first)
+// NOTE: This consistently fails on cloud hosts (Render, Vercel, etc.) because Yahoo's
+// crumb/cookie handshake is tied to a browser session and blocks most datacenter IPs.
+// We keep it only as a best-effort bonus (see buildMarketData) — it is no longer the
+// primary strategy, so its failure is expected/normal rather than an error condition.
 async function yfCrumbQuotes(symbols: string[]): Promise<Map<string, QuoteResult>> {
   const result = new Map<string, QuoteResult>();
+  if (symbols.length === 0) return result;
   try {
     // Step 1: get a crumb cookie
     const cookieRes = await fetch('https://finance.yahoo.com/', {
@@ -138,9 +143,11 @@ async function yfCrumbQuotes(symbols: string[]): Promise<Map<string, QuoteResult
         });
       }
     }
-    log.info('YF crumb fetch: %d/%d symbols', result.size, symbols.length);
+    log.debug('YF crumb bonus fetch: %d/%d symbols', result.size, symbols.length);
   } catch (e) {
-    log.warn('YF crumb fetch failed: %s', e);
+    // Expected on cloud hosts — datacenter IPs are routinely blocked by Yahoo's
+    // crumb/cookie flow. Downgraded to debug so it doesn't look like an error in prod logs.
+    log.debug('YF crumb bonus fetch unavailable: %s', e);
   }
   return result;
 }
@@ -192,7 +199,7 @@ const INDEX_SYMBOLS: Array<{ stooq: string; yf: string; label: string }> = [
   { stooq: '^bsesn',  yf: '^BSESN',   label: 'SENSEX'     },
   { stooq: '^nsebank',yf: '^NSEBANK',  label: 'NIFTY BANK' },
   { stooq: '^cnxit',  yf: '^CNXIT',    label: 'NIFTY IT'   },
-  { stooq: '^cnxmid', yf: '^CNXMID',   label: 'NIFTY MID'  },
+  { stooq: '^nseminidcap50', yf: '^NSEMDCP50',   label: 'NIFTY MID'  }, // was ^CNXMID — not a real Yahoo ticker, always 404'd
 ];
 const STOCK_SYMBOLS: Array<{ stooq: string; yf: string; label: string }> = [
   { stooq: 'reliance.ns', yf: 'RELIANCE.NS',   label: 'RELIANCE'    },
@@ -211,31 +218,39 @@ const STOCK_SYMBOLS: Array<{ stooq: string; yf: string; label: string }> = [
 
 // ── Build full market payload ─────────────────────────────────────────────
 async function buildMarketData(): Promise<MarketData> {
-  // Try crumb-based YF first (most data in one shot), then fall back per-symbol to Stooq
   const allYFSyms = [
     ...INDEX_SYMBOLS.map(s => s.yf),
     ...STOCK_SYMBOLS.map(s => s.yf),
     'USDINR=X',
   ];
+  const yf = new Map<string, QuoteResult>();
 
-  const [yfMap, goldResult, crudeResult] = await Promise.allSettled([
-    yfCrumbQuotes(allYFSyms),
+  // Primary strategy: Yahoo's v8 chart endpoint. Unlike the v7 quote endpoint, it needs
+  // no crumb/cookie handshake, which is what makes it the one that actually works from
+  // cloud hosts like Render (the crumb flow gets blocked there almost 100% of the time).
+  const [, goldResult, crudeResult] = await Promise.allSettled([
+    (async () => {
+      const chartFetches = allYFSyms.map(async sym => {
+        const r = await yfChartQuote(sym);
+        if (r) yf.set(sym, r);
+      });
+      await Promise.allSettled(chartFetches);
+      log.info('v8 chart fetch: %d/%d symbols', yf.size, allYFSyms.length);
+    })(),
     stooqQuote('xauusd'),
     stooqQuote('cl.f'),
   ]);
 
-  let yf = yfMap.status === 'fulfilled' ? yfMap.value : new Map<string, QuoteResult>();
-
-  // YF crumb is unreliable in server environments — always supplement with v8 chart endpoint
+  // Bonus strategy: crumb-based v7 quote for whatever v8 chart missed. This works fine
+  // from a browser/local dev but is routinely blocked on cloud IPs, so it's treated as a
+  // nice-to-have top-up rather than something we wait on or log failures for as errors.
   if (yf.size < allYFSyms.length) {
-    log.info('YF crumb got few results — supplementing with v8 chart');
-    const chartFetches = allYFSyms.map(async sym => {
-      if (yf.has(sym)) return;
-      const r = await yfChartQuote(sym);
-      if (r) yf.set(sym, r);
-    });
-    await Promise.allSettled(chartFetches);
-    log.info('After v8 supplement: %d/%d', yf.size, allYFSyms.length);
+    const missing = allYFSyms.filter(sym => !yf.has(sym));
+    const crumbMap = await yfCrumbQuotes(missing);
+    for (const [sym, q] of crumbMap) yf.set(sym, q);
+    if (crumbMap.size > 0) {
+      log.info('YF crumb bonus filled %d additional symbol(s)', crumbMap.size);
+    }
   }
 
   // If YF still failing, fall back to Stooq for indices+top stocks
