@@ -20,8 +20,18 @@ const ensureSchema = async () => {
         id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
         created_at TIMESTAMPTZ DEFAULT NOW(),
         last_active TIMESTAMPTZ DEFAULT NOW(),
-        query_count INT DEFAULT 0
+        query_count INT DEFAULT 0,
+        user_id UUID
       );
+      -- Table may already exist from before user_id was added (CREATE TABLE
+      -- IF NOT EXISTS above is a no-op in that case) — backfill it here so
+      -- routes/chat.py's PostgREST upsert (which sends a "user_id" key
+      -- whenever the request is authenticated) doesn't 400 with
+      -- "Could not find the 'user_id' column of 'sessions' in the schema
+      -- cache" on every logged-in chat call. Left unconstrained (no FK to
+      -- auth.users) so this also works on non-Supabase Postgres.
+      ALTER TABLE sessions ADD COLUMN IF NOT EXISTS user_id UUID;
+      CREATE INDEX IF NOT EXISTS idx_sessions_user ON sessions(user_id);
       CREATE TABLE IF NOT EXISTS files (
         id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
         session_id UUID NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,

@@ -220,6 +220,40 @@ async def _yf_symbol_search(client: httpx.AsyncClient, company_name: str) -> Opt
         return None
 
 
+_yf_crumb_cache: dict[str, str] = {}  # "crumb" -> value; module-level, one process-lifetime crumb is enough
+
+
+async def _get_yf_crumb(client: httpx.AsyncClient) -> Optional[str]:
+    """quoteSummary (unlike the v8 chart endpoint) has required a
+    cookie + crumb pair since Yahoo locked it down in 2024 — calling it with
+    just a User-Agent now gets an unconditional 401, which is exactly what
+    was happening here before (every /v10/finance/quoteSummary/... call
+    failing with 401, so market_data always resolved 0 fundamentals).
+
+    Fetches an A1/A3 session cookie from the public finance.yahoo.com page,
+    then exchanges it for a crumb via the getcrumb endpoint. Both are cached
+    on the client's cookie jar / this module for the process lifetime — the
+    crumb doesn't need to be re-fetched per request.
+    """
+    if _yf_crumb_cache.get("crumb"):
+        return _yf_crumb_cache["crumb"]
+    try:
+        # Populates client.cookies with the session cookie Yahoo expects.
+        await client.get("https://fc.yahoo.com", headers=YF_HEADERS, timeout=8.0)
+        r = await client.get(
+            "https://query1.finance.yahoo.com/v1/test/getcrumb",
+            headers=YF_HEADERS,
+            timeout=8.0,
+        )
+        crumb = r.text.strip()
+        if r.status_code == 200 and crumb and "<html" not in crumb.lower():
+            _yf_crumb_cache["crumb"] = crumb
+            return crumb
+    except Exception as e:
+        log.debug("yf_get_crumb failed: %s", e)
+    return None
+
+
 async def _yf_quote_summary(client: httpx.AsyncClient, symbol: str) -> Optional[dict]:
     """Pulls valuation/debt/profitability fundamentals for one resolved
     ticker via the v10 quoteSummary endpoint (price + summaryDetail +
@@ -228,12 +262,30 @@ async def _yf_quote_summary(client: httpx.AsyncClient, symbol: str) -> Optional[
     this module.
     """
     try:
+        params = {"modules": "price,summaryDetail,defaultKeyStatistics,financialData"}
+        crumb = await _get_yf_crumb(client)
+        if crumb:
+            params["crumb"] = crumb
         r = await client.get(
             f"https://query2.finance.yahoo.com/v10/finance/quoteSummary/{symbol}",
-            params={"modules": "price,summaryDetail,defaultKeyStatistics,financialData"},
+            params=params,
             headers=YF_HEADERS,
             timeout=8.0,
         )
+        if r.status_code == 401 and crumb:
+            # Crumb may have gone stale (session cookie expired) — refetch
+            # once and retry rather than giving up on every symbol for the
+            # rest of the process lifetime.
+            _yf_crumb_cache.pop("crumb", None)
+            crumb = await _get_yf_crumb(client)
+            if crumb:
+                params["crumb"] = crumb
+                r = await client.get(
+                    f"https://query2.finance.yahoo.com/v10/finance/quoteSummary/{symbol}",
+                    params=params,
+                    headers=YF_HEADERS,
+                    timeout=8.0,
+                )
         if r.status_code != 200:
             return None
         result = (r.json().get("quoteSummary", {}).get("result") or [None])[0]

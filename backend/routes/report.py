@@ -1954,24 +1954,28 @@ async def call_gemini(user_prompt: str) -> tuple[str, str]:
 # entirely by the charts pipeline. Reuses the same key rotation as
 # call_gemini() so image requests share the existing rate-limit bookkeeping.
 #
-# Imagen models are tried FIRST, not the Gemini "Nano Banana" flash-image
-# models — this project's free-tier key has real quota for Imagen (25
-# requests/day each on imagen-4.0-*) but 0/0/0 quota for every "Nano Banana"
-# / Gemini flash-image model, per the account's own rate-limit dashboard.
-# Every attempt against a Gemini image model on this tier was therefore
-# guaranteed to fail before it even ran (quota already exhausted at 0),
-# which is a very different failure mode than "no image data in response"
-# — it's "this tier can't call this model at all". Gemini's flash-image
-# models are kept as a fallback in case the account's quota changes later
-# (e.g. a paid tier), but Imagen is what's actually usable today.
+# Gemini's flash-image ("Nano Banana") models are tried FIRST, not Imagen.
+# Production logs show every Imagen attempt failing with a flat 404 ("model
+# not found") on the very first key, for all three imagen-4.0-* models —
+# not a quota/rate-limit response, but the shape you get when the API key's
+# project has no access to Imagen at all (it typically requires a linked
+# Cloud Billing account, unlike the Gemini chat/flash-image models which
+# have a usable free tier). The dead_models set below already skips an
+# unavailable model's remaining keys after the first 404, but with Imagen
+# listed first that still means 3 guaranteed-wasted requests (one per
+# imagen-4.0-* model) before ever reaching a model that can actually
+# succeed. Gemini flash-image calls in the same logs come back 429
+# (rate-limited) rather than 404 — meaning the model IS reachable, just
+# often out of quota — so it's the better first attempt. Imagen is kept as
+# a fallback in case the project gains billing/Imagen access later.
+GEMINI_IMAGE_MODELS = [
+    "gemini-2.5-flash-image",       # GA image-generation model
+    "gemini-3.1-flash-image-preview",  # newer preview, tried if 2.5 is unavailable
+]
 IMAGEN_MODELS = [
     "imagen-4.0-fast-generate-001",   # highest RPM quota (150/min) — tried first
     "imagen-4.0-generate-001",        # standard quality, 75/min
     "imagen-4.0-ultra-generate-001",  # highest quality, lowest quota — last resort
-]
-GEMINI_IMAGE_MODELS = [
-    "gemini-2.5-flash-image",       # GA image-generation model
-    "gemini-3.1-flash-image-preview",  # newer preview, tried if 2.5 is unavailable
 ]
 
 
@@ -2060,7 +2064,7 @@ async def generate_gemini_image(prompt: str) -> tuple[bytes | None, str]:
         log.warning("Image gen: no usable API keys configured")
         return None, ""
 
-    all_models = [(m, "imagen") for m in IMAGEN_MODELS] + [(m, "gemini") for m in GEMINI_IMAGE_MODELS]
+    all_models = [(m, "gemini") for m in GEMINI_IMAGE_MODELS] + [(m, "imagen") for m in IMAGEN_MODELS]
     attempts = [
         (key, model, family)
         for model, family in all_models
