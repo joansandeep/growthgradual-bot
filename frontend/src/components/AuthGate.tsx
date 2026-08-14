@@ -28,6 +28,7 @@ function AuthScreen() {
   const [mode, setMode] = useState<Mode>('login');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
+  const [confirmPassword, setConfirmPassword] = useState('');
   const [error, setError] = useState<string | null>(null);
   const [info, setInfo] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
@@ -36,6 +37,12 @@ function AuthScreen() {
     e.preventDefault();
     setError(null);
     setInfo(null);
+
+    if (mode === 'signup' && password !== confirmPassword) {
+      setError('Passwords do not match.');
+      return;
+    }
+
     setSubmitting(true);
 
     const result = mode === 'login'
@@ -52,6 +59,8 @@ function AuthScreen() {
     if (mode === 'signup') {
       setInfo('Account created. Check your email to confirm, then log in.');
       setMode('login');
+      setPassword('');
+      setConfirmPassword('');
     }
     // On login success, AuthContext's onAuthStateChange updates `user` and
     // AuthGate re-renders into the app automatically.
@@ -102,6 +111,18 @@ function AuthScreen() {
             onChange={(e) => setPassword(e.target.value)}
             style={inputStyle}
           />
+          {mode === 'signup' && (
+            <input
+              type="password"
+              required
+              minLength={6}
+              autoComplete="new-password"
+              placeholder="Confirm password"
+              value={confirmPassword}
+              onChange={(e) => setConfirmPassword(e.target.value)}
+              style={inputStyle}
+            />
+          )}
 
           {error && (
             <div style={{ fontSize: '12px', color: '#dc2626', lineHeight: 1.4 }}>{error}</div>
@@ -142,7 +163,7 @@ function AuthScreen() {
           ) : (
             <>
               Already have an account?{' '}
-              <button type="button" onClick={() => { setMode('login'); setError(null); setInfo(null); }} style={linkStyle}>
+              <button type="button" onClick={() => { setMode('login'); setError(null); setInfo(null); setConfirmPassword(''); }} style={linkStyle}>
                 Log in
               </button>
             </>
