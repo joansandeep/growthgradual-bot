@@ -2,6 +2,7 @@
 
 import { useState, useRef, useEffect, useCallback } from 'react';
 import Image from 'next/image';
+import { supabase } from '@/lib/supabaseClient';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 interface Source { title: string; url: string; snippet: string; }
@@ -17,7 +18,7 @@ function proxyImg(url: string): string {
 interface DatawrapperInfo { id: string; embedUrl: string; publicUrl: string; }
 interface ChartSpec { type: 'bar' | 'line' | 'pie' | 'table'; title: string; series?: ChartSeries[]; unit?: string; columns?: string[]; rows?: string[][]; datawrapper?: DatawrapperInfo; }
 interface WebImage { url: string; caption?: string; }
-interface ReportData { report: string; title?: string; charts: ChartSpec[]; images?: WebImage[]; keyStats: {label:string;value:string;change?:string}[]; summary: string; fileImages?: {name:string;mimeType:string;data:string}[]; sourceDocuments?: {name:string;text:string;file_type?:string}[]; }
+interface ReportData { report: string; title?: string; charts: ChartSpec[]; images?: WebImage[]; keyStats: {label:string;value:string;change?:string}[]; summary: string; fileImages?: {name:string;mimeType:string;data:string}[]; sourceDocuments?: {name:string;text:string;file_type?:string}[]; recommendedFormat?: 'pdf' | 'html'; }
 interface Message {
   id: string; role: 'user' | 'assistant'; text: string; ts: number;
   sources?: Source[]; searchPerformed?: boolean; queryType?: string;
@@ -689,6 +690,7 @@ function EmailModal({ onClose, onSend, sending, result, defaultSubject }: {
 function ReportPanel({ msg, question, hasPriorContext, onGenerate }: { msg: Message; question: string; hasPriorContext: boolean; onGenerate: (includeContext: boolean) => void }) {
   const [open, setOpen]               = useState(false);
   const [pdfLoading, setPdfLoading]   = useState(false);
+  const [htmlLoading, setHtmlLoading] = useState(false);
   const [emailOpen, setEmailOpen]     = useState(false);
   const [emailSending, setEmailSending] = useState(false);
   const [emailResult, setEmailResult] = useState<{ ok: boolean; msg: string } | null>(null);
@@ -732,6 +734,37 @@ function ReportPanel({ msg, question, hasPriorContext, onGenerate }: { msg: Mess
     } catch(e) { console.error('[downloadPdf]', e); }
     finally { setPdfLoading(false); }
   };
+
+  const downloadHtml = async () => {
+    if (!rd || !rd.report || !rd.report.trim() || htmlLoading) return;
+    setHtmlLoading(true);
+    try {
+      const res = await fetch('/api/chat/report/html', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ report: rd.report, title: rd.title, charts: rd.charts, images: rd.images ?? [], question, keyStats: rd.keyStats, summary: rd.summary, fileImages: rd.fileImages ?? [] }),
+      });
+      if (!res.ok) {
+        const errBody = await res.json().catch(() => null);
+        console.error('[downloadHtml]', errBody?.error ?? `HTTP ${res.status}`);
+        return;
+      }
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `growth-gradual-report-${new Date().toISOString().slice(0,10)}.html`;
+      document.body.appendChild(a); a.click(); a.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 5000);
+    } catch(e) { console.error('[downloadHtml]', e); }
+    finally { setHtmlLoading(false); }
+  };
+
+  // The backend recommends "html" only when the question itself asked for
+  // something a static PDF structurally can't do (animation/interactive/
+  // motion/etc — see routes/report.py's _WANTS_INTERACTIVE_RE). Everything
+  // else keeps the existing PDF flow unchanged.
+  const wantsHtml = rd?.recommendedFormat === 'html';
 
   /** Strip markdown symbols + collapse all whitespace/newlines into single spaces */
   const sanitizeText = (raw: string) =>
@@ -831,11 +864,15 @@ function ReportPanel({ msg, question, hasPriorContext, onGenerate }: { msg: Mess
                 <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></svg>
                 {open ? 'Hide report' : 'Show report'}
               </button>
-              <button className="report-btn" onClick={downloadPdf} disabled={pdfLoading}
-                style={{ background: pdfLoading ? '#166534' : '#15803d', opacity: pdfLoading ? 0.8 : 1 }}>
-                {pdfLoading
-                  ? <><span className="dots" style={{marginRight:4}}><i/><i/><i/></span>Building PDF…</>
-                  : <><svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>Download PDF</>
+              <button className="report-btn" onClick={wantsHtml ? downloadHtml : downloadPdf} disabled={wantsHtml ? htmlLoading : pdfLoading}
+                style={{ background: (wantsHtml ? htmlLoading : pdfLoading) ? '#166534' : '#15803d', opacity: (wantsHtml ? htmlLoading : pdfLoading) ? 0.8 : 1 }}>
+                {wantsHtml
+                  ? (htmlLoading
+                      ? <><span className="dots" style={{marginRight:4}}><i/><i/><i/></span>Building HTML…</>
+                      : <><svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>Download HTML</>)
+                  : (pdfLoading
+                      ? <><span className="dots" style={{marginRight:4}}><i/><i/><i/></span>Building PDF…</>
+                      : <><svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>Download PDF</>)
                 }
               </button>
               <button className="report-btn" onClick={() => { setEmailResult(null); setEmailOpen(true); }}
@@ -1110,6 +1147,18 @@ function buildAttachmentContext(files: AttachedFile[], pasted: PastedText[]): st
 
 interface StreamMeta { type:'meta'; searchPerformed:boolean; resultCount:number; queryType:string; sources:Source[]; }
 
+/** Current Supabase access token, if logged in — attached so the backend can
+ *  tie this session's chat history to the user's account. */
+async function authHeader(): Promise<Record<string, string>> {
+  try {
+    const { data } = await supabase.auth.getSession();
+    const token = data.session?.access_token;
+    return token ? { Authorization: `Bearer ${token}` } : {};
+  } catch {
+    return {};
+  }
+}
+
 async function* streamReply(
   messages: { role:string; content:string }[],
   signal: AbortSignal,
@@ -1122,7 +1171,7 @@ async function* streamReply(
   let res: Response;
   try {
     res = await fetch('/api/chat', {
-      method:'POST', headers:{'Content-Type':'application/json'},
+      method:'POST', headers:{'Content-Type':'application/json', ...(await authHeader())},
       body: JSON.stringify({
         messages,
         fileContext: fileContext ?? '',
@@ -1981,6 +2030,11 @@ export default function GrowthGradualChat() {
             summary:    data.summary    ?? '',
             fileImages: data.fileImages ?? [],
             sourceDocuments,
+            // "html" only when the backend's own [WANTS_INTERACTIVE] regex
+            // matched the question (animation/interactive/motion/etc.) —
+            // defaults to "pdf" server-side, so an absent field here still
+            // falls back to "pdf" via the ?? below wherever it's read.
+            recommendedFormat: data.recommendedFormat ?? 'pdf',
           },
         } : m));
       })

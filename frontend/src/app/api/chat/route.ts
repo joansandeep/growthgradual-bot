@@ -15,12 +15,16 @@ const BACKEND = (process.env.BACKEND_URL ?? 'http://localhost:8000').replace(/\/
 export async function POST(req: NextRequest) {
   const done = logRequest(log, 'POST', '/api/chat');
   const body = await req.arrayBuffer();
+  const authHeader = req.headers.get('authorization');
 
   let upstream: Response;
   try {
     upstream = await fetch(`${BACKEND}/api/chat`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: {
+        'Content-Type': 'application/json',
+        ...(authHeader ? { Authorization: authHeader } : {}),
+      },
       body,
       // @ts-expect-error — Node 18 fetch supports duplex
       duplex: 'half',

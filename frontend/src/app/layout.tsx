@@ -4,6 +4,7 @@ import Navbar from '@/components/Navbar';
 import TickerTape from '@/components/TickerTape';
 import NewsFAB from '@/components/NewsFAB';
 import { STOCKS } from '@/data';
+import { AuthProvider } from '@/contexts/AuthContext';
 
 export const metadata: Metadata = {
   title: 'Growth Gradual — Indian Financial Intelligence',
@@ -21,13 +22,15 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
     <html lang="en">
       <head />
       <body style={{ background: '#f5f3ee', minHeight: '100dvh' }}>
-        <Navbar />
-        <TickerTape stocks={STOCKS} />
-        <main className="main-container">
-          {children}
-        </main>
-        {/* News feed as floating round button */}
-        <NewsFAB />
+        <AuthProvider>
+          <Navbar />
+          <TickerTape stocks={STOCKS} />
+          <main className="main-container">
+            {children}
+          </main>
+          {/* News feed as floating round button */}
+          <NewsFAB />
+        </AuthProvider>
       </body>
     </html>
   );

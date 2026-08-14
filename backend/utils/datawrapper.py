@@ -194,6 +194,51 @@ def _format_table_cell(raw_value, column_header: str):
     return f"{raw_value:,.2f}"
 
 
+def _format_value_for_label(value, unit: str) -> str:
+    """Compact human-readable rendering of a raw number for appending onto a
+    bar/column category label (e.g. "2,075" -> "₹2,075 Cr"). Best-effort —
+    falls back to a plain thousands-separated number for units we don't
+    have a specific format for."""
+    try:
+        v = float(value)
+    except (TypeError, ValueError):
+        return str(value)
+    num = f"{v:,.0f}" if v == int(v) else f"{v:,.2f}"
+    u = (unit or "").strip()
+    if u == "%":
+        return f"{num}%"
+    if u.lower() in ("cr", "crore", "₹ cr", "rs cr"):
+        return f"₹{num} Cr"
+    if u in ("₹", "Rs", "Rs."):
+        return f"₹{num}"
+    if u:
+        return f"{num} {u}"
+    return num
+
+
+def _skew_ratio(values: list[float]) -> float:
+    """Ratio of the largest to the smallest NON-ZERO magnitude in a set of
+    values. A single-series bar/column chart with a high ratio (one entity
+    dominating the axis scale) renders the smaller bars as near-invisible
+    slivers a few pixels tall — even with value labels turned on, the label
+    sits crammed against the axis with almost no bar to anchor to and reads
+    as missing. (Seen in production: a "Capital Infused" chart comparing a
+    government-scale figure in the tens of thousands of crore against
+    company-level figures in the low thousands — the smaller bars were
+    functionally unreadable in the exported PNG.)"""
+    nonzero = sorted(abs(v) for v in values if v not in (None, "") and abs(_safe_float(v)) > 1e-9)
+    if len(nonzero) < 2:
+        return 1.0
+    return nonzero[-1] / max(nonzero[0], 1e-9)
+
+
+def _safe_float(v) -> float:
+    try:
+        return float(v)
+    except (TypeError, ValueError):
+        return 0.0
+
+
 def _spec_to_csv(spec: dict) -> str:
     """Build the CSV Datawrapper expects from our chart-spec shape."""
     chart_type = spec.get("type", "bar")
@@ -220,8 +265,25 @@ def _spec_to_csv(spec: dict) -> str:
         s = series[0] if series else {"data": []}
         name = _clean_label(s.get("name") or spec.get("unit") or "Value")
         writer.writerow(["Label", name])
-        for pt in s.get("data") or []:
-            writer.writerow([_clean_label(pt.get("label", "")), pt.get("value", "")])
+        data_pts = s.get("data") or []
+        # Bar/column charts (not pie — pie slices already read their own
+        # % share) with one dominant value and much smaller peers: bake
+        # the actual number into the category label itself as a fallback
+        # that survives regardless of how tiny the rendered bar ends up,
+        # instead of relying solely on Datawrapper's above-bar value label.
+        annotate = (
+            chart_type == "bar"
+            and len(data_pts) >= 2
+            and not _labels_look_temporal([pt.get("label", "") for pt in data_pts])
+            and _skew_ratio([pt.get("value") for pt in data_pts]) >= 6
+        )
+        unit = spec.get("unit") or ""
+        for pt in data_pts:
+            lbl = _clean_label(pt.get("label", ""))
+            val = pt.get("value", "")
+            if annotate and val not in (None, ""):
+                lbl = f"{lbl} ({_format_value_for_label(val, unit)})"
+            writer.writerow([lbl, val])
         return buf.getvalue()
 
     # Multi-series: merge on label, preserving first-seen order.

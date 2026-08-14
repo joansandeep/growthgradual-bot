@@ -4,11 +4,16 @@ import Image from 'next/image';
 import { usePathname } from 'next/navigation';
 import { useEffect, useState } from 'react';
 import { CATEGORIES } from '@/data';
+import { useAuth } from '@/contexts/AuthContext';
+import AuthModal from '@/components/AuthModal';
 
 export default function Navbar() {
   const pathname = usePathname();
   const [time, setTime] = useState('');
   const [marketOpen, setMarketOpen] = useState<boolean | null>(null);
+  const { user, loading, signOut } = useAuth();
+  const [showAuthModal, setShowAuthModal] = useState(false);
+  const [showAccountMenu, setShowAccountMenu] = useState(false);
 
   useEffect(() => {
     const tick = () => setTime(new Date().toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' }));
@@ -129,8 +134,91 @@ export default function Navbar() {
               fontSize:'9px', color:'rgba(15,23,42,0.22)',
               fontFamily:'JetBrains Mono,monospace', letterSpacing:'0.5px',
             }}>NSE · BSE · MCX</span>
+
+            {/* Auth control */}
+            <div style={{ position: 'relative' }}>
+              {!loading && !user && (
+                <button
+                  onClick={() => setShowAuthModal(true)}
+                  style={{
+                    background: 'rgba(200,146,42,0.1)',
+                    border: '1px solid rgba(200,146,42,0.3)',
+                    borderRadius: '20px',
+                    padding: '5px 14px',
+                    fontSize: '10px',
+                    fontWeight: 700,
+                    fontFamily: "'DM Sans',sans-serif",
+                    letterSpacing: '0.5px',
+                    textTransform: 'uppercase',
+                    color: '#a5720f',
+                    cursor: 'pointer',
+                  }}
+                >
+                  Log in
+                </button>
+              )}
+
+              {!loading && user && (
+                <>
+                  <button
+                    onClick={() => setShowAccountMenu(v => !v)}
+                    style={{
+                      display: 'flex', alignItems: 'center', gap: '6px',
+                      background: 'rgba(15,23,42,0.05)',
+                      border: '1px solid rgba(15,23,42,0.12)',
+                      borderRadius: '20px',
+                      padding: '4px 12px',
+                      fontSize: '10.5px',
+                      fontWeight: 600,
+                      fontFamily: "'DM Sans',sans-serif",
+                      color: '#0f172a',
+                      cursor: 'pointer',
+                      maxWidth: '160px',
+                    }}
+                  >
+                    <span style={{
+                      width: '16px', height: '16px', borderRadius: '50%',
+                      background: '#c8922a', color: '#fff',
+                      display: 'flex', alignItems: 'center', justifyContent: 'center',
+                      fontSize: '9px', fontWeight: 700, flexShrink: 0,
+                    }}>
+                      {(user.email ?? '?').charAt(0).toUpperCase()}
+                    </span>
+                    <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                      {user.email}
+                    </span>
+                  </button>
+
+                  {showAccountMenu && (
+                    <div
+                      onMouseLeave={() => setShowAccountMenu(false)}
+                      style={{
+                        position: 'absolute', top: 'calc(100% + 6px)', right: 0,
+                        background: '#fff', border: '1px solid rgba(15,23,42,0.12)',
+                        borderRadius: '8px', boxShadow: '0 8px 24px rgba(15,23,42,0.15)',
+                        minWidth: '140px', zIndex: 200, overflow: 'hidden',
+                      }}
+                    >
+                      <button
+                        onClick={async () => { setShowAccountMenu(false); await signOut(); }}
+                        style={{
+                          display: 'block', width: '100%', textAlign: 'left',
+                          padding: '10px 14px', background: 'transparent', border: 'none',
+                          fontSize: '12px', color: '#0f172a', cursor: 'pointer',
+                          fontFamily: "'DM Sans',sans-serif",
+                        }}
+                      >
+                        Log out
+                      </button>
+                    </div>
+                  )}
+                </>
+              )}
+            </div>
           </div>
         </div>
+
+        {showAuthModal && <AuthModal onClose={() => setShowAuthModal(false)} />}
 
         {/* Nav links row — hidden on chat page */}
         <div className="nav-links" style={{

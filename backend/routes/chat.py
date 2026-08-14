@@ -31,6 +31,7 @@ from datetime import datetime as _dt
 from datetime import timezone as _tz
 from email.utils import parsedate_to_datetime as _parse_rfc2822
 from utils.rag_client import rag_query as _rag_query
+from utils.auth import get_user_id
 
 # ─── Supabase persistence ──────────────────────────────────────────────────────
 _SUPABASE_URL  = os.environ.get("SUPABASE_URL", "").rstrip("/")
@@ -44,27 +45,35 @@ def _sb_headers() -> dict:
         "Prefer": "return=minimal",
     }
 
-async def _upsert_session(session_id: str) -> None:
-    """Insert session row if absent, otherwise bump last_active."""
+async def _upsert_session(session_id: str, user_id: str | None = None) -> None:
+    """Insert session row if absent, otherwise bump last_active (and
+    backfill user_id once the row exists, e.g. user logs in mid-session)."""
     if not _SUPABASE_URL or not _SUPABASE_KEY:
         return
     try:
         async with httpx.AsyncClient(timeout=8) as client:
             # Try upsert first
+            payload = {"id": session_id, "last_active": _dt.utcnow().isoformat(), "query_count": 1}
+            if user_id:
+                payload["user_id"] = user_id
             r = await client.post(
                 f"{_SUPABASE_URL}/rest/v1/sessions",
                 headers={**_sb_headers(), "Prefer": "resolution=merge-duplicates,return=minimal"},
-                json={"id": session_id, "last_active": _dt.utcnow().isoformat(), "query_count": 1},
+                json=payload,
             )
             if r.status_code in (401, 403):
                 log.debug("Supabase sessions: RLS blocked insert (table may need policy) — skipping")
                 return
-            # Bump last_active
+            # Bump last_active (and user_id, in case this session started
+            # anonymous and the person logged in partway through)
+            patch_body = {"last_active": _dt.utcnow().isoformat()}
+            if user_id:
+                patch_body["user_id"] = user_id
             await client.patch(
                 f"{_SUPABASE_URL}/rest/v1/sessions",
                 headers=_sb_headers(),
                 params={"id": f"eq.{session_id}"},
-                json={"last_active": _dt.utcnow().isoformat()},
+                json=patch_body,
             )
     except Exception as exc:
         log.debug("Supabase upsert_session failed (non-critical): %s", exc)
@@ -1968,7 +1977,8 @@ async def chat(request: Request):
 
     # Upsert the session row upfront (fire-and-forget — don't block the stream)
     if session_id:
-        asyncio.ensure_future(_upsert_session(session_id))
+        user_id = await get_user_id(request)
+        asyncio.ensure_future(_upsert_session(session_id, user_id))
 
     async def _no_search() -> list:
         return []
