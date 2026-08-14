@@ -71,6 +71,13 @@ def _inline_md(text: str) -> str:
     return text
 
 
+def _to_num(v) -> float:
+    try:
+        return float(v)
+    except (TypeError, ValueError):
+        return 0.0
+
+
 def _chart_type_js(chart_type: str) -> str:
     """Map our internal chart spec 'type' to a Chart.js chart type."""
     return {
@@ -82,7 +89,7 @@ def _chart_type_js(chart_type: str) -> str:
     }.get(chart_type, "bar")
 
 
-def _render_chart_block(chart: dict, idx: int) -> str:
+def _render_chart_block(chart: dict, idx: int, theme: dict | None = None) -> str:
     ctype = chart.get("type", "bar")
     title = html.escape(chart.get("title") or "")
     x_label = html.escape(chart.get("xLabel") or "")
@@ -91,6 +98,9 @@ def _render_chart_block(chart: dict, idx: int) -> str:
     if ctype == "table":
         columns = chart.get("columns") or []
         rows = chart.get("rows") or []
+        if len(columns) < 2 or len(rows) < 2:
+            log.warning("HTML report: skipping table chart '%s' — insufficient columns/rows", chart.get("title", "?"))
+            return ""
         head = "".join(f"<th>{html.escape(str(c))}</th>" for c in columns)
         body_rows = []
         for r_i, row in enumerate(rows):
@@ -107,6 +117,67 @@ def _render_chart_block(chart: dict, idx: int) -> str:
 
     canvas_id = f"gg-chart-{idx}"
     series = chart.get("series") or []
+    theme = theme or {}
+    theme_gold = theme.get("accentColor") or BRAND_GOLD
+    theme_navy = theme.get("primaryColor") or BRAND_NAVY
+    palette = [theme_gold, theme_navy, "#7fb3d5", "#c97b63", "#8e9aaf"]
+
+    if ctype == "scatter":
+        # Scatter shares report.py's "two-series-sharing-labels" shape
+        # (series[0] = x-metric per label, series[1] = y-metric per label),
+        # the same shape utils/datawrapper.py merges into (x, y) columns for
+        # the PDF path. Chart.js's scatter type needs {x, y} point objects,
+        # not the flat category-indexed arrays bar/line use — feeding it
+        # those renders a chart with zero visible points.
+        x_series = series[0] if len(series) > 0 else {}
+        y_series = series[1] if len(series) > 1 else {}
+        x_by_label = {str(pt.get("label", "")): pt.get("value", 0) for pt in (x_series.get("data") or [])}
+        y_by_label = {str(pt.get("label", "")): pt.get("value", 0) for pt in (y_series.get("data") or [])}
+        points = [
+            {"x": _to_num(x_by_label[lbl]), "y": _to_num(y_by_label[lbl]), "label": lbl}
+            for lbl in x_by_label
+            if lbl in y_by_label
+        ]
+        if not points:
+            log.warning("HTML report: skipping scatter chart '%s' — no matched (x,y) points", chart.get("title", "?"))
+            return ""
+        datasets = [{
+            "label": f"{x_series.get('name', 'X')} vs {y_series.get('name', 'Y')}",
+            "data": points,
+            "backgroundColor": theme_gold,
+            "borderColor": theme_gold,
+            "pointRadius": 6,
+            "pointHoverRadius": 8,
+        }]
+        chart_config = {
+            "type": "scatter",
+            "data": {"datasets": datasets},
+            "options": {
+                "responsive": True,
+                "maintainAspectRatio": False,
+                "animation": {"duration": 1400, "easing": "easeOutQuart"},
+                "plugins": {
+                    "legend": {"display": False},
+                    "title": {"display": False},
+                },
+                "scales": {
+                    "x": {"title": {"display": bool(x_label or x_series.get("name")), "text": x_label or x_series.get("name", ""), "color": "#9aa3c0"},
+                          "ticks": {"color": "#9aa3c0"}, "grid": {"color": "rgba(255,255,255,0.06)"}},
+                    "y": {"title": {"display": bool(y_label or y_series.get("name")), "text": y_label or y_series.get("name", ""), "color": "#9aa3c0"},
+                          "ticks": {"color": "#9aa3c0"}, "grid": {"color": "rgba(255,255,255,0.06)"}},
+                },
+            },
+        }
+        return f"""
+<div class="gg-reveal gg-chart-wrap" data-reveal>
+  {f'<div class="gg-chart-title">{title}</div>' if title else ''}
+  <div class="gg-chart-canvas-box"><canvas id="{canvas_id}"></canvas></div>
+</div>
+<script>
+window.__ggCharts = window.__ggCharts || [];
+window.__ggCharts.push({{ id: "{canvas_id}", config: {json.dumps(chart_config)} }});
+</script>"""
+
     labels: list[str] = []
     for s in series:
         for pt in (s.get("data") or []):
@@ -114,7 +185,6 @@ def _render_chart_block(chart: dict, idx: int) -> str:
             if lbl not in labels:
                 labels.append(lbl)
 
-    palette = [BRAND_GOLD, BRAND_NAVY, "#7fb3d5", "#c97b63", "#8e9aaf"]
     datasets = []
     for s_i, s in enumerate(series):
         by_label = {str(pt.get("label", "")): pt.get("value", 0) for pt in (s.get("data") or [])}
@@ -129,6 +199,14 @@ def _render_chart_block(chart: dict, idx: int) -> str:
             "fill": False,
             "tension": 0.35,
         })
+
+    # Belt-and-braces: charts/labels normally arrive pre-validated by
+    # _is_plausible_chart in report.py, but if a chart ever reaches here
+    # with no labels or every dataset value missing/zero, emitting a
+    # canvas would just render an empty box — skip it instead.
+    if not labels or not any(v not in (None, 0) for ds in datasets for v in ds["data"]):
+        log.warning("HTML report: skipping chart '%s' — no plottable data points", chart.get("title", "?"))
+        return ""
 
     chart_config = {
         "type": _chart_type_js(ctype),
@@ -173,7 +251,7 @@ def _render_image_block(image: dict, idx: int) -> str:
 </figure>"""
 
 
-def _markdown_to_html(md: str, charts: list, images: list) -> str:
+def _markdown_to_html(md: str, charts: list, images: list, theme: dict | None = None) -> str:
     lines = md.replace("\r\n", "\n").split("\n")
     out: list[str] = []
     list_mode: str | None = None  # "ul" | "ol" | None
@@ -206,7 +284,7 @@ def _markdown_to_html(md: str, charts: list, images: list) -> str:
             flush_para(); close_list()
             n = int(chart_m.group(1))
             if 1 <= n <= len(charts):
-                out.append(_render_chart_block(charts[n - 1], n))
+                out.append(_render_chart_block(charts[n - 1], n, theme))
             continue
 
         if webimg_m:
@@ -320,10 +398,50 @@ def _render_key_stats(key_stats: list) -> str:
 # Full document
 # ─────────────────────────────────────────────────────────────────────────
 
-_CSS = f"""
+def _clamp255(v: int) -> int:
+    return max(0, min(255, v))
+
+
+def _shade_hex(hex_color: str, amount: float) -> str:
+    """Lighten (amount > 0) or darken (amount < 0) a #rrggbb hex color by a
+    fraction of the remaining distance to white/black. Used to derive the
+    'light'/'deep' variants of a user-requested theme color the same way
+    the fixed BRAND_GOLD_LIGHT / BRAND_NAVY_DEEP variants were hand-picked
+    for the default palette."""
+    try:
+        r = int(hex_color[1:3], 16)
+        g = int(hex_color[3:5], 16)
+        b = int(hex_color[5:7], 16)
+    except (ValueError, IndexError):
+        return hex_color
+    if amount >= 0:
+        r = _clamp255(int(r + (255 - r) * amount))
+        g = _clamp255(int(g + (255 - g) * amount))
+        b = _clamp255(int(b + (255 - b) * amount))
+    else:
+        r = _clamp255(int(r * (1 + amount)))
+        g = _clamp255(int(g * (1 + amount)))
+        b = _clamp255(int(b * (1 + amount)))
+    return f"#{r:02x}{g:02x}{b:02x}"
+
+
+def _build_css(theme: dict | None) -> str:
+    """Build the report stylesheet, substituting the requested theme's
+    colors for the default navy/gold brand pair when the report asked for
+    one (see report.py's THEME schema field). Falls back to the standard
+    Growth Gradual palette whenever no theme, or an invalid one, was given."""
+    theme = theme or {}
+    navy = theme.get("primaryColor") or BRAND_NAVY
+    gold = theme.get("accentColor") or BRAND_GOLD
+    navy_deep = _shade_hex(navy, -0.35)
+    gold_light = _shade_hex(gold, 0.35)
+    return _CSS_TEMPLATE.format(navy=navy, navy_deep=navy_deep, gold=gold, gold_light=gold_light)
+
+
+_CSS_TEMPLATE = """
 :root {{
-  --navy: {BRAND_NAVY}; --navy-deep: {BRAND_NAVY_DEEP};
-  --gold: {BRAND_GOLD}; --gold-light: {BRAND_GOLD_LIGHT};
+  --navy: {navy}; --navy-deep: {navy_deep};
+  --gold: {gold}; --gold-light: {gold_light};
 }}
 * {{ box-sizing: border-box; }}
 html {{ scroll-behavior: smooth; }}
@@ -495,12 +613,14 @@ document.addEventListener('DOMContentLoaded', function () {
 
 
 def build_html_report(report: str, title: str, question: str, summary: str,
-                       key_stats: list, charts: list, images: list) -> str:
-    body_html = _markdown_to_html(report, charts, images)
+                       key_stats: list, charts: list, images: list,
+                       theme: dict | None = None) -> str:
+    body_html = _markdown_to_html(report, charts, images, theme)
     stats_html = _render_key_stats(key_stats)
     safe_title = html.escape(title or question or "Research Report")
     safe_summary = html.escape(summary or "")
     date_str = datetime.now(timezone.utc).strftime("%d %B %Y")
+    css = _build_css(theme)
 
     return f"""<!DOCTYPE html>
 <html lang="en">
@@ -509,7 +629,7 @@ def build_html_report(report: str, title: str, question: str, summary: str,
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
 <title>{safe_title} — Growth Gradual</title>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
-<style>{_CSS}</style>
+<style>{css}</style>
 </head>
 <body>
   <header class="gg-hero">
@@ -555,6 +675,7 @@ async def generate_html_report(request: Request):
     key_stats: list = body.get("keyStats", [])
     charts: list = body.get("charts", [])
     images: list = body.get("images", [])
+    theme: dict | None = body.get("theme") if isinstance(body.get("theme"), dict) else None
 
     # Same unwrap-double-encoded-JSON safety net as routes/pdf.py.
     stripped = report.strip()
@@ -567,6 +688,7 @@ async def generate_html_report(request: Request):
                 summary = summary or inner.get("summary", "")
                 key_stats = key_stats or inner.get("keyStats", [])
                 charts = charts or inner.get("charts", [])
+                theme = theme or (inner.get("theme") if isinstance(inner.get("theme"), dict) else None)
         except Exception as e:
             log.debug("HTML report: report field is not double-encoded JSON, using as-is (%s)", e)
 
@@ -576,7 +698,7 @@ async def generate_html_report(request: Request):
     report = re.sub(r"```\s*$", "", report).strip()
 
     try:
-        html_doc = build_html_report(report, title, question, summary, key_stats, charts, images)
+        html_doc = build_html_report(report, title, question, summary, key_stats, charts, images, theme)
     except Exception as e:
         log.error("HTML report: build_html_report failed: %s", e)
         return JSONResponse({"error": f"Failed to generate HTML report: {e}"}, status_code=500)

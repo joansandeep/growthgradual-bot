@@ -235,8 +235,25 @@ Respond with EXACTLY this shape:
   "charts": [...],
   "images": [{ "prompt": "<AI image-generation prompt — see AI IMAGE RULES>", "caption": "<short caption>" }, ...] (1-2 items — see AI IMAGE RULES, currently requires at least 1),
   "keyStats": [{ "label": "<short label>", "value": "<value string>", "change": "<+/- % or empty string>" }],
-  "summary": "<2-3 sentence executive summary>"
+  "summary": "<2-3 sentence executive summary>",
+  "theme": { "primaryColor": "<hex>", "accentColor": "<hex>", "toneNote": "<short label, e.g. 'comical', 'minimal', 'dark mode', 'playful', 'corporate'>" } | null
 }
+
+THEME — ONLY when the user's question explicitly asks for a visual style, mood, color scheme, or
+tone for the report itself (e.g. "make it comical", "dark theme", "playful tone", "corporate look",
+"neon colors", "make it fun") — NOT for requests about the report's financial topic. When such a
+request is present:
+  - Pick "primaryColor"/"accentColor" as hex codes that genuinely fit the requested style (e.g.
+    "comical" → bright, saturated, playful colors, not navy/gold; "dark mode" → near-black background
+    tones; "corporate" → the existing navy/gold is already fine, you may omit theme entirely).
+  - Set "toneNote" to a short label capturing the requested style, and — this is the part that
+    actually changes the report, not just its colors — write the "report" and "summary" text itself
+    in a register that matches that style (e.g. genuinely comical: puns, playful asides, light
+    self-aware humor in the prose) WITHOUT ever softening, omitting, or joking about the actual
+    numbers, facts, or risk disclosures — the humor/style lives in the phrasing and framing, the data
+    stays exactly as accurate and complete as a normal report.
+  - When the user asks for NO particular style, omit "theme" (or set it to null) and write in the
+    normal formal analyst register — never invent a theme unprompted.
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 CRITICAL DATA INTEGRITY RULES — VIOLATIONS DEGRADE REPORT QUALITY:
@@ -600,6 +617,14 @@ to give the report a visual anchor — a conceptual/editorial illustration, neve
   THIS report (the specific deliverable being built, the specific niche being sold to, the specific
   document/dashboard/product on screen — described generically, never as real branded UI) before
   finalizing.
+✓ BROAD MARKET/INDEX REPORTS (Nifty, Sensex, "market outlook", multi-sector roundups — no single
+  company or sector is the actual subject): do NOT reach for an unrelated single sector just because it
+  happened to get mentioned in the sources (e.g. an FMCG aisle photo for a Nifty 50 report — a reader
+  has no way to connect that image back to the headline topic). Prefer a scene that is actually about the
+  market mechanism itself: a trading floor/terminal setup, rows of ticker/price-display monitors, an order
+  book or depth-of-market screen, a specific well-known exchange building's exterior — described with the
+  same concrete, specific-angle/lighting detail as any other prompt here, not as a generic "stock photo of
+  a skyline."
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 REPORT STRUCTURE — PLAN THE SECTIONS YOURSELF, EVERY TIME, FROM THE ACTUAL QUESTION:
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -1215,6 +1240,29 @@ _TITLE_SENTENCE_RE = re.compile(
     r"\.{3}\s*$|…\s*$|,\s+with\s+[a-z]|,\s+as\s+[a-z]|,\s+while\s+[a-z])",
     re.IGNORECASE,
 )
+
+_HEX_RE = re.compile(r"^#[0-9a-fA-F]{6}$")
+
+
+def _sanitize_theme(theme) -> dict | None:
+    """Validate the model's optional theme object. Only accepts well-formed
+    6-digit hex colors and a short tone label — anything else (missing,
+    malformed hex, wrong types) falls back to None so the PDF/HTML renderers
+    just use their existing navy/gold default instead of a broken theme."""
+    if not isinstance(theme, dict):
+        return None
+    primary = str(theme.get("primaryColor") or "").strip()
+    accent = str(theme.get("accentColor") or "").strip()
+    tone = str(theme.get("toneNote") or "").strip()[:40]
+    out: dict = {}
+    if _HEX_RE.match(primary):
+        out["primaryColor"] = primary
+    if _HEX_RE.match(accent):
+        out["accentColor"] = accent
+    if tone:
+        out["toneNote"] = tone
+    return out or None
+
 
 def _sanitize_title(title: str, question: str) -> str:
     """Post-process LLM-generated title: strip conversational openers,
@@ -1979,35 +2027,49 @@ IMAGEN_MODELS = [
 ]
 
 
-async def _call_pollinations_image(client: httpx.AsyncClient, prompt: str) -> bytes | None:
-    """Pollinations AI (image.pollinations.ai) — free, unlimited, no API key.
-    Simple GET against a REST endpoint with the prompt URL-encoded into the
-    path; returns raw image bytes directly (no JSON envelope to unwrap).
-    Tried FIRST, ahead of Imagen/Gemini flash-image, since this account's
-    Gemini keys currently have zero image-generation quota on every model
-    (see generate_gemini_image below) while Pollinations has none of that
-    quota friction."""
+async def _call_pollinations_image(client: httpx.AsyncClient, prompt: str) -> tuple[bytes | None, str | None]:
+    """Pollinations AI (image.pollinations.ai) — free, no API key required for
+    the anonymous/publishable tier. Simple GET against a REST endpoint with
+    the prompt URL-encoded into the path; returns raw image bytes directly
+    (no JSON envelope to unwrap).
+
+    Tries a small cascade of models rather than a single fixed one:
+      1. "gptimage" (GPT Image Large) — Pollinations' own docs describe this
+         as the strongest option for prompt understanding and fine detail,
+         which matters here since report.py's image prompts are long,
+         specific, compound scene descriptions (exact subject + angle +
+         lighting + color grade) rather than short tags — exactly the kind
+         of prompt "flux" tends to partially ignore or blur together.
+      2. "flux" (FLUX.1) — solid general-purpose fallback, previously the
+         only model used; kept as a fallback in case gptimage is
+         unavailable on the anonymous tier or the request errors.
+    Returns (image bytes, model name used) — model name is None on total
+    failure so callers can log which one actually worked.
+    """
     import urllib.parse as _urlparse
     import random as _random
     encoded = _urlparse.quote(prompt, safe="")
-    url = f"https://image.pollinations.ai/prompt/{encoded}"
-    params = {
-        "width": "1280", "height": "960", "nologo": "true", "model": "flux",
+    base_params = {
+        "width": "1280", "height": "960", "nologo": "true",
         # enhance=true routes the prompt through Pollinations' own LLM prompt
         # rewriter before generation, which fleshes out composition/lighting/
         # detail the way a human-tuned prompt would — noticeably reduces the
         # "generic AI stock photo" look versus sending the raw prompt as-is.
         "enhance": "true",
-        "seed": str(_random.randint(1, 2_000_000_000)),  # avoid returning a cached image for a repeated prompt
     }
-    try:
-        res = await client.get(url, params=params, timeout=60)
-        if res.status_code == 200 and res.content and len(res.content) > 500:
-            return res.content
-        log.warning("Image gen: Pollinations HTTP %d (%d bytes)", res.status_code, len(res.content or b""))
-    except Exception as exc:
-        log.warning("Image gen: Pollinations exception: %s", exc)
-    return None
+    for model_name in ("gptimage", "flux"):
+        url = f"https://image.pollinations.ai/prompt/{encoded}"
+        params = {**base_params, "model": model_name, "seed": str(_random.randint(1, 2_000_000_000))}
+        try:
+            res = await client.get(url, params=params, timeout=60)
+            if res.status_code == 200 and res.content and len(res.content) > 500:
+                return res.content, model_name
+            log.warning("Image gen: Pollinations model=%s HTTP %d (%d bytes)",
+                        model_name, res.status_code, len(res.content or b""))
+        except Exception as exc:
+            log.warning("Image gen: Pollinations model=%s exception: %s", model_name, exc)
+    return None, None
+
 
 
 async def _call_imagen(client: httpx.AsyncClient, model: str, key: str, prompt: str) -> httpx.Response:
@@ -2052,11 +2114,11 @@ async def generate_gemini_image(prompt: str) -> tuple[bytes | None, str]:
     "via Gemini" regardless of which provider actually produced the image
     (misleading, since Pollinations succeeds the vast majority of the time)."""
     async with httpx.AsyncClient(timeout=60) as client:
-        img = await _call_pollinations_image(client, prompt)
+        img, poll_model = await _call_pollinations_image(client, prompt)
     if img:
-        log.info("Image gen: generated via Pollinations (%d bytes)", len(img))
+        log.info("Image gen: generated via Pollinations model=%s (%d bytes)", poll_model, len(img))
         return img, "pollinations"
-    log.warning("Image gen: Pollinations failed, falling back to Imagen/Gemini")
+    log.warning("Image gen: Pollinations failed (all models), falling back to Imagen/Gemini")
 
     keys = get_gemini_keys()
     rest_keys = [k for k in keys if _is_rest_api_key(k)]
@@ -3601,6 +3663,7 @@ async def generate_report(request: Request):
             "summary":    parsed.get("summary", ""),
             "fileImages": embedded_file_images,  # extracted charts/images only — never full pages
             "recommendedFormat": recommended_format,
+            "theme":      _sanitize_theme(parsed.get("theme")),
         })
     except Exception as exc:
         log.error("Report: JSON parse failed: %s  (raw length: %d)", exc, len(raw))
@@ -3690,6 +3753,7 @@ async def generate_report(request: Request):
                 "summary":    salvaged.get("summary", ""),
                 "fileImages": embedded_file_images,
                 "recommendedFormat": recommended_format,
+                "theme":      _sanitize_theme(salvaged.get("theme")),
             })
 
         try:
@@ -3737,6 +3801,7 @@ async def generate_report(request: Request):
                 "summary":    repaired_parsed.get("summary", ""),
                 "fileImages": embedded_file_images,
                 "recommendedFormat": recommended_format,
+                "theme":      _sanitize_theme(repaired_parsed.get("theme")),
             })
         except Exception as e:
             log.warning("Report: JSON repair attempt failed (%s)", e)

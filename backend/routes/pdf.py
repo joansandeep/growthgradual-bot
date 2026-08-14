@@ -67,6 +67,42 @@ CHART_COLORS = [NAVY, GOLD, TEAL, RED, SLATE, OLIVE, BURGUNDY, GREEN]
 SECTION_ACCENTS = [GOLD, TEAL, GREEN, OLIVE, RED, SLATE]
 
 
+def _hex_to_rgb01(hex_color: str) -> tuple[float, float, float] | None:
+    """'#rrggbb' -> (r, g, b) each in 0..1, ReportLab's expected range.
+    Returns None for anything malformed so callers can fall back safely."""
+    try:
+        h = hex_color.lstrip("#")
+        if len(h) != 6:
+            return None
+        return (int(h[0:2], 16) / 255, int(h[2:4], 16) / 255, int(h[4:6], 16) / 255)
+    except (ValueError, AttributeError):
+        return None
+
+
+def apply_theme(theme: dict | None) -> None:
+    """Override the module's navy/gold brand pair (and everything derived
+    from it — chart series colours, section accents) for this render, when
+    the report requested a visual theme (see report.py's THEME schema
+    field / _sanitize_theme). Every drawing function below reads NAVY/GOLD/
+    CHART_COLORS/SECTION_ACCENTS as module globals at call time, so
+    reassigning them here before build_pdf renders anything is enough —
+    no per-function threading needed. No-ops (keeps the default palette)
+    when theme is missing or its colours don't parse as valid hex."""
+    global NAVY, GOLD, CHART_COLORS, SECTION_ACCENTS
+    if not theme:
+        return
+    new_navy = _hex_to_rgb01(theme.get("primaryColor", "")) if theme.get("primaryColor") else None
+    new_gold = _hex_to_rgb01(theme.get("accentColor", "")) if theme.get("accentColor") else None
+    if new_navy is None and new_gold is None:
+        return
+    NAVY = new_navy or NAVY
+    GOLD = new_gold or GOLD
+    CHART_COLORS = [NAVY, GOLD, TEAL, RED, SLATE, OLIVE, BURGUNDY, GREEN]
+    SECTION_ACCENTS = [GOLD, TEAL, GREEN, OLIVE, RED, SLATE]
+    log.info("PDF: applied custom theme — navy=%s gold=%s", theme.get("primaryColor"), theme.get("accentColor"))
+
+
+
 def fmt_inr(value_str: str) -> str:
     """Format a numeric string into Indian number format with Rs. prefix.
     E.g. '1224826.38' -> '12,24,826.38' (crore label added by caller).
@@ -1199,7 +1235,7 @@ def _table(c, spec, x0, y0, w, h):
     """
     columns = spec.get("columns") or []
     rows = spec.get("rows") or []
-    if not columns:
+    if not columns or not rows:
         return
     n_cols = len(columns)
     header_h = 18
@@ -1325,7 +1361,9 @@ def _draw_chart(c, spec, x0, y0, w, h):
 # ─── PDF builder ──────────────────────────────────────────────────────────────
 def build_pdf(report: str, title: str, question: str, summary: str,
               key_stats: list, charts: list, logo_b64: str = "",
-              file_images: list | None = None, web_images: list | None = None) -> bytes:
+              file_images: list | None = None, web_images: list | None = None,
+              theme: dict | None = None) -> bytes:
+    apply_theme(theme)
     import json as _json
 
     # Last-resort: if report arrived as raw JSON, extract the markdown field
@@ -2322,6 +2360,7 @@ async def generate_pdf(request: Request):
     logo_b64: str   = body.get("logoB64", "")
     file_images: list = body.get("fileImages", [])  # [{name, mimeType, data}]
     images: list    = body.get("images", [])  # [{url, caption}] from report generation
+    theme: dict | None = body.get("theme") if isinstance(body.get("theme"), dict) else None
 
     # Debug: log images and whether report contains [WEB_IMG_n] placeholders
     import re as _re_dbg
@@ -2346,6 +2385,8 @@ async def generate_pdf(request: Request):
                     key_stats = inner.get("keyStats", [])
                 if not charts:
                     charts = inner.get("charts", [])
+                if not theme and isinstance(inner.get("theme"), dict):
+                    theme = inner.get("theme")
         except Exception as e:
             log.debug("PDF: report field is not double-encoded JSON, using as-is (%s)", e)
 
@@ -2520,7 +2561,7 @@ async def generate_pdf(request: Request):
         log.info("PDF: injected fallback [WEB_IMG_n] placeholders")
 
     try:
-        pdf_bytes = build_pdf(report, title, question, summary, key_stats, charts, logo_b64, file_images, web_images)
+        pdf_bytes = build_pdf(report, title, question, summary, key_stats, charts, logo_b64, file_images, web_images, theme)
     except Exception as e:
         log.error("PDF: build_pdf failed: %s", e)
         return JSONResponse({"error": f"Failed to generate PDF: {e}"}, status_code=500)
