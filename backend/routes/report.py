@@ -2498,6 +2498,104 @@ def _augment_query_for_historical_data(query: str) -> str:
     return query
 
 
+# Conversational lead-ins that add nothing for a search engine and, worse,
+# eat into the character budget that should go to the actual topic once an
+# angle suffix is appended (see _build_multi_angle_search_queries below).
+_LEADING_INSTRUCTION_RE = re.compile(
+    r"^(?:please\s+)?(?:can you\s+|could you\s+)?"
+    r"(?:show me|tell me|give me|walk me through|explain|analyze|analyse|"
+    r"what(?:'s| is| are)|how(?:'s| is| are)|describe)\s+",
+    re.IGNORECASE,
+)
+
+# Trailing time-window clauses ("for the last week", "over the past month",
+# "in the last 3 quarters") — useful for the base query, but when glued onto
+# an angle suffix like "key financial metrics data numbers" they turn a
+# short topic phrase into a long, incoherent run-on that search engines
+# rank poorly.
+_TRAILING_TIME_PHRASE_RE = re.compile(
+    r"\s+(?:for|over|in|during)\s+the\s+(?:last|past|previous)\s+.*$",
+    re.IGNORECASE,
+)
+
+
+# ─── LLM-assisted multi-angle query building ────────────────────────────────
+# Deliberately Groq, not Gemini: this is a single tiny completion (a few
+# short search-query strings) that runs on EVERY finance report, on top of
+# the already-heavy call_gemini() used for the report body itself. Routing
+# it through Gemini too would roughly double Gemini call volume per report
+# and eat into the same key pool/rate limits that report generation depends
+# on. Groq has its own separate key pool (get_groq_keys) and a small model
+# (llama-3.1-8b-instant, not the 70b one call_groq uses for full reports) is
+# both cheap and plenty for this — it's rewriting a question into a few
+# short search phrases, not writing prose.
+_QUERY_BUILDER_MODEL = "llama-3.1-8b-instant"
+
+_QUERY_BUILDER_SYSTEM_PROMPT = """You turn a finance research question into short, clean web-search queries.
+
+Given the user's question, produce up to 4 short search-engine queries (each under 12 words, plain keyword/phrase style, no question marks, no "show me"/"what is"/other conversational framing) that together cover these angles:
+1. The core question itself
+2. Key financial metrics / hard numbers for the same topic
+3. Sector or peer comparison for the same topic (skip if the question is already a direct comparison)
+4. Historical trend / performance over time for the same topic (skip if the core question already asks about a specific time trend)
+
+Respond ONLY with a JSON object, no other text: {"queries": ["...", "...", ...]}"""
+
+
+async def _llm_build_multi_angle_queries(question: str) -> list[str] | None:
+    """Best-effort Groq call that rewrites `question` into up to 4 clean
+    Tavily-ready search queries. Returns None (never []) on any failure —
+    missing keys, HTTP/parse errors, empty/malformed output — so the caller
+    can fall back to the regex-based _build_multi_angle_search_queries
+    instead of silently searching with nothing.
+    """
+    keys = get_groq_keys()
+    if not keys:
+        return None
+
+    for key in round_robin(keys):
+        if is_rate_limited(f"{key}:{_QUERY_BUILDER_MODEL}"):
+            continue
+        try:
+            async with httpx.AsyncClient(timeout=10) as client:
+                res = await client.post(
+                    "https://api.groq.com/openai/v1/chat/completions",
+                    headers={"Content-Type": "application/json", "Authorization": f"Bearer {key}"},
+                    json={
+                        "model": _QUERY_BUILDER_MODEL,
+                        "messages": [
+                            {"role": "system", "content": _QUERY_BUILDER_SYSTEM_PROMPT},
+                            {"role": "user", "content": question[:500]},
+                        ],
+                        "max_tokens": 300,
+                        "temperature": 0.2,
+                        "response_format": {"type": "json_object"},
+                    },
+                )
+            if res.status_code == 429:
+                log.debug("Query-builder Groq 429 on key ...%s", key[-4:])
+                mark_rate_limited(f"{key}:{_QUERY_BUILDER_MODEL}", 60_000)
+                continue
+            if not res.is_success:
+                log.debug("Query-builder Groq HTTP %d on key ...%s", res.status_code, key[-4:])
+                continue
+            data = res.json()
+            text = data.get("choices", [{}])[0].get("message", {}).get("content", "")
+            parsed = json.loads(text)
+            queries = [q.strip() for q in parsed.get("queries", []) if isinstance(q, str) and q.strip()]
+            if not queries:
+                return None
+            log.info("Query-builder: Groq produced %d angle quer(y/ies): %r",
+                      len(queries), [q[:60] for q in queries])
+            return queries[:4]
+        except Exception as exc:
+            log.debug("Query-builder Groq exception on key ...%s: %s", key[-4:], exc)
+            continue
+
+    log.info("Query-builder: Groq unavailable/exhausted — falling back to regex query builder")
+    return None
+
+
 # ─── Multi-angle source search ──────────────────────────────────────────────
 # Reports used to run exactly ONE Tavily query, then fan THAT SAME query out
 # across every configured key (see tavily_search in chat.py). Tavily's
@@ -2520,7 +2618,7 @@ def _augment_query_for_historical_data(query: str) -> str:
 # uncapped growth here multiplies total Tavily calls by (queries × keys), and
 # angle-splitting a non-finance question (e.g. "give me a business idea")
 # just injects irrelevant search noise rather than more usable data.
-def _build_multi_angle_search_queries(
+async def _build_multi_angle_search_queries(
     question: str, conversation_context: str, qtype: str,
 ) -> list[str]:
     base = _augment_query_for_historical_data(
@@ -2530,11 +2628,37 @@ def _build_multi_angle_search_queries(
     if qtype != "finance":
         return [base]
 
+    # Try the LLM query-builder first — it handles arbitrary phrasing far
+    # better than the regex heuristics below (no risk of run-on queries like
+    # the one that used to send 3 of 4 angle searches to Tavily as a single
+    # garbled sentence). Falls through to the regex builder if Groq has no
+    # keys configured, is rate-limited, or returns anything unusable.
+    llm_queries = await _llm_build_multi_angle_queries(question)
+    if llm_queries:
+        return llm_queries
+
     # Short topic phrase to build angle variants from — first clause of the
     # raw question, not the (possibly follow-up-grounded) base query, so each
     # angle stays anchored to what was actually asked rather than compounding
     # onto already-appended hint text.
-    topic = re.split(r"[.\n]", question, maxsplit=1)[0].strip()[:80] or base
+    #
+    # Bug fix: a full conversational question like "Show me Nifty 50's daily
+    # price action for the last week of trading" has no period/newline, so it
+    # used to survive [:80] entirely intact and get treated as the "topic".
+    # Appending an angle suffix to that then produced a garbled run-on query
+    # ("...for the last week of trading key financial metrics data numbers")
+    # that Tavily can't match well — this is exactly why 3 of 4 angle
+    # searches were coming back with 0 results (see the "Tavily 5-key
+    # fan-out done: 0 results" log lines), silently collapsing the
+    # multi-angle fix back down to ~1 query's worth of sources.
+    #
+    # Strip a leading instruction/question phrase and a trailing time-window
+    # clause so `topic` is a compact noun phrase (e.g. "Nifty 50's daily
+    # price action") that angle suffixes can cleanly attach to.
+    raw_clause = re.split(r"[.\n]", question, maxsplit=1)[0].strip()
+    topic = _LEADING_INSTRUCTION_RE.sub("", raw_clause).strip()
+    topic = _TRAILING_TIME_PHRASE_RE.sub("", topic).strip()
+    topic = (topic or raw_clause)[:80] or base
 
     queries = [base]
 
@@ -2756,7 +2880,7 @@ async def generate_report(request: Request):
             # Question implies it wants more than just the file (e.g. asks for
             # market context, comparisons, recent news) — supplement with web data.
             log.info("Report: file-first mode — supplementing with web search")
-            search_queries = _build_multi_angle_search_queries(
+            search_queries = await _build_multi_angle_search_queries(
                 question, conversation_context, _classify_query(question),
             )
             if len(search_queries) > 1:
@@ -2782,7 +2906,7 @@ async def generate_report(request: Request):
             tavily_search_multi as _tavily_search_multi,
             _looks_like_ai_overview, classify_query as _classify_query,
         )
-        search_queries = _build_multi_angle_search_queries(
+        search_queries = await _build_multi_angle_search_queries(
             question, conversation_context, _classify_query(question),
         )
         if search_queries != [question]:
