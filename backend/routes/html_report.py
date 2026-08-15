@@ -480,7 +480,7 @@ def _markdown_to_html(md: str, charts: list, images: list, theme: dict | None = 
             out.append('<hr class="gg-divider" />')
             continue
 
-        bullet_m = re.match(r"^[-•]\s+(.*)$", stripped)
+        bullet_m = re.match(r"^[-•*]\s+(.*)$", stripped)
         numbered_m = re.match(r"^\d+[.)]\s+(.*)$", stripped)
 
         if bullet_m:

@@ -682,7 +682,15 @@ driven by the question asked and what the sources actually contain, not by habit
 report used. Two reports on different questions must read as if a different analyst planned each
 one from scratch, down to the section names.
 
-REQUIRED ANCHORS (always present, but shape freely within them):
+REQUIRED ANCHORS apply to reports that are actually grounded in real sources/data — a piece of
+market, company, or financial research. Judge that for yourself from the question and the sources
+you were given, the same way you already judge the body-section list. If this request is instead
+creative, hypothetical, satirical, or otherwise has no real data behind it, DO NOT force these
+anchors on it — design whatever section list actually fits the piece, and skip any anchor below
+that doesn't apply. Never invent a source, a citation, or a "Data Sources" table entry to satisfy
+an anchor that doesn't genuinely fit — an omitted section is always better than a fabricated one.
+
+For a grounded research report, the anchors are:
   1. A title (# heading).
   2. An "Executive Summary" section (must contain the literal words "Executive Summary" as a heading)
      — a desk-note: 1 short paragraph (3-4 sentences) on the single biggest story, then a
@@ -697,6 +705,7 @@ REQUIRED ANCHORS (always present, but shape freely within them):
      Do NOT include a URL/link column — the table names the publication and what it contributed,
      nothing more; raw URLs never appear anywhere in the report, in this table or elsewhere.
      This is the ONLY sources listing — no second copy anywhere else in the report.
+     Omit this section entirely rather than list a source that wasn't actually used.
 
 EVERYTHING BETWEEN Executive Summary and Risks & Considerations IS YOURS TO DESIGN:
   → Pick 3-6 body sections (with subsections where useful) that map onto the REAL angles this
@@ -2007,13 +2016,17 @@ async def call_gemini(user_prompt: str) -> tuple[str, str]:
                         model, key[-4:],
                     )
                     continue
+                # NOTE: no longer treated as a hard retry trigger — the prompt now
+                # lets the model omit Executive Summary/Risks/Data Sources for
+                # creative or non-grounded requests where those anchors don't fit,
+                # so their absence alone isn't evidence of broken output. Still
+                # logged for visibility in case it points to genuine drift.
                 if "executive summary" not in _lower_text:
-                    log.warning(
-                        "Gemini: output missing required Executive Summary section — "
-                        "model=%s key=...%s — retrying next slot",
+                    log.info(
+                        "Gemini: output has no Executive Summary section — "
+                        "model=%s key=...%s (accepted; may be a non-grounded/creative report)",
                         model, key[-4:],
                     )
-                    continue
                 return text, model
             log.warning("Gemini: empty response from model=%s key=...%s", model, key[-4:])
         except Exception as exc:
