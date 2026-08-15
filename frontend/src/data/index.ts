@@ -6,6 +6,7 @@ export const CATEGORIES: { id: Category; label: string; icon: string }[] = [
   { id: 'banks',        label: 'Banking',              icon: '◈' },
   { id: 'finance',      label: 'Finance',              icon: '◇' },
   { id: 'mutual_funds', label: 'Mutual Funds',         icon: '●' },
+  { id: 'search',       label: 'Data Search',          icon: '⌕' },
 ];
 
 // NOTE: These are loading placeholders — all prices are intentionally blank

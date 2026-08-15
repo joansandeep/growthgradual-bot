@@ -6,6 +6,7 @@ Serves:
   POST /api/chat/report/okf   — Open Knowledge Format bundle from report data (binary .zip)
   POST /api/chat/report/pdf   — PDF from report data (binary, legacy)
   POST /api/chat/report/html  — Animated/interactive HTML report from report data (binary, text/html)
+  POST /api/datasearch        — Query -> structured data points (dashboard/Excel/CSV source)
 """
 import asyncio
 import logging
@@ -63,6 +64,7 @@ from routes.html_report import router as html_report_router
 from routes.okf import router as okf_router
 from routes.email import router as email_router
 from routes.rag import router as rag_router
+from routes.datasearch import router as datasearch_router
 from utils.keys import get_gemini_keys, get_groq_keys, load_persisted_bans
 
 app = FastAPI(title="Growth Gradual API", version="1.0.0")
@@ -82,6 +84,7 @@ app.include_router(pdf_router,    prefix="/api/chat/report/pdf",     tags=["pdf"
 app.include_router(html_report_router, prefix="/api/chat/report/html", tags=["html-report"])
 app.include_router(email_router,  prefix="/api/chat/report/email",   tags=["email"])
 app.include_router(rag_router,    prefix="/api/rag",                  tags=["rag"])
+app.include_router(datasearch_router, prefix="/api/datasearch",       tags=["datasearch"])
 
 
 @app.middleware("http")
