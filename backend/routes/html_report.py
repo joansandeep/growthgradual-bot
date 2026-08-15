@@ -178,6 +178,165 @@ window.__ggCharts = window.__ggCharts || [];
 window.__ggCharts.push({{ id: "{canvas_id}", config: {json.dumps(chart_config)} }});
 </script>"""
 
+    if ctype == "waterfall":
+        # Running-total bridge (e.g. Opening AUM -> Inflows -> Redemptions ->
+        # Closing AUM), rendered as a floating bar chart: each dataset entry
+        # is a [bottom, top] pair (Chart.js's built-in "floating bar" shape),
+        # so no extra plugin is needed beyond the vanilla bar controller
+        # already loaded. A point with "isTotal": true is an anchor (resets
+        # the running total to its own value); everything else is a delta
+        # off the previous cumulative — same semantics as pdf.py's _waterfall.
+        data_pts = (series[0].get("data") or []) if series else []
+        if len(data_pts) < 1:
+            log.warning("HTML report: skipping waterfall chart '%s' — no data points", chart.get("title", "?"))
+            return ""
+        wf_labels = [str(d.get("label", "")) for d in data_pts]
+        ranges, colors = [], []
+        cum = 0.0
+        GREEN_HEX, RED_HEX = "#178a4c", "#c0392b"
+        for d in data_pts:
+            v = _to_num(d.get("value", 0))
+            is_total = bool(d.get("isTotal"))
+            if is_total:
+                bottom, top = 0.0, v
+                cum = v
+            else:
+                bottom, top = cum, cum + v
+                cum = top
+            ranges.append([min(bottom, top), max(bottom, top)])
+            colors.append(theme_navy if is_total else (GREEN_HEX if v >= 0 else RED_HEX))
+        chart_config = {
+            "type": "bar",
+            "data": {"labels": wf_labels, "datasets": [{
+                "label": (series[0].get("name") if series else None) or "Value",
+                "data": ranges,
+                "backgroundColor": colors,
+                "borderRadius": 3,
+                "barPercentage": 0.6,
+            }]},
+            "options": {
+                "responsive": True,
+                "maintainAspectRatio": False,
+                "animation": {"duration": 1400, "easing": "easeOutQuart"},
+                "plugins": {"legend": {"display": False}, "title": {"display": False}},
+                "scales": {
+                    "x": {"title": {"display": bool(x_label), "text": x_label, "color": "#9aa3c0"},
+                          "ticks": {"color": "#9aa3c0"}, "grid": {"color": "rgba(255,255,255,0.06)"}},
+                    "y": {"title": {"display": bool(y_label), "text": y_label, "color": "#9aa3c0"},
+                          "ticks": {"color": "#9aa3c0"}, "grid": {"color": "rgba(255,255,255,0.06)"}},
+                },
+            },
+        }
+        return f"""
+<div class="gg-reveal gg-chart-wrap" data-reveal>
+  {f'<div class="gg-chart-title">{title}</div>' if title else ''}
+  <div class="gg-chart-canvas-box"><canvas id="{canvas_id}"></canvas></div>
+</div>
+<script>
+window.__ggCharts = window.__ggCharts || [];
+window.__ggCharts.push({{ id: "{canvas_id}", config: {json.dumps(chart_config)} }});
+</script>"""
+
+    if ctype == "candlestick":
+        # OHLC candlestick, built from two overlaid floating-bar datasets on
+        # the SAME category position (a thin one for the high/low wick, a
+        # wide one for the open/close body) rather than a separate financial-
+        # chart plugin/date-adapter — "grouped: false" on the x scale is what
+        # makes Chart.js stack multiple bar datasets at the same x position
+        # instead of placing them side by side.
+        data_pts = (series[0].get("data") or []) if series else []
+        if len(data_pts) < 2:
+            log.warning("HTML report: skipping candlestick chart '%s' — need ≥2 sessions", chart.get("title", "?"))
+            return ""
+        cs_labels = [str(d.get("label", "")) for d in data_pts]
+        wick_ranges, body_ranges, cs_colors = [], [], []
+        GREEN_HEX, RED_HEX = "#178a4c", "#c0392b"
+        for d in data_pts:
+            o, hi, lo, cl = (_to_num(d.get(k, 0)) for k in ("open", "high", "low", "close"))
+            wick_ranges.append([lo, hi])
+            body_ranges.append([min(o, cl), max(o, cl)])
+            cs_colors.append(GREEN_HEX if cl >= o else RED_HEX)
+        chart_config = {
+            "type": "bar",
+            "data": {"labels": cs_labels, "datasets": [
+                {"label": "Range", "data": wick_ranges, "backgroundColor": cs_colors,
+                 "barPercentage": 0.12, "categoryPercentage": 0.8, "borderSkipped": False},
+                {"label": "Open-Close", "data": body_ranges, "backgroundColor": cs_colors,
+                 "barPercentage": 0.5, "categoryPercentage": 0.8, "borderSkipped": False},
+            ]},
+            "options": {
+                "responsive": True,
+                "maintainAspectRatio": False,
+                "animation": {"duration": 1400, "easing": "easeOutQuart"},
+                "plugins": {"legend": {"display": False}, "title": {"display": False}},
+                "scales": {
+                    "x": {"grouped": False,
+                          "title": {"display": bool(x_label), "text": x_label, "color": "#9aa3c0"},
+                          "ticks": {"color": "#9aa3c0"}, "grid": {"color": "rgba(255,255,255,0.06)"}},
+                    "y": {"title": {"display": bool(y_label), "text": y_label, "color": "#9aa3c0"},
+                          "ticks": {"color": "#9aa3c0"}, "grid": {"color": "rgba(255,255,255,0.06)"}},
+                },
+            },
+        }
+        return f"""
+<div class="gg-reveal gg-chart-wrap" data-reveal>
+  {f'<div class="gg-chart-title">{title}</div>' if title else ''}
+  <div class="gg-chart-canvas-box"><canvas id="{canvas_id}"></canvas></div>
+</div>
+<script>
+window.__ggCharts = window.__ggCharts || [];
+window.__ggCharts.push({{ id: "{canvas_id}", config: {json.dumps(chart_config)} }});
+</script>"""
+
+    if ctype == "sparkline":
+        # Minimal axis-less trend line — deliberately no gridlines/ticks, no
+        # legend, and no axis titles even if the spec supplied xLabel/yLabel
+        # (a sparkline's whole point is to be a quick inline cue, not a full
+        # chart). Only the two endpoints get a visible point marker.
+        data_pts = (series[0].get("data") or []) if series else []
+        if len(data_pts) < 2:
+            log.warning("HTML report: skipping sparkline chart '%s' — need ≥2 points", chart.get("title", "?"))
+            return ""
+        sp_labels = [str(d.get("label", "")) for d in data_pts]
+        sp_vals = [_to_num(d.get("value", 0)) for d in data_pts]
+        up = sp_vals[-1] >= sp_vals[0]
+        color = "#178a4c" if up else "#c0392b"
+        point_radius = [0] * len(sp_vals)
+        point_radius[0] = point_radius[-1] = 4
+        chart_config = {
+            "type": "line",
+            "data": {"labels": sp_labels, "datasets": [{
+                "label": (series[0].get("name") if series else None) or "Value",
+                "data": sp_vals,
+                "borderColor": color,
+                "backgroundColor": "transparent",
+                "borderWidth": 2.5,
+                "pointRadius": point_radius,
+                "pointBackgroundColor": color,
+                "tension": 0.35,
+                "fill": False,
+            }]},
+            "options": {
+                "responsive": True,
+                "maintainAspectRatio": False,
+                "animation": {"duration": 1200, "easing": "easeOutQuart"},
+                "plugins": {"legend": {"display": False}, "title": {"display": False}},
+                "scales": {
+                    "x": {"display": False, "grid": {"display": False}},
+                    "y": {"display": False, "grid": {"display": False}},
+                },
+            },
+        }
+        return f"""
+<div class="gg-reveal gg-chart-wrap" data-reveal>
+  {f'<div class="gg-chart-title">{title}</div>' if title else ''}
+  <div class="gg-chart-canvas-box"><canvas id="{canvas_id}"></canvas></div>
+</div>
+<script>
+window.__ggCharts = window.__ggCharts || [];
+window.__ggCharts.push({{ id: "{canvas_id}", config: {json.dumps(chart_config)} }});
+</script>"""
+
     labels: list[str] = []
     for s in series:
         for pt in (s.get("data") or []):

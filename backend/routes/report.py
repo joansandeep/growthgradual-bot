@@ -345,6 +345,47 @@ STEP 1 — AGGRESSIVELY SCAN sources for ANY chartable numbers:
                                     {"name":"Valuation Score /6","data":[{"label":"Astera Labs","value":0}]}]}
     → Needs ≥4 named entities with BOTH metrics present — fewer than that, a scatter
       plot is just a few dots with nothing to show a pattern; use a table instead.
+  • A running total that moves through sequential positive/negative components
+    to arrive somewhere new — an AUM bridge (opening balance → inflows →
+    redemptions → mark-to-market → closing balance), a profit bridge (revenue →
+    COGS → opex → tax → net profit), any "how did we get from X to Y" breakdown
+    where the sources give the individual moves, not just the two endpoints —
+    → WATERFALL chart, not a bar chart. A bar chart of the same numbers loses the
+    "running total" story; a waterfall shows each component's contribution AND
+    the cumulative path in one image.
+    → {"type":"waterfall","unit":"₹ Cr","series":[{"name":"AUM","data":[
+        {"label":"Opening AUM","value":12500,"isTotal":true},
+        {"label":"Net Inflows","value":840},
+        {"label":"MTM Gains","value":210},
+        {"label":"Redemptions","value":-390},
+        {"label":"Closing AUM","value":13160,"isTotal":true}]}]}
+    → "isTotal":true marks an ANCHOR point (opening/closing balance) that resets
+      the running total to its own value; omit it (or set false) on every
+      component IN BETWEEN — those are deltas added to the running total, not
+      standalone totals. Needs ≥3 stages total (an anchor + at least one move +
+      the ending point, or ≥3 sequential deltas) — a 2-stage before/after belongs
+      in a bar or arrow chart instead, not a waterfall.
+  • The sources give a single stock/index's OPEN/HIGH/LOW/CLOSE for multiple
+    trading sessions (not just the closing level) → CANDLESTICK chart, not a
+    line chart — a line chart of just the closes throws away the day's range,
+    which is the whole point when the sources bothered to report OHLC data.
+    → {"type":"candlestick","unit":"₹","series":[{"name":"Nifty 50","data":[
+        {"label":"Jun 1","open":23510,"high":23680,"low":23470,"close":23654},
+        {"label":"Jun 2","open":23654,"high":23710,"low":23590,"close":23601}]}]}
+    → Needs ≥2 sessions, each with all four of open/high/low/close present. If
+      the sources only give closing levels (the common case), use a line chart
+      instead — do NOT invent open/high/low values to force a candlestick.
+  • A metric's recent trend matters as a quick visual cue but doesn't need its
+    own full labeled-axis chart — e.g. a 30-session price trend mentioned
+    alongside a stat you're already calling out in a KPI card or short note —
+    → SPARKLINE: a minimal axis-less line, same label/value shape as a line
+      chart, just without gridlines/tick labels. Needs ≥4 points to show an
+      actual shape; use a regular line chart instead once the trend deserves a
+      full chart of its own (axis labels, multiple series, etc.) rather than a
+      quick inline cue.
+    → {"type":"sparkline","unit":"","series":[{"name":"Nifty 50","data":[
+        {"label":"Jun 1","value":23654},{"label":"Jun 8","value":23480},
+        {"label":"Jun 15","value":23820},{"label":"Jun 22","value":23980}]}]}
   • FII/DII flows by date → line chart if 3+ dates given. For a single-day FII vs
     DII comparison (one net-buy figure, one net-sell figure — opposite signs),
     use a 2-bar chart, NOT a pie: a pie slice can't represent a negative outflow,
@@ -424,7 +465,8 @@ STEP 1 — AGGRESSIVELY SCAN sources for ANY chartable numbers:
   • Mutual fund topic → pie chart of category allocation OR bar of returns by category
 
 STEP 2 — ONLY create a chart if ALL conditions are met:
-  ✓ At least 3 data points (bar/pie) or 4 time points (line), 2 items (arrow), 4 items (scatter)
+  ✓ At least 3 data points (bar/pie) or 4 time points (line), 2 items (arrow), 4 items (scatter),
+    3 stages (waterfall), 2 sessions with full OHLC (candlestick), 4 points (sparkline)
   ✓ All labels are DIFFERENT from each other
   ✓ All values are DIFFERENT from each other (not all the same)
   ✓ Values come from the source data — do NOT invent numbers
@@ -432,8 +474,9 @@ STEP 2 — ONLY create a chart if ALL conditions are met:
   ✗ NEVER duplicate labels
   ✗ NEVER use future/projected values you invented
   ✗ A bar chart needs ≥3 named distinct items; a pie chart needs ≥2; an arrow chart
-    needs ≥2; a scatter chart needs ≥4 — this is enforced server-side and anything
-    short of that WILL be silently dropped, wasting the slot.
+    needs ≥2; a scatter chart needs ≥4; a waterfall needs ≥3 stages; a candlestick
+    needs ≥2 full OHLC sessions; a sparkline needs ≥4 points — this is enforced
+    server-side and anything short of that WILL be silently dropped, wasting the slot.
   → If the topic naturally centers on 2 entities (e.g. "HDFC vs ICICI"), actively
     scan the rest of the sources for OTHER comparable entities mentioned anywhere
     (peer banks, sector averages, other funds in the same category, etc.) and add
@@ -485,9 +528,9 @@ STEP 4 — MINIMUM 6 charts/tables per report, no exceptions unless sources are 
   is almost always another chartable angle you skipped (a ratio, a trend, a breakdown, a comparison
   across a different pairing of the same entities) rather than genuinely no more data. Only report
   fewer than 6 if the sources are so thin there is truly nothing left to chart — that should be rare,
-  not the default outcome. Vary the shapes (bar, stacked bar, line, pie, arrow, scatter) rather than
-  repeating the same shape for every chart; use the stacked-bar shape above whenever a breakdown
-  is compared across multiple labels.
+  not the default outcome. Vary the shapes (bar, stacked bar, line, pie, arrow, scatter, waterfall,
+  candlestick, sparkline) rather than repeating the same shape for every chart; use the stacked-bar
+  shape above whenever a breakdown is compared across multiple labels.
 
   THIN CHARTS COUNT AGAINST YOU, NOT FOR YOU: a bar/pie chart needs ≥3 distinct labels on its
   category axis, and this applies to grouped/multi-series bar charts too — "2 groups × 3 series each"
@@ -519,7 +562,7 @@ STEP 4 — MINIMUM 6 charts/tables per report, no exceptions unless sources are 
 
 Chart spec shape:
 {
-  "type": "bar" | "line" | "pie" | "arrow" | "scatter",
+  "type": "bar" | "line" | "pie" | "arrow" | "scatter" | "waterfall" | "candlestick" | "sparkline",
   "title": "<specific title e.g. 'Top 5 SIP Funds — 3-Year Returns' not 'Chart 1'>",
   "unit": "%" | "₹" | "Cr" | "B" | "$" | "x" | "",
   "xLabel": "<what the x-axis categories are, e.g. 'Fund' or 'Sector' or 'Session Date'>",
@@ -535,10 +578,16 @@ Chart spec shape:
 multi-series chart (see COMPARISON TOPICS above) — no extra fields needed:
   → arrow: series = [{"name":"Previous","data":[...]}, {"name":"Revised"/"Current","data":[...]}]
   → scatter: series = [{"name":"<x-metric>","data":[...]}, {"name":"<y-metric>","data":[...]}]
-AXIS LABELS ARE MANDATORY for every bar/line/arrow/scatter chart — always fill in "xLabel" and
-"yLabel" with a short (1-4 word) description of what each axis represents. A chart with numeric
-tick marks but no axis title leaves the reader guessing what the numbers mean — never omit these
-two fields.
+AXIS LABELS ARE MANDATORY for every bar/line/arrow/scatter/waterfall/candlestick chart — always
+fill in "xLabel" and "yLabel" with a short (1-4 word) description of what each axis represents.
+A chart with numeric tick marks but no axis title leaves the reader guessing what the numbers
+mean — never omit these two fields. (Sparklines are the one exception — they're deliberately
+axis-less, so skip xLabel/yLabel for those.)
+
+"waterfall" uses ONE series of {"label", "value", "isTotal"} points — see the WATERFALL example
+above. "candlestick" uses ONE series of {"label", "open", "high", "low", "close"} points instead
+of {"label", "value"} — see the CANDLESTICK example above. "sparkline" uses the same {"label",
+"value"} shape as "line" but renders without axes/gridlines.
 
 CHART TITLE MUST NOT REPEAT THE SECTION HEADING IT SITS UNDER: a chart's title bakes directly into
 its rendered image and appears immediately below the section heading it's placed in — repeating
@@ -3320,13 +3369,50 @@ async def generate_report(request: Request):
         n_series = len(series)
         chart_type = ch.get("type", "bar")
 
+        # Candlestick points carry open/high/low/close instead of "value" —
+        # none of the generic value-based checks further down (identical
+        # values, mixed-scale, etc.) apply to that shape, so validate and
+        # return early here instead.
+        if chart_type == "candlestick":
+            pts = series[0].get("data") or []
+            if len(pts) < 2:
+                log.warning("Chart rejected — candlestick needs ≥2 sessions, got %d: %s",
+                            len(pts), ch.get("title", "?"))
+                return False
+            labels = [str(p.get("label", "")) for p in pts]
+            if len(set(labels)) < len(labels):
+                log.warning("Chart rejected — duplicate session labels in candlestick: %s", ch.get("title", "?"))
+                return False
+            for d in pts:
+                keys = ("open", "high", "low", "close")
+                if any(d.get(k) is None for k in keys):
+                    log.warning("Chart rejected — candlestick session missing open/high/low/close: %s",
+                                ch.get("title", "?"))
+                    return False
+                o, hi, lo, cl = (_num({"value": d.get(k)}) for k in keys)
+                if hi < lo:
+                    log.warning("Chart rejected — candlestick session has high < low: %s", ch.get("title", "?"))
+                    return False
+            return True
+
         # For multi-series (comparison charts): validate each series individually
         for s in series:
             pts = s.get("data") or []
-            # Multi-series line charts only need 2+ pts per series
-            min_pts = 2 if chart_type == "line" else 1
+            # Multi-series line charts only need 2+ pts per series; a
+            # waterfall needs ≥3 stages to read as a bridge rather than a
+            # single before/after bar; a sparkline needs ≥4 points to show
+            # an actual shape of trend.
+            if chart_type == "line":
+                min_pts = 2
+            elif chart_type == "waterfall":
+                min_pts = 3
+            elif chart_type == "sparkline":
+                min_pts = 4
+            else:
+                min_pts = 1
             if len(pts) < min_pts:
-                log.warning("Chart rejected — series '%s' has only %d points", s.get("name","?"), len(pts))
+                log.warning("Chart rejected — series '%s' has only %d points (need ≥%d for %s)",
+                            s.get("name", "?"), len(pts), min_pts, chart_type)
                 return False
 
         # Enforce a minimum-distinct-items rule for bar/pie charts (matches
@@ -3442,8 +3528,17 @@ async def generate_report(request: Request):
         `_table_duplicates_existing_chart` / `_seen_table_sigs`)."""
         if ch.get("type") == "table":
             return ()
+        # Shape-agnostic point fingerprint: most types only carry "value",
+        # but candlestick carries open/high/low/close instead and waterfall
+        # carries an extra "isTotal" flag — hashing every non-label key
+        # (not just "value") keeps two genuinely different candlestick/
+        # waterfall charts that happen to share the same labels (e.g. the
+        # same session dates) from being mistaken for exact duplicates.
         series_sig = tuple(
-            (s.get("name", ""), tuple((str(p.get("label", "")), p.get("value")) for p in (s.get("data") or [])))
+            (s.get("name", ""), tuple(
+                (str(p.get("label", "")), tuple(sorted((k, v) for k, v in p.items() if k != "label")))
+                for p in (s.get("data") or [])
+            ))
             for s in (ch.get("series") or [])
         )
         return (ch.get("type", ""), (ch.get("title") or "").strip().lower(), series_sig)

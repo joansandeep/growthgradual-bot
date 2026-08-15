@@ -190,13 +190,42 @@ def _is_valid_chart(spec: dict) -> bool:
         return False
     chart_type = spec.get("type", "bar")
 
+    # Candlestick points carry open/high/low/close instead of "value" — the
+    # generic value-based checks below (identical values, unique labels)
+    # don't apply to that shape, so validate it separately and return early.
+    if chart_type == "candlestick":
+        pts = series[0].get("data") or []
+        if len(pts) < 2:
+            return False
+        labels = [str(p.get("label", "")) for p in pts]
+        if len(set(labels)) < len(labels):
+            return False
+        for d in pts:
+            o, hi, lo, cl = (_coerce_value(d.get(k, 0)) for k in ("open", "high", "low", "close"))
+            if hi < lo:
+                return False
+            if o == 0 and hi == 0 and lo == 0 and cl == 0:
+                return False
+        return True
+
     # For multi-series (comparison charts): validate each series individually.
     # Single-point series are allowed (e.g. a one-bar snapshot or a single
     # comparison value per company) — line charts still need at least 2
     # points per series since a single point can't be plotted as a line.
+    # A waterfall needs at least 3 stages (e.g. opening total, one move,
+    # closing total) to read as a bridge rather than a single before/after
+    # bar, and a sparkline needs enough points to actually show a "shape"
+    # of trend rather than a near-straight line between 2-3 dots.
     for s in series:
         pts = s.get("data") or []
-        min_pts = 2 if chart_type == "line" else 1
+        if chart_type == "line":
+            min_pts = 2
+        elif chart_type == "waterfall":
+            min_pts = 3
+        elif chart_type == "sparkline":
+            min_pts = 4
+        else:
+            min_pts = 1
         if len(pts) < min_pts:
             return False
 
@@ -1087,6 +1116,246 @@ def _pie(c, spec, x0, y0, w, h):
         c.drawRightString(lx + 12 + 110, iy - 1, f"{pct:.1f}%")
 
 
+def _waterfall(c, spec, x0, y0, w, h):
+    """Waterfall chart: a running total that steps up/down across labeled
+    stages (e.g. Opening AUM -> Inflows -> Redemptions -> Closing AUM),
+    drawn as floating bars connected stage-to-stage. A data point marked
+    "isTotal": true is an ANCHOR — it resets the running total to its own
+    value (used for opening/closing balances) instead of adding a delta.
+    Datawrapper has no native chart type for this shape (see the early
+    return in utils/datawrapper.py's publish_chart), so this always
+    renders through this fallback path, Datawrapper token or not."""
+    series_list = spec.get("series") or [{}]
+    data = series_list[0].get("data") or []
+    if not data:
+        return
+    unit = spec.get("unit", "")
+    safe_unit = _safe_text(unit)
+
+    # Walk the stages once to compute each bar's floating [bottom, top]
+    # span. Non-total points are deltas off the running cumulative; total
+    # points reset the baseline to their own value.
+    segments = []  # (label, bottom, top, is_total, raw_value)
+    cum = 0.0
+    for d in data:
+        v = _coerce_value(d.get("value", 0))
+        is_total = bool(d.get("isTotal"))
+        if is_total:
+            bottom, top = 0.0, v
+            cum = v
+        else:
+            bottom = cum
+            top = cum + v
+            cum = top
+        segments.append((d.get("label", ""), min(bottom, top), max(bottom, top), is_total, v))
+    if not segments:
+        return
+
+    all_edges = [e for seg in segments for e in (seg[1], seg[2])] + [0.0]
+    mn, mx = min(all_edges), max(all_edges)
+    rng = mx - mn
+    if rng < 1e-9:
+        rng = max(abs(mx) * 0.1, 1.0)
+
+    n = len(segments)
+    PL, PB = 54, 44
+    pw = w - PL - 12
+    ph = h - PB - 24
+    sp = pw / max(n, 1)
+    bw = min(sp * 0.6, 60.0)
+
+    def _y(val):
+        return y0 + PB + ((val - mn) / rng) * ph
+
+    for f in (0.0, 0.25, 0.5, 0.75, 1.0):
+        gy = y0 + PB + f * ph
+        c.setStrokeColorRGB(0.88, 0.9, 0.94); c.setLineWidth(0.4)
+        c.line(x0 + PL, gy, x0 + PL + pw, gy)
+        lbl_v = mn + f * rng
+        lbl = f"{lbl_v:,.0f}{safe_unit}"
+        c.setFillColorRGB(*GREY); c.setFont("Helvetica", 6.5)
+        c.drawRightString(x0 + PL - 3, gy - 2.5, lbl)
+
+    zero_y = _y(0.0)
+    c.setStrokeColorRGB(0.78, 0.82, 0.88); c.setLineWidth(0.8)
+    c.line(x0 + PL, zero_y, x0 + PL + pw, zero_y)
+
+    prev_top_y = None
+    prev_bx_end = None
+    for i, (lbl, bottom, top, is_total, v) in enumerate(segments):
+        bx = x0 + PL + i * sp + (sp - bw) / 2
+        by, ty = _y(bottom), _y(top)
+        bar_h = max(1.5, abs(ty - by))
+        bar_y = min(by, ty)
+        color = NAVY if is_total else (GREEN if v >= 0 else RED)
+        c.setFillColorRGB(*color)
+        c.rect(bx, bar_y, bw, bar_h, fill=1, stroke=0)
+
+        # Dotted connector from the previous bar's landing edge to this one
+        if prev_top_y is not None and prev_bx_end is not None:
+            c.setStrokeColorRGB(0.72, 0.75, 0.82); c.setLineWidth(0.6)
+            c.setDash(2, 2)
+            c.line(prev_bx_end, prev_top_y, bx, prev_top_y)
+            c.setDash()
+        prev_top_y = _y(top)
+        prev_bx_end = bx + bw
+
+        vs = f"{v:+,.0f}{safe_unit}" if not is_total else f"{v:,.0f}{safe_unit}"
+        c.setFillColorRGB(*color); c.setFont("Helvetica-Bold", 6)
+        label_y = bar_y + bar_h + 4 if top >= bottom else bar_y - 8
+        label_y = min(max(label_y, y0 + PB + 4), y0 + PB + ph + 6)
+        c.drawCentredString(bx + bw / 2, label_y, vs)
+
+        c.setFillColorRGB(*GREY)
+        if len(lbl) > 9:
+            c.saveState()
+            c.translate(bx + bw / 2, y0 + PB - 4)
+            c.rotate(30)
+            c.setFont("Helvetica", 6)
+            c.drawString(0, 0, lbl[:16])
+            c.restoreState()
+        else:
+            c.setFont("Helvetica", 6.5)
+            c.drawCentredString(bx + bw / 2, y0 + PB - 11, lbl[:12])
+
+    _axis_titles(c, spec, x0, y0, PL, PB, pw, ph)
+
+
+def _candlestick(c, spec, x0, y0, w, h):
+    """OHLC candlestick chart for a single instrument's per-session price
+    action. Each data point needs open/high/low/close (not "value") —
+    see _is_valid_chart for the shape check. Datawrapper has no native
+    candlestick type, so this always renders through this fallback path."""
+    series_list = spec.get("series") or [{}]
+    data = series_list[0].get("data") or []
+    if not data:
+        return
+    unit = spec.get("unit", "")
+    safe_unit = _safe_text(unit)
+
+    def _f(d, k):
+        return _coerce_value(d.get(k, 0))
+
+    highs = [_f(d, "high") for d in data]
+    lows  = [_f(d, "low") for d in data]
+    if not highs or not lows:
+        return
+    mn, mx = min(lows), max(highs)
+    rng = mx - mn
+    if rng < 1e-9:
+        rng = max(abs(mx) * 0.1, 1.0)
+        mn -= rng / 2
+        mx += rng / 2
+
+    n = len(data)
+    PL, PB = 58, 40
+    pw = w - PL - 12
+    ph = h - PB - 24
+    sp = pw / max(n, 1)
+    bw = min(sp * 0.5, 18.0)
+
+    def _y(val):
+        return y0 + PB + ((val - mn) / rng) * ph
+
+    for f in (0.0, 0.25, 0.5, 0.75, 1.0):
+        gy = y0 + PB + f * ph
+        c.setStrokeColorRGB(0.88, 0.9, 0.94); c.setLineWidth(0.4)
+        c.line(x0 + PL, gy, x0 + PL + pw, gy)
+        lbl_v = mn + f * rng
+        lbl = f"{lbl_v:,.1f}{safe_unit}" if rng < 10 else f"{lbl_v:,.0f}{safe_unit}"
+        c.setFillColorRGB(*GREY); c.setFont("Helvetica", 6.5)
+        c.drawRightString(x0 + PL - 3, gy - 2.5, lbl)
+
+    c.setStrokeColorRGB(0.78, 0.82, 0.88); c.setLineWidth(0.8)
+    c.line(x0 + PL, y0 + PB, x0 + PL + pw, y0 + PB)
+
+    label_step = max(1, math.ceil(n / 10))
+    for i, d in enumerate(data):
+        o, hi, lo, cl = _f(d, "open"), _f(d, "high"), _f(d, "low"), _f(d, "close")
+        cx2 = x0 + PL + i * sp + sp / 2
+        up = cl >= o
+        color = GREEN if up else RED
+        c.setStrokeColorRGB(*color); c.setLineWidth(1.0)
+        c.line(cx2, _y(lo), cx2, _y(hi))
+        body_top, body_bot = _y(max(o, cl)), _y(min(o, cl))
+        body_h = max(1.5, body_top - body_bot)
+        c.setFillColorRGB(*color)
+        c.rect(cx2 - bw / 2, body_bot, bw, body_h, fill=1, stroke=0)
+
+        lbl = d.get("label", "")
+        if i % label_step == 0 or i == n - 1:
+            c.setFillColorRGB(*GREY)
+            if len(lbl) > 7:
+                c.saveState()
+                c.translate(cx2, y0 + PB - 4)
+                c.rotate(30)
+                c.setFont("Helvetica", 6)
+                c.drawString(0, 0, lbl[:12])
+                c.restoreState()
+            else:
+                c.setFont("Helvetica", 6.5)
+                c.drawCentredString(cx2, y0 + PB - 11, lbl[:10])
+
+    _axis_titles(c, spec, x0, y0, PL, PB, pw, ph)
+
+
+def _sparkline(c, spec, x0, y0, w, h):
+    """Minimal axis-less single-series trend line — for a quick 'shape of
+    the trend' visual (e.g. a 30-session price trend) where a fully-labeled
+    line chart would be visual overkill. No gridlines, no tick labels, just
+    the line, its endpoints, and the first/last values. Datawrapper has no
+    equivalent chart type at this stripped-down scale, so this always
+    renders through this fallback path."""
+    series_list = spec.get("series") or [{}]
+    data = series_list[0].get("data") or []
+    if len(data) < 2:
+        return
+    unit = spec.get("unit", "")
+    safe_unit = _safe_text(unit)
+    vals = [_coerce_value(d.get("value", 0)) for d in data]
+    mn, mx = min(vals), max(vals)
+    rng = mx - mn
+    if rng < 1e-9:
+        rng = max(abs(mx) * 0.1, 1.0)
+        mn -= rng / 2
+
+    up = vals[-1] >= vals[0]
+    color = GREEN if up else RED
+
+    title = _safe_text((spec.get("title") or "").strip())
+    TITLE_H = 14 if title else 0
+    PAD_X, PAD_TOP, PAD_BOT = 34, 14 + TITLE_H, 16
+    pw = w - 2 * PAD_X
+    ph = h - PAD_TOP - PAD_BOT
+    n = len(vals)
+    coords = [
+        (x0 + PAD_X + (i / max(n - 1, 1)) * pw, y0 + PAD_BOT + ((v - mn) / rng) * ph)
+        for i, v in enumerate(vals)
+    ]
+
+    if title:
+        c.setFillColorRGB(*GREY); c.setFont("Helvetica-Oblique", 7)
+        c.drawCentredString(x0 + w / 2, y0 + h - 10, title[:44])
+
+    c.setStrokeColorRGB(*color); c.setLineWidth(2.2)
+    p = c.beginPath(); p.moveTo(*coords[0])
+    for px2, py2 in coords[1:]:
+        p.lineTo(px2, py2)
+    c.drawPath(p, fill=0, stroke=1)
+
+    c.setFillColorRGB(*color)
+    for px2, py2 in (coords[0], coords[-1]):
+        c.circle(px2, py2, 2.6, fill=1, stroke=0)
+
+    def _fmt(v):
+        return f"{v:,.1f}{safe_unit}" if abs(v) < 100 else f"{v:,.0f}{safe_unit}"
+
+    c.setFillColorRGB(*BODY_TXT); c.setFont("Helvetica-Bold", 7)
+    c.drawString(coords[0][0], coords[0][1] - 12, _fmt(vals[0]))
+    c.setFillColorRGB(*color)
+    c.drawRightString(coords[-1][0], coords[-1][1] + 6, _fmt(vals[-1]))
+
+
 def _datawrapper_image(c, spec, x0, y0, w, h):
     """Draw a fetched Datawrapper PNG export, scaled to fit the card, centred.
 
@@ -1345,15 +1614,25 @@ def _table(c, spec, x0, y0, w, h):
 
 
 def _draw_chart(c, spec, x0, y0, w, h):
-    if _datawrapper_image(c, spec, x0, y0, w, h):
-        return
     t = spec.get("type", "bar")
+    # waterfall/candlestick/sparkline have no Datawrapper equivalent (see
+    # the early return in utils/datawrapper.py's publish_chart) — skip the
+    # Datawrapper-image lookup entirely for them rather than wasting a
+    # lookup that will never find anything under chart["datawrapper"].
+    if t not in ("waterfall", "candlestick", "sparkline") and _datawrapper_image(c, spec, x0, y0, w, h):
+        return
     if t == "table":
         _table(c, spec, x0, y0, w, h)
     elif t == "pie":
         _pie(c, spec, x0, y0, w, h)
     elif t == "line":
         _line(c, spec, x0, y0, w, h)
+    elif t == "waterfall":
+        _waterfall(c, spec, x0, y0, w, h)
+    elif t == "candlestick":
+        _candlestick(c, spec, x0, y0, w, h)
+    elif t == "sparkline":
+        _sparkline(c, spec, x0, y0, w, h)
     else:
         _bar(c, spec, x0, y0, w, h)
 

@@ -9,7 +9,6 @@ import { useAuth } from '@/contexts/AuthContext';
 export default function Navbar() {
   const pathname = usePathname();
   const [time, setTime] = useState('');
-  const [marketOpen, setMarketOpen] = useState<boolean | null>(null);
   const { user, loading, signOut } = useAuth();
   const [showAccountMenu, setShowAccountMenu] = useState(false);
 
@@ -20,25 +19,10 @@ export default function Navbar() {
     return () => clearInterval(t);
   }, []);
 
-  useEffect(() => {
-    const fetchStatus = async () => {
-      try {
-        const res = await fetch('/api/market', { cache: 'no-store' });
-        if (!res.ok) return;
-        const data = await res.json();
-        if (typeof data.marketOpen === 'boolean') setMarketOpen(data.marketOpen);
-      } catch { /* keep null */ }
-    };
-    fetchStatus();
-    const t = setInterval(fetchStatus, 60_000);
-    return () => clearInterval(t);
-  }, []);
-
   return (
     <>
       <style>{`
         @keyframes pulse{0%,100%{opacity:1}50%{opacity:0.35}}
-        @keyframes glow{0%,100%{box-shadow:0 0 6px rgba(34,197,94,0.4)}50%{box-shadow:0 0 14px rgba(34,197,94,0.7)}}
         .nav-link-item {
           display:flex;align-items:center;gap:5px;
           padding:5px 13px;border-radius:6px 6px 0 0;
@@ -64,7 +48,6 @@ export default function Navbar() {
         .mob-nav-item.active { color:#0d5c45; }
         .mob-nav-item { border-radius:8px; }
         .mob-nav-item:active { background:rgba(13,92,69,0.08); transform:scale(.96); }
-        .market-status-pill { transition:background .2s cubic-bezier(.4,0,.2,1),border-color .2s cubic-bezier(.4,0,.2,1); animation:fadeUp .25s cubic-bezier(.4,0,.2,1); }
       `}</style>
 
       <nav style={{
@@ -105,29 +88,6 @@ export default function Navbar() {
 
           {/* Right cluster */}
           <div style={{ display:'flex', alignItems:'center', gap:'12px' }}>
-            {/* Market status pill */}
-            {marketOpen !== null && (
-              <div className="market-status-pill" style={{
-                display:'flex', alignItems:'center', gap:'6px',
-                background: marketOpen ? 'rgba(34,197,94,0.08)' : 'rgba(15,23,42,0.05)',
-                border: `1px solid ${marketOpen ? 'rgba(34,197,94,0.25)' : 'rgba(15,23,42,0.12)'}`,
-                borderRadius:'20px', padding:'4px 12px',
-              }}>
-                <span style={{
-                  width:'6px', height:'6px', borderRadius:'50%',
-                  background: marketOpen ? '#22c55e' : '#94a3b8',
-                  display:'inline-block',
-                  animation: marketOpen ? 'glow 2s ease-in-out infinite' : 'none',
-                }} />
-                <span style={{
-                  fontSize:'9px', fontFamily:'JetBrains Mono,monospace',
-                  color: marketOpen ? '#16a34a' : 'rgba(15,23,42,0.35)',
-                  letterSpacing:'0.8px', fontWeight:600,
-                }}>
-                  {marketOpen ? 'MARKET OPEN' : 'MARKET CLOSED'}
-                </span>
-              </div>
-            )}
             <span className="nav-tagline" style={{
               fontSize:'9px', color:'rgba(15,23,42,0.22)',
               fontFamily:'JetBrains Mono,monospace', letterSpacing:'0.5px',

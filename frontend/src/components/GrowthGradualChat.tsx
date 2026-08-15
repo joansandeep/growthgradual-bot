@@ -2756,11 +2756,6 @@ export default function GrowthGradualChat() {
                 In The Money · Indian Markets AI
               </div>
             </div>
-            <div className="topbar-web-badge">
-              <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/></svg>
-              Web search enabled
-            </div>
-
           </div>
 
           {/* Messages */}

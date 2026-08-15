@@ -381,6 +381,16 @@ async def publish_chart(client: httpx.AsyncClient, spec: dict) -> dict | None:
     if not TOKEN:
         return None
 
+    # Datawrapper has no native chart type for these three — a waterfall
+    # (running-total bridge with floating bars), a candlestick/OHLC chart,
+    # or a bare axis-less sparkline. Rather than force one of them into the
+    # closest-but-wrong Datawrapper type (e.g. stacking bars to fake a
+    # waterfall, which breaks the moment a segment goes negative), skip the
+    # API call entirely and always use the purpose-built ReportLab renderer
+    # in routes/pdf.py (_waterfall / _candlestick / _sparkline) instead.
+    if spec.get("type") in ("waterfall", "candlestick", "sparkline"):
+        return None
+
     try:
         dw_type = _dw_type(spec)
         title = _clean_label(spec.get("title") or "Chart")
