@@ -393,7 +393,22 @@ async def publish_chart(client: httpx.AsyncClient, spec: dict) -> dict | None:
 
     try:
         dw_type = _dw_type(spec)
-        title = _clean_label(spec.get("title") or "Chart")
+        # NOTE: `spec.get("title") or "Chart"` used to collapse two different
+        # cases into one — a chart-spec with NO "title" key at all (should
+        # fall back to something) vs. one with title EXPLICITLY set to ""
+        # (should stay blank). The latter is exactly what
+        # `_extract_markdown_tables` in routes/report.py produces on purpose:
+        # it sets "title": "" whenever a markdown table already sits under a
+        # section heading, specifically so the Datawrapper table image
+        # doesn't repeat that heading text a second time as its own baked-in
+        # caption. Because `"" or "Chart"` still evaluates to "Chart", every
+        # one of those intentionally-untitled tables got the literal word
+        # "Chart" burned into the PNG instead — visible throughout the PDF
+        # as a bare "Chart" banner sitting on top of an otherwise unlabeled
+        # table. Only fall back to "Chart" when the key is genuinely absent
+        # (real bar/line/pie chart specs the model forgot to title); respect
+        # an explicit empty string as "render with no title".
+        title = _clean_label(spec.get("title", "Chart"))
 
         create = await client.post(
             f"{API_BASE}/charts",

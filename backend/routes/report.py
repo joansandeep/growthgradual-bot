@@ -2526,10 +2526,16 @@ _TRAILING_TIME_PHRASE_RE = re.compile(
 # it through Gemini too would roughly double Gemini call volume per report
 # and eat into the same key pool/rate limits that report generation depends
 # on. Groq has its own separate key pool (get_groq_keys) and a small model
-# (llama-3.1-8b-instant, not the 70b one call_groq uses for full reports) is
+# (openai/gpt-oss-20b, not the 70b one call_groq uses for full reports) is
 # both cheap and plenty for this — it's rewriting a question into a few
 # short search phrases, not writing prose.
-_QUERY_BUILDER_MODEL = "llama-3.1-8b-instant"
+#
+# Was llama-3.1-8b-instant, which Groq decommissioned on 2026-08-16 (see
+# their deprecation notice — recommended replacement is openai/gpt-oss-20b,
+# also confirmed as the correct GroqCloud model id: same $0.075/1M input,
+# $0.30/1M output pricing tier and 131K context, so no downstream prompt/
+# token-budget changes needed here).
+_QUERY_BUILDER_MODEL = "openai/gpt-oss-20b"
 
 _QUERY_BUILDER_SYSTEM_PROMPT = """You turn a finance research question into short, clean web-search queries.
 
