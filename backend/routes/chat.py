@@ -691,7 +691,7 @@ async def rewrite_query_for_search(last_msg: str, history: list[dict], qtype: st
                 "https://api.groq.com/openai/v1/chat/completions",
                 headers={"Content-Type": "application/json", "Authorization": f"Bearer {key}"},
                 json={
-                    "model": "llama-3.3-70b-versatile",
+                    "model": "openai/gpt-oss-120b",  # llama-3.3-70b-versatile decommissioned by Groq 2026-08-16
                     "messages": [{"role": "user", "content": prompt}],
                     "max_tokens": 30,
                     "temperature": 0.1,
@@ -1438,7 +1438,11 @@ You help with anything the user brings: general knowledge, current events, scien
 
 # ─── Groq streaming ────────────────────────────────────────────────────────────
 _GROQ_MODELS = [
-    "llama-3.3-70b-versatile",   # only currently live model on free tier
+    # llama-3.3-70b-versatile was decommissioned by Groq on 2026-08-16
+    # (returns 404 model_not_found). Replaced with Groq's own recommended
+    # successors — both support tool/function calling, same as before.
+    "openai/gpt-oss-120b",
+    "qwen/qwen3-32b",
 ]
 
 async def stream_groq(system_prompt: str, messages: list[dict]) -> AsyncGenerator[str, None] | None:
@@ -1933,7 +1937,7 @@ async def generate_inline_charts(request: Request):
                     "https://api.groq.com/openai/v1/chat/completions",
                     headers={"Content-Type": "application/json", "Authorization": f"Bearer {key}"},
                     json={
-                        "model": "llama-3.3-70b-versatile",
+                        "model": "openai/gpt-oss-120b",  # llama-3.3-70b-versatile decommissioned by Groq 2026-08-16
                         "messages": [
                             {"role": "system", "content": _CHART_SYSTEM_PROMPT},
                             {"role": "user", "content": user_prompt},

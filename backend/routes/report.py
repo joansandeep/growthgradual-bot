@@ -1713,7 +1713,7 @@ async def call_groq(user_prompt: str) -> str:
                     "https://api.groq.com/openai/v1/chat/completions",
                     headers={"Content-Type": "application/json", "Authorization": f"Bearer {key}"},
                     json={
-                        "model": "llama-3.3-70b-versatile",
+                        "model": "openai/gpt-oss-120b",  # llama-3.3-70b-versatile decommissioned by Groq 2026-08-16
                         "messages": [
                             {"role": "system", "content": SYSTEM_PROMPT},
                             {"role": "user", "content": user_prompt},
@@ -2916,7 +2916,7 @@ async def _call_llm_plain(system_prompt: str, user_prompt: str) -> str:
                     "https://api.groq.com/openai/v1/chat/completions",
                     headers={"Content-Type": "application/json", "Authorization": f"Bearer {key}"},
                     json={
-                        "model": "llama-3.3-70b-versatile",
+                        "model": "openai/gpt-oss-120b",  # llama-3.3-70b-versatile decommissioned by Groq 2026-08-16
                         "messages": [
                             {"role": "system", "content": system_prompt},
                             {"role": "user", "content": user_prompt},
@@ -3048,7 +3048,7 @@ async def _call_llm_json(system_prompt: str, user_prompt: str) -> dict | None:
                     "https://api.groq.com/openai/v1/chat/completions",
                     headers={"Content-Type": "application/json", "Authorization": f"Bearer {key}"},
                     json={
-                        "model": "llama-3.3-70b-versatile",
+                        "model": "openai/gpt-oss-120b",  # llama-3.3-70b-versatile decommissioned by Groq 2026-08-16
                         "messages": [
                             {"role": "system", "content": system_prompt},
                             {"role": "user", "content": user_prompt},

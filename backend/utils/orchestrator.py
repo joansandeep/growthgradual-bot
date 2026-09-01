@@ -57,7 +57,11 @@ GROQ_URL = "https://api.groq.com/openai/v1/chat/completions"
 
 # Same model family the streaming path already uses, overridable for
 # deployments that enable a different tool-calling model on their Groq tier.
-PLANNER_MODEL = os.environ.get("GROQ_TOOL_MODEL", "llama-3.3-70b-versatile").strip()
+# llama-3.3-70b-versatile was decommissioned by Groq on 2026-08-16 (404
+# model_not_found). Default updated to Groq's recommended successor, which
+# also supports tool/function calling (required for the planner). Override
+# via GROQ_TOOL_MODEL if needed.
+PLANNER_MODEL = os.environ.get("GROQ_TOOL_MODEL", "openai/gpt-oss-120b").strip()
 
 # Hard bound on planning rounds. 2 is enough for "search, look, refine once";
 # more rounds mostly buy latency. Configurable but clamped.
