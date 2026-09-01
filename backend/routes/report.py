@@ -522,19 +522,43 @@ STEP 3 — Place [CHART_n] inline in the report markdown right after the paragra
   paragraph (3+ sentences) or a paragraph + bullet list precedes the chart. This prevents blank whitespace
   gaps in the PDF.
 
-STEP 4 — MINIMUM 6 charts/tables per report, no exceptions unless sources are genuinely numeric-free.
+STEP 4 — MINIMUM 8 charts/tables per report, no exceptions unless sources are genuinely numeric-free.
   This report runs long (10-12 pages), and visuals — not walls of text — are what fill that length
-  well and make the report interesting to read. Target 7-10 total when the sources support it; treat
-  6 as the floor, not an aspiration. BEFORE FINALIZING, DO THIS COUNT EXPLICITLY: add up the total
+  well and make the report interesting to read. Target 9-12 total when the sources support it; treat
+  8 as the floor, not an aspiration. BEFORE FINALIZING, DO THIS COUNT EXPLICITLY: add up the total
   number of entries across BOTH your "charts" array AND every markdown table you wrote in the report
-  body — that combined number, not just the charts array alone, is what must be ≥6. If the combined
-  total is under 6, go back through the sources/file data and STEP 1's per-scenario list again — there
+  body — that combined number, not just the charts array alone, is what must be ≥8. If the combined
+  total is under 8, go back through the sources/file data and STEP 1's per-scenario list again — there
   is almost always another chartable angle you skipped (a ratio, a trend, a breakdown, a comparison
   across a different pairing of the same entities) rather than genuinely no more data. Only report
-  fewer than 6 if the sources are so thin there is truly nothing left to chart — that should be rare,
+  fewer than 8 if the sources are so thin there is truly nothing left to chart — that should be rare,
   not the default outcome. Vary the shapes (bar, stacked bar, line, pie, arrow, scatter, waterfall,
   candlestick, sparkline) rather than repeating the same shape for every chart; use the stacked-bar
-  shape above whenever a breakdown is compared across multiple labels.
+  shape above whenever a breakdown is compared across multiple labels. Use AT LEAST 4 distinct chart
+  shapes somewhere in the report (not 8 bar charts in a row) — reread STEP 1's per-scenario list and
+  actively look for the angles that produce a pie, a waterfall, a scatter, an arrow, or a candlestick
+  before settling for "just chart everything as a bar," which is the single most common way a report
+  ends up looking flat and repetitive.
+
+  DO NOT SETTLE INTO THE SAME REPORT SKELETON EVERY TIME — including across separate report runs on
+  the SAME company/topic (e.g. this quarter's results vs. last quarter's, or simply the same question
+  asked again later): a reader who compares two reports on the same subject should see a genuinely
+  independent set of analytical choices, not the same chart-for-chart, section-for-section template
+  with only the numbers swapped. Concretely:
+    • Whenever a data shape genuinely supports more than one valid chart type (a 2-slice split can be
+      a donut OR a 2-bar comparison; a single long trend can be a line, an area, or — if it's more of
+      a supporting cue than a focal point — a sparkline; a ranked list can be a bar chart or, if it's
+      really a before/after move per item, an arrow chart), make an independent choice each time
+      based on which reads best for THIS report's specific numbers — don't default to whichever shape
+      you or a prior version of this report happened to use for that same metric before.
+    • Vary which angles from STEP 1's list you actually chart. Real source material always supports
+      more chartable angles than any one report has room for (8-12 slots) — which subset you pick,
+      and in what order they appear across the sections, should reflect what's most notable in THIS
+      run's numbers, not a fixed "always chart net profit first, then market cap, then P/E" checklist.
+    • Vary section framing too, per the REPORT STRUCTURE rules below — the body section names, which
+      metrics get their own subsection vs. a shared table, and where the stat-card strips and
+      pull-quotes land should all flow from what's actually notable in this specific run's numbers,
+      not repeat the last report's outline with the figures swapped in.
 
   THIN CHARTS COUNT AGAINST YOU, NOT FOR YOU: a bar/pie chart needs ≥3 distinct labels on its
   category axis, and this applies to grouped/multi-series bar charts too — "2 groups × 3 series each"
@@ -704,23 +728,28 @@ For a grounded research report, the anchors are:
      each a **bold label** + 2-3 sentences, grounded in the sources or reasoned from the data patterns.
   4. A closing synthesis section (Conclusion/Outlook/whatever name fits) — 1-2 short paragraphs +
      a "Key Takeaways" or "What To Watch" bullet list.
-  5. A "Data Sources" section — one markdown table (Publication | Data type) and nothing else.
+  5. A "Data Sources" section — one markdown table (Publication | URL | Data type) and nothing else.
      List every distinct publication that contributed a real fact — not just the most-cited one.
-     Do NOT include a URL/link column — the table names the publication and what it contributed,
-     nothing more; raw URLs never appear anywhere in the report, in this table or elsewhere.
+     The "URL" column IS required here (this is the one place in the whole report where a raw link
+     is allowed — everywhere else in the report body, no bracket markers or inline links).
      This is the ONLY sources listing — no second copy anywhere else in the report.
      Omit this section entirely rather than list a source that wasn't actually used.
-     HARD RULE — every "Publication" name in this table MUST be copied from the actual title/
-     domain of one of the sources you were handed in this request (the "- **<title>** / Source:
-     <url>" blocks above). Do NOT write in a well-known finance outlet (Reuters, Bloomberg,
-     Yahoo Finance, Screener.in, Moneycontrol, etc.) from memory just because it sounds plausible
-     for this kind of report — if it isn't one of the sources actually provided to you this turn, it
-     does not go in the table, full stop. A dead giveaway of a fabricated table is one row per body
-     section with a "Data type" that just restates that section's topic (e.g. a neat 1:1 map like
-     "Publication A → financials", "Publication B → valuation", "Publication C → risk commentary")
-     — real source lists are messier than that, because real facts don't distribute themselves one
-     tidy publication per section. If you genuinely only have 1-2 real sources, list only those 1-2
-     rows; a short, accurate table beats a padded, invented one.
+     HARD RULE — every row MUST be copied verbatim from one of the sources you were actually
+     handed in this request (the "- **<title>** / Source: <url>" blocks above): the "Publication"
+     is that source's title/site name, and the "URL" is that exact <url>, unmodified. Do NOT:
+       • write in a well-known finance outlet (Reuters, Bloomberg, Yahoo Finance, Screener.in,
+         Moneycontrol, etc.) from memory just because it sounds plausible for this kind of report,
+       • invent a generic-sounding institutional name for a source ("Verified Screener Fundamentals
+         Database", "Official Exchange Filings Repository", etc.) — a real source is a specific
+         page a person could open, not a vague database label,
+       • fabricate or guess a URL, or reuse one source's URL for a different row.
+     If it isn't one of the sources actually provided to you this turn, complete with a real URL you
+     can copy, it does not go in the table, full stop. A dead giveaway of a fabricated table is one
+     row per body section with a "Data type" that just restates that section's topic (e.g. a neat
+     1:1 map like "Publication A → financials", "Publication B → valuation", "Publication C → risk
+     commentary") — real source lists are messier than that, because real facts don't distribute
+     themselves one tidy publication per section. If you genuinely only have 1-2 real sources with
+     real URLs, list only those 1-2 rows; a short, accurate table beats a padded, invented one.
 
 EVERYTHING BETWEEN Executive Summary and Risks & Considerations IS YOURS TO DESIGN:
   → Pick 3-6 body sections (with subsections where useful) that map onto the REAL angles this
@@ -3731,7 +3760,7 @@ async def generate_report(request: Request):
         + ("6. Insert [FILE_IMG_n] references inline where you reference data visible in that extracted image/chart.\n" if embedded_file_images else "")
         + (
             "7. THE USER EXPLICITLY ASKED FOR MORE DATA POINTS / CHARTS / GRAPHS — go beyond the usual "
-            "STEP 4 floor of 6: produce AT LEAST 8-10 [CHART_n]/table entries if the source material "
+            "STEP 4 floor of 8: produce AT LEAST 10-13 [CHART_n]/table entries if the source material "
             "(file data, web sources, or — when NO_WEB_SOURCES — figures/ratios you can validly derive "
             "from the numbers already given) supports that many distinct chartable angles. For every "
             "metric mentioned in the text, also surface it as a keyStats entry or a chart data point "
@@ -4166,16 +4195,27 @@ async def generate_report(request: Request):
         `_extract_markdown_tables` (see there for the ambiguous-header
         heuristic) — applied here too because a "table" chart can also
         arrive as a JSON object straight in the model's own "charts" array
-        (never went through markdown parsing at all), and reports never
-        show raw URLs anywhere, regardless of which path a table took."""
+        (never went through markdown parsing at all). Every OTHER table in
+        the report never shows raw URLs, regardless of which path it took —
+        but the Data Sources table is the one deliberate exception (its
+        whole job is naming a real, openable source), so it's skipped here
+        by title/column-name rather than stripped like any other table."""
         unambiguous = {"url", "link", "source url", "web link", "hyperlink"}
         ambiguous = {"source", "website"}
         for ch in chart_list:
             if ch.get("type") != "table":
                 continue
+            title_l = str(ch.get("title") or "").strip().lower()
             cols = ch.get("columns") or []
             rows = ch.get("rows") or []
             if not cols:
+                continue
+            cols_l = {str(c).strip().lower() for c in cols}
+            is_data_sources_table = (
+                "data source" in title_l or title_l in ("sources", "data sources")
+                or ({"publication", "url"} <= cols_l)
+            )
+            if is_data_sources_table:
                 continue
 
             def _is_url_col(idx: int, header: str) -> bool:

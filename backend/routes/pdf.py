@@ -1296,6 +1296,29 @@ def _candlestick(c, spec, x0, y0, w, h):
                 c.setFont("Helvetica", 6.5)
                 c.drawCentredString(cx2, y0 + PB - 11, lbl[:10])
 
+    # ── Moving-average overlay ──────────────────────────────────────────────
+    # Computed directly from the candles' own close prices — no extra data
+    # needed from the model — so every candlestick chart gets this for free.
+    # A bare wall of red/green candles reads as noisy; a short-window MA line
+    # gives the eye a trend to follow, the way any real trading chart does.
+    # Window scales down for short series so it still draws on a 5-10 point
+    # chart instead of silently vanishing.
+    ma_window = 5 if n >= 10 else max(2, n // 2)
+    if n >= ma_window + 1:
+        closes = [_f(d, "close") for d in data]
+        ma_pts = []
+        for i in range(ma_window - 1, n):
+            avg = sum(closes[i - ma_window + 1:i + 1]) / ma_window
+            cx2 = x0 + PL + i * sp + sp / 2
+            ma_pts.append((cx2, _y(avg)))
+        c.setStrokeColorRGB(*GOLD); c.setLineWidth(1.3)
+        p = c.beginPath(); p.moveTo(*ma_pts[0])
+        for px2, py2 in ma_pts[1:]:
+            p.lineTo(px2, py2)
+        c.drawPath(p, fill=0, stroke=1)
+        c.setFillColorRGB(*GOLD); c.setFont("Helvetica-BoldOblique", 6.5)
+        c.drawString(ma_pts[-1][0] + 4, ma_pts[-1][1] - 2, f"{ma_window}-pd MA")
+
     _axis_titles(c, spec, x0, y0, PL, PB, pw, ph)
 
 
@@ -1336,6 +1359,21 @@ def _sparkline(c, spec, x0, y0, w, h):
     if title:
         c.setFillColorRGB(*GREY); c.setFont("Helvetica-Oblique", 7)
         c.drawCentredString(x0 + w / 2, y0 + h - 10, title[:44])
+
+    # ── Soft area fill under the line ───────────────────────────────────────
+    # A bare stroke on white reads as thin/unfinished at this small scale;
+    # a light tint of the trend colour under the curve gives it the same
+    # "finished chart" weight as the full bar/line renders elsewhere in the
+    # report, while staying subtle enough not to compete with the line itself.
+    fill_color = _mix(WHITE, color, 0.14)
+    c.setFillColorRGB(*fill_color)
+    fp = c.beginPath()
+    fp.moveTo(coords[0][0], y0 + PAD_BOT)
+    for px2, py2 in coords:
+        fp.lineTo(px2, py2)
+    fp.lineTo(coords[-1][0], y0 + PAD_BOT)
+    fp.close()
+    c.drawPath(fp, fill=1, stroke=0)
 
     c.setStrokeColorRGB(*color); c.setLineWidth(2.2)
     p = c.beginPath(); p.moveTo(*coords[0])
@@ -2116,8 +2154,12 @@ def build_pdf(report: str, title: str, question: str, summary: str,
                 # When a Datawrapper PNG is available the title and axes are baked
                 # into the image — no separate ReportLab title bar needed, and we
                 # give the card more height so the PNG fills it properly.
+                # Bumped from 220/185 — the extra vertical room lets Datawrapper's
+                # own renderer space out gridlines, tick labels and value labels
+                # instead of cramming them into a shorter frame, which is what
+                # made charts read as small/busy at the old sizing.
                 has_dw_png = bool((ch.get("datawrapper") or {}).get("pngBytes"))
-                CHART_H    = 220 if has_dw_png else 185   # DW PNG is taller (includes title)
+                CHART_H    = 260 if has_dw_png else 215   # DW PNG is taller (includes title)
                 CARD_HEADER = 0 if has_dw_png else 26     # 0 = no title bar, PNG fills card
 
                 # Row-based chart types (arrow-plots, tables) now export at
@@ -2142,7 +2184,7 @@ def build_pdf(report: str, title: str, question: str, summary: str,
                             from reportlab.lib.utils import ImageReader as _IR
                             _pw, _ph = _IR(io.BytesIO(png_bytes)).getSize()
                             fitted_h = (CW - 16) * (_ph / _pw)
-                            CHART_H = max(80, min(220, fitted_h))
+                            CHART_H = max(80, min(260, fitted_h))
                         except Exception:
                             pass   # fall back to the flat 220pt default above
 
