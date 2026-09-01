@@ -2768,6 +2768,431 @@ def _extract_company_candidates(question: str) -> list[str]:
     return deduped[:6]
 
 
+# ─── POST /api/chat/report/edit — edit a single section of an existing report ──
+# Body: { report: str (full prior report markdown), editInstruction: str,
+#         title?: str }
+#
+# This is deliberately a completely different code path from generate_report()
+# below, which always regenerates a full report from scratch. Here we never
+# re-derive the report — we take the exact text the user is already looking
+# at, find the ONE section their instruction refers to, replace ONLY that
+# section's text, and hand back the rest of the string untouched. See
+# _parse_report_sections / _best_matching_section for how the target section
+# is located.
+_SECTION_HEADING_RE = re.compile(r"^(#{1,3})[ \t]+(\S.*)$", re.MULTILINE)
+_HEADING_NUMBER_PREFIX_RE = re.compile(r"^[\d]+(\.[\d]+)*[\.\)]?\s*")
+_HEADING_WORD_RE = re.compile(r"[a-z0-9]+")
+_HEADING_STOPWORDS = {
+    "the", "a", "an", "of", "and", "or", "for", "to", "in", "on", "section",
+    "part", "report", "this", "that", "with", "about", "please", "can",
+    "you", "me", "it", "more", "add", "some",
+}
+
+
+def _parse_report_sections(report_text: str) -> list[dict]:
+    """Split a generated report into its markdown sections (# / ## / ###
+    headings). Each section spans from its heading line up to (but not
+    including) the next heading line, or the end of the text for the last
+    section — so re-joining every section's slice reconstructs the original
+    report exactly."""
+    matches = list(_SECTION_HEADING_RE.finditer(report_text))
+    sections = []
+    for i, m in enumerate(matches):
+        start = m.start()
+        end = matches[i + 1].start() if i + 1 < len(matches) else len(report_text)
+        sections.append({"level": len(m.group(1)), "heading": m.group(2).strip(), "start": start, "end": end})
+    return sections
+
+
+def _normalize_heading_words(s: str) -> set[str]:
+    s = _HEADING_NUMBER_PREFIX_RE.sub("", s.lower())
+    return set(_HEADING_WORD_RE.findall(s)) - _HEADING_STOPWORDS
+
+
+def _best_matching_section(instruction: str, sections: list[dict]) -> tuple[int, float]:
+    """Pick the section whose heading best overlaps with the user's edit
+    instruction via simple word-overlap scoring — deterministic, and doesn't
+    burn an LLM round-trip just to decide WHERE to edit. Score = fraction of
+    the heading's own distinctive words the instruction mentions, so a
+    specific reference ("expand the risk factors section") beats an
+    incidental single-word overlap with some other heading."""
+    instr_words = _normalize_heading_words(instruction)
+    best_idx, best_score = -1, 0.0
+    for i, sec in enumerate(sections):
+        head_words = _normalize_heading_words(sec["heading"])
+        if not head_words:
+            continue
+        overlap = instr_words & head_words
+        if not overlap:
+            continue
+        score = len(overlap) / len(head_words)
+        if score > best_score:
+            best_score, best_idx = score, i
+    return best_idx, best_score
+
+
+async def _call_llm_plain(system_prompt: str, user_prompt: str) -> str:
+    """Lightweight Groq-then-Gemini text completion for short, non-report
+    edits — intentionally separate from call_groq/call_gemini above, which
+    are wired specifically to the full-report JSON schema and the big
+    report-writing SYSTEM_PROMPT."""
+    for key in round_robin(get_groq_keys()):
+        if is_rate_limited(key):
+            continue
+        try:
+            async with httpx.AsyncClient(timeout=60) as client:
+                res = await client.post(
+                    "https://api.groq.com/openai/v1/chat/completions",
+                    headers={"Content-Type": "application/json", "Authorization": f"Bearer {key}"},
+                    json={
+                        "model": "llama-3.3-70b-versatile",
+                        "messages": [
+                            {"role": "system", "content": system_prompt},
+                            {"role": "user", "content": user_prompt},
+                        ],
+                        "max_tokens": 4096,
+                        "temperature": 0.3,
+                    },
+                )
+            if res.status_code == 200:
+                content = res.json()["choices"][0]["message"]["content"]
+                if content and content.strip():
+                    return content.strip()
+            elif res.status_code == 429:
+                mark_rate_limited(key, 60_000)
+        except Exception as e:
+            log.warning("Section-edit Groq call failed on key ...%s: %s", key[-4:], e)
+
+    for key in round_robin(get_gemini_keys()):
+        if not _is_rest_api_key(key) or is_rate_limited(key):
+            continue
+        try:
+            async with httpx.AsyncClient(timeout=60) as client:
+                res = await client.post(
+                    f"https://generativelanguage.googleapis.com/v1beta/models/{GEMINI_MODELS[0]}:generateContent?key={key}",
+                    json={
+                        "contents": [{"role": "user", "parts": [{"text": f"{system_prompt}\n\n{user_prompt}"}]}],
+                        "generationConfig": {"temperature": 0.3, "maxOutputTokens": 4096},
+                    },
+                )
+            if res.status_code == 200:
+                content = res.json()["candidates"][0]["content"]["parts"][0]["text"]
+                if content and content.strip():
+                    return content.strip()
+            elif res.status_code == 429:
+                mark_rate_limited(key, 60_000)
+        except Exception as e:
+            log.warning("Section-edit Gemini call failed on key ...%s: %s", key[-4:], e)
+
+    return ""
+
+
+_LEAKED_UESCAPE_RE = re.compile(r"\\u([0-9a-fA-F]{4})")
+
+
+def _decode_leaked_unicode_escapes(value):
+    """Recursively fix literal '\\uXXXX' text that leaked into a parsed
+    string instead of being decoded into the real character it stands for
+    (e.g. the rupee sign rendering as the six literal characters "\\u20b9"
+    instead of "₹"). This happens when a raw double-backslash from the
+    model (or our own JSON-repair pass, which must treat "\\\\" as a valid
+    escape) survives json.loads as a literal backslash followed by plain
+    "uXXXX" text rather than a real unicode escape. Safe to run broadly: a
+    legitimate string should never contain a bare backslash immediately
+    followed by 4 hex digits as running text, so any match here is a
+    leaked escape, not real content. Applied to the whole response payload
+    (title/report/summary/charts/images/keyStats) right before it's sent
+    to the client, so every symbol renders as the actual character
+    everywhere — not just in the report body.
+    """
+    if isinstance(value, str):
+        if "\\u" not in value:
+            return value
+        return _LEAKED_UESCAPE_RE.sub(lambda m: chr(int(m.group(1), 16)), value)
+    if isinstance(value, list):
+        return [_decode_leaked_unicode_escapes(v) for v in value]
+    if isinstance(value, dict):
+        return {k: _decode_leaked_unicode_escapes(v) for k, v in value.items()}
+    return value
+
+
+_CHART_INTENT_RE = re.compile(
+    r"\b(chart|graph|plot|visual(ize|isation|ization)?|figure|axis|"
+    r"bar\s*chart|line\s*chart|pie\s*chart|donut|sparkline|data\s*points?)\b",
+    re.IGNORECASE,
+)
+
+
+def _extract_json_object(text: str) -> dict | None:
+    """Best-effort extraction of a single JSON object from an LLM response
+    that may include stray prose or markdown fences around it."""
+    text = (text or "").strip()
+    text = re.sub(r"^```(?:json)?\s*", "", text)
+    text = re.sub(r"\s*```$", "", text)
+    start, end = text.find("{"), text.rfind("}")
+    if start == -1 or end == -1 or end <= start:
+        return None
+    try:
+        parsed = json.loads(text[start:end + 1])
+        return parsed if isinstance(parsed, dict) else None
+    except Exception:
+        return None
+
+
+def _validate_chart_spec(chart: dict) -> bool:
+    """Cheap sanity check on an LLM-produced chart object before it replaces
+    or joins the report's chart array — mirrors the minimum-data-point rules
+    from the main report prompt (STEP 2) so an edit can't silently insert a
+    chart the renderer would reject anyway."""
+    if not isinstance(chart, dict):
+        return False
+    ctype = chart.get("type")
+    if ctype == "table":
+        return isinstance(chart.get("columns"), list) and bool(chart.get("rows"))
+    if ctype not in ("bar", "line", "pie", "donut", "sparkline", "arrow", "scatter", "waterfall", "candlestick"):
+        return False
+    series = chart.get("series")
+    if not isinstance(series, list) or not series or not isinstance(series[0], dict):
+        return False
+    pts = series[0].get("data")
+    if not isinstance(pts, list):
+        return False
+    labels = [p.get("label") for p in pts if isinstance(p, dict)]
+    values = [p.get("value") for p in pts if isinstance(p, dict)]
+    if len(labels) != len(set(labels)) or len(values) != len(pts):
+        return False
+    min_pts = {"pie": 2, "donut": 2, "line": 2, "sparkline": 4, "scatter": 4, "waterfall": 3}.get(ctype, 3)
+    return len(pts) >= min_pts
+
+
+async def _call_llm_json(system_prompt: str, user_prompt: str) -> dict | None:
+    """Groq (JSON mode) → Gemini (best-effort JSON extraction) for short,
+    structured edits — used to rebuild/add a single chart's data."""
+    for key in round_robin(get_groq_keys()):
+        if is_rate_limited(key):
+            continue
+        try:
+            async with httpx.AsyncClient(timeout=60) as client:
+                res = await client.post(
+                    "https://api.groq.com/openai/v1/chat/completions",
+                    headers={"Content-Type": "application/json", "Authorization": f"Bearer {key}"},
+                    json={
+                        "model": "llama-3.3-70b-versatile",
+                        "messages": [
+                            {"role": "system", "content": system_prompt},
+                            {"role": "user", "content": user_prompt},
+                        ],
+                        "max_tokens": 2048,
+                        "temperature": 0.2,
+                        "response_format": {"type": "json_object"},
+                    },
+                )
+            if res.status_code == 200:
+                content = res.json()["choices"][0]["message"]["content"]
+                parsed = _extract_json_object(content)
+                if parsed is not None:
+                    return parsed
+            elif res.status_code == 429:
+                mark_rate_limited(key, 60_000)
+        except Exception as e:
+            log.warning("Section-edit Groq JSON call failed on key ...%s: %s", key[-4:], e)
+
+    for key in round_robin(get_gemini_keys()):
+        if not _is_rest_api_key(key) or is_rate_limited(key):
+            continue
+        try:
+            async with httpx.AsyncClient(timeout=60) as client:
+                res = await client.post(
+                    f"https://generativelanguage.googleapis.com/v1beta/models/{GEMINI_MODELS[0]}:generateContent?key={key}",
+                    json={
+                        "contents": [{"role": "user", "parts": [{"text": f"{system_prompt}\n\n{user_prompt}"}]}],
+                        "generationConfig": {"temperature": 0.2, "maxOutputTokens": 2048, "responseMimeType": "application/json"},
+                    },
+                )
+            if res.status_code == 200:
+                content = res.json()["candidates"][0]["content"]["parts"][0]["text"]
+                parsed = _extract_json_object(content)
+                if parsed is not None:
+                    return parsed
+            elif res.status_code == 429:
+                mark_rate_limited(key, 60_000)
+        except Exception as e:
+            log.warning("Section-edit Gemini JSON call failed on key ...%s: %s", key[-4:], e)
+
+    return None
+
+
+@router.post("/edit")
+async def edit_report_section(request: Request):
+    """Edit ONE section of an already-generated report in place, leaving
+    every other section byte-for-byte unchanged in the response. If the
+    instruction also references a chart/graph in that section, the chart's
+    data is updated (or a new one added) to match — see _CHART_INTENT_RE."""
+    try:
+        body = await request.json()
+    except Exception:
+        return JSONResponse({"error": "Invalid request body."}, status_code=400)
+
+    report_text: str  = body.get("report", "") or ""
+    instruction: str  = (body.get("editInstruction") or body.get("instruction") or "").strip()
+    title:       str  = body.get("title", "") or ""
+    charts:      list = list(body.get("charts") or [])
+
+    if not report_text.strip():
+        return JSONResponse({"error": "No existing report to edit."}, status_code=400)
+    if not instruction:
+        return JSONResponse({"error": "No edit instruction provided."}, status_code=400)
+
+    sections = _parse_report_sections(report_text)
+    if not sections:
+        return JSONResponse({"error": "Could not find any sections in this report to edit."}, status_code=400)
+
+    idx, score = _best_matching_section(instruction, sections)
+    # A weak/absent match means the instruction didn't clearly name a
+    # section — ask which one rather than silently guessing wrong and
+    # editing a section the user didn't mean.
+    if idx < 0 or score < 0.34:
+        heading_list = "\n".join(f"- {s['heading']}" for s in sections)
+        return JSONResponse({
+            "error": "Which section should I edit? This report has:\n" + heading_list,
+            "sections": [s["heading"] for s in sections],
+        }, status_code=422)
+
+    target = sections[idx]
+    section_text = report_text[target["start"]:target["end"]]
+
+    wants_chart_change = bool(_CHART_INTENT_RE.search(instruction))
+    existing_chart_indices = [int(n) for n in _CHART_PLACEHOLDER_RE.findall(section_text)]
+    newly_added_chart_index: int | None = None
+    chart_updated = False
+
+    # ── Step 1: rewrite the section's prose FIRST ──────────────────────────
+    # Chart reconciliation (below) reads the NEW text, not the pre-edit text.
+    # Doing it in this order is what keeps a chart in sync when the edit
+    # instruction changes a figure without using chart/graph language (e.g.
+    # "change Q2 revenue to ₹500cr") — previously the chart was rebuilt from
+    # the stale pre-edit section text, so text and chart could end up
+    # showing two different numbers for the same metric.
+    edit_system_prompt = (
+        "You edit a single section of an existing financial research report. "
+        "You will be given ONE section (heading + body, markdown) and an "
+        "instruction. Rewrite ONLY that section per the instruction. Keep "
+        "the exact same heading line — same '#' level and same heading text "
+        "— unless the instruction explicitly asks to rename it. Preserve any "
+        "chart/table/image placeholders and markdown tables already in the "
+        "section unless the instruction asks you to change them — a "
+        "[CHART_n] placeholder must be kept EXACTLY as-is (same n) if it's "
+        "already in the section; its underlying chart data is updated "
+        "separately, not by changing this placeholder text. Output ONLY the "
+        "replacement markdown for this section — no preamble, no "
+        "explanation, no commentary, nothing about any other section."
+    )
+    edit_user_prompt = (
+        f"SECTION TO EDIT:\n{section_text}\n\n"
+        f"INSTRUCTION:\n{instruction}\n\n"
+        "Return only the rewritten section (heading included)."
+    )
+
+    new_section_text = await _call_llm_plain(edit_system_prompt, edit_user_prompt)
+    if not new_section_text.strip():
+        return JSONResponse({"error": "Couldn't generate the edit — please try again."}, status_code=502)
+
+    # Guard against the model dropping the heading — re-prepend the original
+    # heading line if missing, so this section's boundary is still found
+    # correctly by _parse_report_sections on a LATER edit request too.
+    if not _SECTION_HEADING_RE.match(new_section_text.strip()):
+        hashes = "#" * target["level"]
+        new_section_text = f"{hashes} {target['heading']}\n\n{new_section_text.strip()}"
+
+    new_section_text = new_section_text.strip("\n") + "\n\n"
+
+    # ── Step 2: reconcile charts against the NEW section text ─────────────
+    if existing_chart_indices:
+        # Always resync every chart this section already references against
+        # the freshly-edited text — not only when the instruction happens to
+        # say "chart"/"graph". Any edit can change a number the chart is
+        # built from, so this runs unconditionally; the prompt tells the
+        # model to leave the chart untouched when nothing it uses actually
+        # changed, so a purely stylistic edit costs a no-op call rather than
+        # producing a mismatch.
+        for n in existing_chart_indices:
+            if n < 1 or n > len(charts):
+                continue
+            current_chart = charts[n - 1]
+            chart_system_prompt = (
+                "You keep ONE chart's data in sync with a section of a financial "
+                "report that was just edited. You'll be given the chart's "
+                "current JSON, the section's NEW text (after the edit), and the "
+                "edit instruction that produced it. If any figure the chart "
+                "uses has changed in the new section text (or the instruction "
+                "supplies new figures), update the chart's data to match — "
+                "using ONLY figures that appear in the new section text or the "
+                "instruction, never invented data. The chart and the section "
+                "text must never disagree on a shared figure. If the chart's "
+                "data still matches the new section text (nothing it depends "
+                "on changed), return the ORIGINAL chart JSON unchanged. Return "
+                "ONLY a JSON object for the chart, in the EXACT same schema as "
+                "the input chart (same keys — type, title, unit, series[]."
+                "name/data[].label/value, or columns/rows for a table chart)."
+            )
+            chart_user_prompt = (
+                f"CURRENT CHART:\n{json.dumps(current_chart)}\n\n"
+                f"NEW SECTION TEXT:\n{new_section_text}\n\n"
+                f"EDIT INSTRUCTION:\n{instruction}\n\n"
+                "Return only the (possibly updated) chart JSON object."
+            )
+            new_chart = await _call_llm_json(chart_system_prompt, chart_user_prompt)
+            if new_chart and _validate_chart_spec(new_chart):
+                if new_chart != current_chart:
+                    chart_updated = True
+                charts[n - 1] = new_chart
+    elif wants_chart_change and not existing_chart_indices:
+        # Section has no chart yet but the instruction asks for one — build
+        # it from the NEW section text (so it reflects the edit) rather than
+        # inventing numbers. Appended at the END of the charts array so every
+        # existing [CHART_n] placeholder elsewhere in the report keeps its
+        # same index.
+        new_chart_system_prompt = (
+            "You build ONE new chart for a section of a financial report, per an "
+            "editing instruction that asks for a chart/graph/visual. Use ONLY "
+            "numbers that already appear in the section text below — never "
+            "invent data. Return ONLY a JSON object: {\"type\": \"bar\"|\"line\"|"
+            "\"pie\", \"title\": string, \"unit\": string, \"series\": [{\"name\": "
+            "string, \"data\": [{\"label\": string, \"value\": number}, ...]}]}. A "
+            "bar/line chart needs at least 3 distinct labeled values; a pie chart "
+            "needs at least 2. If the section doesn't contain enough distinct "
+            "real numbers for a valid chart, return exactly "
+            "{\"error\": \"insufficient data\"}."
+        )
+        new_chart_user_prompt = f"SECTION TEXT:\n{new_section_text}\n\nINSTRUCTION:\n{instruction}"
+        new_chart = await _call_llm_json(new_chart_system_prompt, new_chart_user_prompt)
+        if new_chart and "error" not in new_chart and _validate_chart_spec(new_chart):
+            charts.append(new_chart)
+            newly_added_chart_index = len(charts)
+            chart_updated = True
+
+    # If we just built a brand-new chart for a section that had none, make
+    # sure its placeholder actually appears in the rewritten text — the
+    # rewrite LLM call above never knew this chart would exist.
+    if newly_added_chart_index is not None:
+        placeholder = f"[CHART_{newly_added_chart_index}]"
+        if placeholder not in new_section_text:
+            new_section_text = new_section_text.rstrip("\n") + f"\n\n{placeholder}\n\n"
+
+    updated_report = report_text[:target["start"]] + new_section_text + report_text[target["end"]:]
+
+    log.info("Report edit: section=%r instruction=%r chart_updated=%s (%d -> %d chars)",
+              target["heading"], instruction[:80], chart_updated, len(report_text), len(updated_report))
+
+    return JSONResponse(_decode_leaked_unicode_escapes({
+        "report": updated_report,
+        "title": title,
+        "charts": charts,
+        "editedSection": target["heading"],
+        "chartUpdated": chart_updated,
+    }))
+
+
 @router.post("")
 async def generate_report(request: Request):
     t0 = time.perf_counter()
@@ -3910,7 +4335,7 @@ async def generate_report(request: Request):
         elapsed = (time.perf_counter() - t0) * 1000
         log.info("Report complete in %.0fms — title=%r  charts=%d  images=%d  keyStats=%d",
                  elapsed, clean_title[:60], len(charts), len(images), len(parsed.get("keyStats", [])))
-        return JSONResponse({
+        return JSONResponse(_decode_leaked_unicode_escapes({
             "title":      clean_title,
             "report":     report_text,
             "charts":     charts,
@@ -3920,7 +4345,7 @@ async def generate_report(request: Request):
             "fileImages": embedded_file_images,  # extracted charts/images only — never full pages
             "recommendedFormat": recommended_format,
             "theme":      _sanitize_theme(parsed.get("theme")),
-        })
+        }))
     except Exception as exc:
         log.error("Report: JSON parse failed: %s  (raw length: %d)", exc, len(raw))
 
@@ -4000,7 +4425,7 @@ async def generate_report(request: Request):
             salvaged["report"], _salv_charts = _extract_markdown_tables(salvaged["report"], _salv_charts)
             _salv_charts = _strip_url_columns(_salv_charts)
             salvaged["charts"] = await attach_datawrapper_charts(_salv_charts)
-            return JSONResponse({
+            return JSONResponse(_decode_leaked_unicode_escapes({
                 "title":      _sanitize_title(salvaged.get("title", ""), question),
                 "report":     _strip_citation_markers(salvaged.get("report", "")),
                 "charts":     salvaged.get("charts", []),
@@ -4010,7 +4435,7 @@ async def generate_report(request: Request):
                 "fileImages": embedded_file_images,
                 "recommendedFormat": recommended_format,
                 "theme":      _sanitize_theme(salvaged.get("theme")),
-            })
+            }))
 
         try:
             repaired = clean
@@ -4048,7 +4473,7 @@ async def generate_report(request: Request):
             repaired_charts = await attach_datawrapper_charts(_rep_charts)
             repaired_report = _inject_fallback_image_placeholders(repaired_report, repaired_imgs)
             repaired_report = _strip_citation_markers(repaired_report)
-            return JSONResponse({
+            return JSONResponse(_decode_leaked_unicode_escapes({
                 "title":      _sanitize_title(repaired_parsed.get("title", ""), question),
                 "report":     repaired_report,
                 "charts":     repaired_charts,
@@ -4058,7 +4483,7 @@ async def generate_report(request: Request):
                 "fileImages": embedded_file_images,
                 "recommendedFormat": recommended_format,
                 "theme":      _sanitize_theme(repaired_parsed.get("theme")),
-            })
+            }))
         except Exception as e:
             log.warning("Report: JSON repair attempt failed (%s)", e)
 
