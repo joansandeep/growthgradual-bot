@@ -1551,6 +1551,81 @@ export default function GrowthGradualChat() {
   }, [activeId, startNewChat]);
 
   // Send message
+
+  /** Sends the given text (or `input`'s pending value) as a message that
+   *  edits ONE section of the most recent report in this conversation,
+   *  via POST /api/chat/report/edit. Called by `send()` when the message
+   *  looks like an edit/elaboration request and a report already exists —
+   *  see `_EDIT_INTENT_RE` above. Only the matched section of `reportData`
+   *  is replaced on the original report message; every other section is
+   *  left exactly as it was. */
+  const editReportSection = useCallback((reportMsgId: string, instruction: string, reportData: ReportData) => {
+    const userMsg: Message = { id: uid(), role: 'user', text: instruction, ts: Date.now() };
+    const botMsg:  Message = { id: uid(), role: 'assistant', text: '', ts: Date.now() };
+    setMessages(prev => [...prev, userMsg, botMsg]);
+    setStreaming(true);
+    setStatusMsg('Updating that section of the report…');
+
+    fetch('/api/chat/report/edit', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        report: reportData.report,
+        editInstruction: instruction,
+        title: reportData.title || '',
+        // Full current chart array — if the instruction also references a
+        // chart in the matched section, the backend rebuilds/adds the
+        // relevant entry and returns the array back with only that entry
+        // changed; every other chart (used by other sections) is untouched.
+        charts: reportData.charts || [],
+      }),
+    })
+      .then(async r => {
+        let data: any = null;
+        try { data = await r.json(); } catch { /* non-JSON body — data stays null */ }
+
+        const updatedReport = typeof data?.report === 'string' ? data.report : '';
+        if (!r.ok || !updatedReport.trim()) {
+          const message = (data && typeof data.error === 'string' && data.error)
+            || `Couldn't update that section (HTTP ${r.status}). Please try again.`;
+          setMessages(prev => prev.map(m => m.id === botMsg.id ? { ...m, text: message } : m));
+          return;
+        }
+
+        // Splice the updated section (and, if applicable, the updated/added
+        // chart) into the ORIGINAL report message — reportData.report and
+        // reportData.charts already come back from the backend with only
+        // the matched section/chart changed, so this is a straight
+        // replacement, not a merge.
+        const updatedCharts = Array.isArray(data.charts) ? data.charts : undefined;
+        setMessages(prev => prev.map(m => (m.id === reportMsgId && m.reportData)
+          ? {
+              ...m,
+              reportData: {
+                ...m.reportData,
+                report: updatedReport,
+                title: data.title || m.reportData.title,
+                charts: updatedCharts || m.reportData.charts,
+              },
+            }
+          : m));
+        const chartNote = data.chartUpdated ? ' The chart was updated too.' : '';
+        setMessages(prev => prev.map(m => m.id === botMsg.id
+          ? { ...m, text: `Updated the "${data.editedSection || 'requested'}" section — the rest of the report is unchanged.${chartNote}` }
+          : m));
+      })
+      .catch((e) => {
+        console.error('[editReportSection]', e);
+        setMessages(prev => prev.map(m => m.id === botMsg.id
+          ? { ...m, text: 'Network error — could not reach server. Please try again.' }
+          : m));
+      })
+      .finally(() => {
+        setStreaming(false);
+        setStatusMsg('');
+      });
+  }, []);
+
   const send = useCallback(async (text: string) => {
     const q = text.trim();
     if (!q || streaming) return;
@@ -1820,80 +1895,6 @@ export default function GrowthGradualChat() {
       setStatusMsg('');
     }
   }, [streaming, messages, activeId, attachedFiles, pastedTexts, editReportSection]);
-
-  /** Sends the given text (or `input`'s pending value) as a message that
-   *  edits ONE section of the most recent report in this conversation,
-   *  via POST /api/chat/report/edit. Called by `send()` when the message
-   *  looks like an edit/elaboration request and a report already exists —
-   *  see `_EDIT_INTENT_RE` above. Only the matched section of `reportData`
-   *  is replaced on the original report message; every other section is
-   *  left exactly as it was. */
-  const editReportSection = useCallback((reportMsgId: string, instruction: string, reportData: ReportData) => {
-    const userMsg: Message = { id: uid(), role: 'user', text: instruction, ts: Date.now() };
-    const botMsg:  Message = { id: uid(), role: 'assistant', text: '', ts: Date.now() };
-    setMessages(prev => [...prev, userMsg, botMsg]);
-    setStreaming(true);
-    setStatusMsg('Updating that section of the report…');
-
-    fetch('/api/chat/report/edit', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        report: reportData.report,
-        editInstruction: instruction,
-        title: reportData.title || '',
-        // Full current chart array — if the instruction also references a
-        // chart in the matched section, the backend rebuilds/adds the
-        // relevant entry and returns the array back with only that entry
-        // changed; every other chart (used by other sections) is untouched.
-        charts: reportData.charts || [],
-      }),
-    })
-      .then(async r => {
-        let data: any = null;
-        try { data = await r.json(); } catch { /* non-JSON body — data stays null */ }
-
-        const updatedReport = typeof data?.report === 'string' ? data.report : '';
-        if (!r.ok || !updatedReport.trim()) {
-          const message = (data && typeof data.error === 'string' && data.error)
-            || `Couldn't update that section (HTTP ${r.status}). Please try again.`;
-          setMessages(prev => prev.map(m => m.id === botMsg.id ? { ...m, text: message } : m));
-          return;
-        }
-
-        // Splice the updated section (and, if applicable, the updated/added
-        // chart) into the ORIGINAL report message — reportData.report and
-        // reportData.charts already come back from the backend with only
-        // the matched section/chart changed, so this is a straight
-        // replacement, not a merge.
-        const updatedCharts = Array.isArray(data.charts) ? data.charts : undefined;
-        setMessages(prev => prev.map(m => (m.id === reportMsgId && m.reportData)
-          ? {
-              ...m,
-              reportData: {
-                ...m.reportData,
-                report: updatedReport,
-                title: data.title || m.reportData.title,
-                charts: updatedCharts || m.reportData.charts,
-              },
-            }
-          : m));
-        const chartNote = data.chartUpdated ? ' The chart was updated too.' : '';
-        setMessages(prev => prev.map(m => m.id === botMsg.id
-          ? { ...m, text: `Updated the "${data.editedSection || 'requested'}" section — the rest of the report is unchanged.${chartNote}` }
-          : m));
-      })
-      .catch((e) => {
-        console.error('[editReportSection]', e);
-        setMessages(prev => prev.map(m => m.id === botMsg.id
-          ? { ...m, text: 'Network error — could not reach server. Please try again.' }
-          : m));
-      })
-      .finally(() => {
-        setStreaming(false);
-        setStatusMsg('');
-      });
-  }, []);
 
   /** Builds the report request for one message's attachments and fires it.
    *  Triggered on demand by the "Generate Report" button — reports are no
