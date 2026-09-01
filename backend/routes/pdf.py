@@ -2381,7 +2381,7 @@ def build_pdf(report: str, title: str, question: str, summary: str,
                     and _stat_pool and _stat_strip_count[0] < _STAT_STRIP_MAX):
                 _take = _pick_relevant_stats(_stat_pool, _sec_text_buf[0])
                 if _take:
-                    stat_strip(_take, f"{current_section[0][:44]} — Key Metrics", strip_color=_prev_accent)
+                    stat_strip(_take, f"{_truncate_words(current_section[0], 44)} — Key Metrics", strip_color=_prev_accent)
                     _stat_strip_count[0] += 1
             elif ("conclusion" in text_display.lower() and _stat_pool
                     and _stat_strip_count[0] < _STAT_STRIP_MAX):
@@ -2396,20 +2396,28 @@ def build_pdf(report: str, title: str, question: str, summary: str,
             _sec_text_buf[0] = ""
 
             current_section[0] = text
-            # Every major (H2) section heading now ALWAYS starts at the very
-            # top of a fresh page — never mid-page, never near the bottom.
-            # A soft "is there enough room?" check (the old need(190, ...))
-            # still let a heading land mid-page whenever ~190pt happened to
-            # be free, which is exactly what produced headings sitting in
-            # the middle of a page with unrelated content above them, or
-            # (when the guess was too small) squeezed near the bottom with
-            # its body pushed to the next page. Forcing an unconditional
-            # page break here — unless we're already at the top of a blank
-            # page, i.e. this is the very first section right after the
-            # intro page — guarantees "SECTION 0N" + its title is always the
-            # first thing a reader sees on its page.
-            if abs(y[0] - BODY_TOP) > 0.5:
+            # Section headings need enough room below them that they never
+            # look "orphaned" — a title sitting right above the page's
+            # footer with no body text under it. But unconditionally forcing
+            # every heading onto a brand-new page (the previous rule) had
+            # the opposite problem: whenever a section's tail end was short
+            # (e.g. just a pull-quote + a small stat strip, as happens right
+            # after a data-rich section), that short tail would land alone
+            # near the top of a page and the NEXT heading would still jump
+            # to a fresh page regardless — stranding the tail content with a
+            # large empty gap beneath it and wasting most of a page.
+            #
+            # Instead, only force a page break when there genuinely isn't
+            # comfortable room left for the heading plus a meaningful chunk
+            # of body copy beneath it. Otherwise the next section simply
+            # continues to flow on the current page, so a short leftover
+            # tail and the next heading share the page instead of each
+            # getting their own mostly-blank one.
+            MIN_ROOM_FOR_NEW_SECTION = 300  # heading block + a few body lines
+            if y[0] - MIN_ROOM_FOR_NEW_SECTION < BODY_BOT:
                 c.showPage(); hf(text); y[0] = BODY_TOP
+            else:
+                need(28, text)  # still guard the heading block itself
             nl(20)   # visible gap before section heading block
             col = accent()
             # Gold "SECTION 0N" overline, letter-spaced small caps
