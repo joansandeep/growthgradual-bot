@@ -106,14 +106,21 @@ class TavilyProvider(WebSearchProvider):
     ) -> list[dict]:
         from routes.chat import tavily_search_multi
 
+        # tavily_search_multi (and the tavily_search it wraps) does not accept
+        # topic/country/time_range as call-site params — those are derived
+        # internally per-query via classify_query()/detect_country()/
+        # _detect_recency_time_range() inside tavily_search(). Passing them
+        # here raised: TypeError: tavily_search_multi() got an unexpected
+        # keyword argument 'topic'. The topic/region/time_range args on this
+        # method are kept in the provider interface (other providers, e.g.
+        # Serper, do use them) but are intentionally not forwarded to Tavily —
+        # no capability is lost, since Tavily was already computing its own
+        # topic/country/time_range per query rather than taking hints for them.
         return await tavily_search_multi(
             queries,
             max_results=max_results,
             images_out=images_out,
             historical_intent=historical_intent,
-            topic=_normalize_topic(topic),
-            country=region,
-            time_range=_normalize_time_range(time_range),
         )
 
 

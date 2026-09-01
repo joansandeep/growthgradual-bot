@@ -68,7 +68,7 @@ from routes.email import router as email_router
 from routes.rag import router as rag_router
 from routes.stocks import router as stocks_router
 from routes.datasearch import router as datasearch_router
-from utils.keys import get_gemini_keys, get_groq_keys, load_persisted_bans
+from utils.keys import get_gemini_keys, get_groq_keys, get_tavily_keys, load_persisted_bans
 
 app = FastAPI(title="Growth Gradual API", version="1.0.0")
 
@@ -141,13 +141,21 @@ async def _keepalive_rag():
 
 @app.on_event("startup")
 async def on_startup():
-    import os
-    groq_n    = len([k for k in os.environ.get("GROQ_API_KEYS",    "").split(",") if k.strip()])
-    tavily_n  = len([k for k in os.environ.get("TAVILY_API_KEY",   "").split(",") if k.strip()])
-    gemini_n  = len([k for k in os.environ.get("GEMINI_API_KEY",   "").split(",") if k.strip()])
+    # Use the same loader the request-path code actually calls (utils.keys
+    # ._load_pool) instead of a separate inline os.environ.split(",") here —
+    # two independent parsers drift apart silently (e.g. this one wouldn't
+    # reflect a newline/semicolon parsing fix made in utils/keys.py), which
+    # makes this startup log lie about what's really loaded.
+    from utils.keys import describe_pool
+    groq_keys, tavily_keys, gemini_keys = get_groq_keys(), get_tavily_keys(), get_gemini_keys()
     log.info("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
     log.info("  Growth Gradual — In The Money  |  Backend v1.0.0")
-    log.info("  Groq keys: %d  |  Tavily keys: %d  |  Gemini keys: %d", groq_n, tavily_n, gemini_n)
+    log.info("  Groq keys: %d  |  Tavily keys: %d  |  Gemini keys: %d",
+              len(groq_keys), len(tavily_keys), len(gemini_keys))
+    # Masked (length + last 4 chars only, never the key itself) — lets you
+    # tell "0 loaded" / "keys got merged into one blob" / "duplicate key"
+    # apart from "key is genuinely revoked" from the Render logs alone.
+    log.info("  Groq key detail: %s", describe_pool(groq_keys))
     log.info("  Listening on http://0.0.0.0:8000")
     log.info("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
     # Restore any still-active 24h key bans from before this restart — see
@@ -173,12 +181,11 @@ def root():
 @app.get("/health")
 @app.head("/health")
 def health():
-    import os
     return {
         "status": "ok",
-        "groq_keys":   len([k for k in os.environ.get("GROQ_API_KEYS",  "").split(",") if k.strip()]),
-        "tavily_keys": len([k for k in os.environ.get("TAVILY_API_KEY", "").split(",") if k.strip()]),
-        "gemini_keys": len([k for k in os.environ.get("GEMINI_API_KEY", "").split(",") if k.strip()]),
+        "groq_keys":   len(get_groq_keys()),
+        "tavily_keys": len(get_tavily_keys()),
+        "gemini_keys": len(get_gemini_keys()),
     }
 
 

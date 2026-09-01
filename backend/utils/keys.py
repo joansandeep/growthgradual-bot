@@ -23,6 +23,7 @@ import asyncio
 import hashlib
 import logging
 import os
+import re
 import time
 from datetime import datetime, timezone
 from threading import Lock
@@ -126,8 +127,40 @@ async def load_persisted_bans(*pools: list[str]) -> None:
 
 
 def _load_pool(env_var: str) -> list[str]:
+    """
+    Split a Render env var into individual keys.
+
+    Historically this only split on ",". That silently breaks when someone
+    pastes multiple keys into Render's env-var editor separated by newlines
+    (a common paste mistake with multi-line text boxes) or semicolons —
+    the whole blob is then treated as a single, garbled "key" that will
+    reliably 401. Splitting on comma, semicolon, and newline (any mix of
+    them) and stripping stray surrounding quotes fixes that without
+    affecting a correctly-configured single comma-separated value at all.
+    """
     raw = os.environ.get(env_var, "")
-    return [k.strip() for k in raw.split(",") if k.strip()]
+    parts = re.split(r"[,;\n]+", raw)
+    keys = []
+    for k in parts:
+        k = k.strip().strip('"').strip("'").strip()
+        if k:
+            keys.append(k)
+    return keys
+
+
+def describe_pool(pool: list[str]) -> str:
+    """
+    Masked, non-secret summary of a key pool for startup/debug logging —
+    e.g. "2 key(s): [len=56 ...AbCd, len=39 ...Wxyz]". Never logs the key
+    itself, only its length and last 4 chars, which is enough to tell
+    "0 keys loaded", "keys got merged into one giant string", or
+    "duplicate key" apart from "genuinely revoked key" without ever
+    exposing a usable credential.
+    """
+    if not pool:
+        return "0 key(s)"
+    parts = [f"len={len(k)} ...{k[-4:] if len(k) >= 4 else k}" for k in pool]
+    return f"{len(pool)} key(s): [{', '.join(parts)}]"
 
 
 def get_groq_keys()   -> list[str]: return _load_pool("GROQ_API_KEYS")
