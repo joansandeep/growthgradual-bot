@@ -2375,13 +2375,25 @@ def build_pdf(report: str, title: str, question: str, summary: str,
             # represents) is one index back — look that colour up explicitly
             # rather than calling accent(), which would give the new section's
             # colour instead of the one the stat card is actually reporting on.
+            # NOTE: this used to call stat_strip(...) immediately here, i.e.
+            # on the OUTGOING section's page, right before the unconditional
+            # page break below. When that outgoing page was already nearly
+            # full, need() inside stat_strip pushed the strip onto a brand
+            # new page by itself — then the forced h2 page-break a few lines
+            # down immediately started ANOTHER new page, leaving the strip's
+            # page with just 2-4 small cards and a wall of empty space below
+            # (e.g. an "— Key Metrics" page with two stat cards and nothing
+            # else). The strip is now deferred and drawn just under the new
+            # section's heading instead, so it always lands on a page that
+            # already has real content following it.
             _prev_accent = SECTION_ACCENTS[(section_idx[0] - 1) % len(SECTION_ACCENTS)]
             _section_was_data_rich = _sec_signal["tables"] >= 1 or _sec_signal["bullets"] >= 3
+            _pending_strip = None
             if (current_section[0] and _section_was_data_rich
                     and _stat_pool and _stat_strip_count[0] < _STAT_STRIP_MAX):
                 _take = _pick_relevant_stats(_stat_pool, _sec_text_buf[0])
                 if _take:
-                    stat_strip(_take, f"{current_section[0][:44]} — Key Metrics", strip_color=_prev_accent)
+                    _pending_strip = (_take, f"{current_section[0][:44]} — Key Metrics", _prev_accent)
                     _stat_strip_count[0] += 1
             elif ("conclusion" in text_display.lower() and _stat_pool
                     and _stat_strip_count[0] < _STAT_STRIP_MAX):
@@ -2389,7 +2401,7 @@ def build_pdf(report: str, title: str, question: str, summary: str,
                 # somewhere rather than silently disappearing.
                 _take = _stat_pool[:4]
                 del _stat_pool[:4]
-                stat_strip(_take, "At a Glance", strip_color=_prev_accent)
+                _pending_strip = (_take, "At a Glance", _prev_accent)
                 _stat_strip_count[0] += 1
             _sec_signal["bullets"] = 0
             _sec_signal["tables"] = 0
@@ -2441,7 +2453,15 @@ def build_pdf(report: str, title: str, question: str, summary: str,
             # Thin gold rule under the title, in the section's accent colour
             c.setStrokeColorRGB(*col); c.setLineWidth(1.4)
             c.line(MARGIN, y[0], MARGIN + CW, y[0])
-            nl(20); continue
+            nl(20)
+            # Any stat strip carried over from the section that just ended
+            # (see note above) renders here — top of the new page, directly
+            # under its heading — instead of dangling alone on the previous,
+            # now-empty page.
+            if _pending_strip:
+                _take, _label, _color = _pending_strip
+                stat_strip(_take, _label, strip_color=_color)
+            continue
 
         # ── H3 — sub-section ─────────────────────────────────────────────────
         if tp == "h3":
