@@ -43,6 +43,18 @@ interface Conversation {
 // for how the single matching section is located and replaced.
 const _EDIT_INTENT_RE = /\b(edit|update|modify|change|revise|rewrite|redo|rephrase|elaborate|expand|shorten|condense|add\s+more|add\s+detail|go\s+deeper|more\s+detail|more\s+depth|fix|correct|improve|rework|tweak)\b/i;
 
+// Matches a message that reads as an explicit ask for a report/research/
+// analysis deliverable — used to decide whether the "Generate Report" button
+// should appear at all. Deliberately narrower than isSubstantiveQuery (which
+// gates unrelated things like inline charts and follow-up suggestions for
+// ANY non-chitchat message): a plain factual or explanatory question
+// ("What is quantum computing?", "Where is Chennai?", "Explain Python
+// exceptions.") should never show a report button just for being a real
+// question — only "report", "research", "compare/analyze", "deep dive",
+// "due diligence", "valuation", or "in-depth"/"comprehensive" (which always
+// appear alongside "analysis"/"report" in practice) should.
+const _REPORT_INTENT_RE = /\b(report|research|compar(?:e|ison)|analy(?:sis|ze|zing|tical)|deep\s*dive|due\s+diligence|valuation|in-?depth)\b/i;
+
 function uid() { return Math.random().toString(36).slice(2, 10); }
 function fmtTime(ts: number) {
   return new Date(ts).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' });
@@ -1727,9 +1739,20 @@ export default function GrowthGradualChat() {
       }
 
       // Report generation is now manual — the user taps "Generate Report" when
-      // they want one. Here we just tag the message as eligible (skipping
-      // greetings/chitchat) and stash the question + attachments so the
-      // button can build the request later without re-deriving state.
+      // they want one. Here we just tag the message as eligible and stash the
+      // question + attachments so the button can build the request later
+      // without re-deriving state.
+      //
+      // `reportEligible` is intentionally its own check (_REPORT_INTENT_RE),
+      // separate from `isSubstantiveQuery` below — isSubstantiveQuery gates
+      // unrelated things (inline chart generation, contextual follow-up
+      // questions) for ANY non-chitchat message, and broadening it to also
+      // control the "Generate Report" button would turn every ordinary
+      // factual answer ("What is quantum computing?", "Where is Chennai?")
+      // into a report-eligible one — which is the exact behavior we're
+      // fixing here. The button should only appear for messages that read
+      // as an explicit ask for a report/research/analysis, not every
+      // substantive question.
       const botMsgId = botMsg.id;
       const currentFiles = attachedFiles;
       const wantsVisual = /\b(chart|graph|plot|visuali[sz]e|trend\s*line)\b/i.test(q);
@@ -1748,9 +1771,16 @@ export default function GrowthGradualChat() {
         if (chitchat.test(lower) && q.trim().length < 40) return false;
         return true;
       })();
+      // Phrases that indicate the user actually wants a report/research
+      // deliverable, not just an answer — "report", "research", "compare",
+      // "analyze/analysis" (company/market/investment/detailed/comprehensive
+      // all end in this), "deep dive", "due diligence", "valuation",
+      // "in-depth". A plain factual or explanatory question ("What is X",
+      // "Where is Y", "Explain Z") won't contain any of these.
+      const isReportWorthy = hasReportableFiles || _REPORT_INTENT_RE.test(q);
 
       setMessages(prev => prev.map(m => m.id === botMsgId
-        ? { ...m, reportEligible: isSubstantiveQuery, reportQuestion: q, reportFiles: currentFiles, wantsVisual }
+        ? { ...m, reportEligible: isReportWorthy, reportQuestion: q, reportFiles: currentFiles, wantsVisual }
         : m));
 
       // ── Inline chart generation ────────────────────────────────────────────
