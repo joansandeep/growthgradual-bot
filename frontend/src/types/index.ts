@@ -25,3 +25,22 @@ export interface QuickStat {
   value: string;
   sub: string;
 }
+
+// ── Data Search Engine (search/page.tsx + DataDashboard.tsx) ───────────────
+export interface DataPoint {
+  entity: string;
+  metric: string;
+  value: string | number;
+  unit?: string;
+  period?: string;
+  sourceTitle?: string;
+  sourceUrl?: string;
+  kind?: 'live' | 'web';
+}
+
+export interface DataSearchResult {
+  query: string;
+  dataPoints: DataPoint[];
+  sourceCount?: number;
+  sources?: { title: string; url: string }[];
+}

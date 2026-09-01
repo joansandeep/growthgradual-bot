@@ -1,258 +1,194 @@
 """
-POST /api/datasearch  — turn a free-text query into structured data points.
+POST /api/datasearch — turn a free-text financial question into structured
+data points for the frontend's Data Search Engine (search/page.tsx ->
+DataDashboard.tsx: bar charts per metric, a sortable table, Excel/CSV export).
 
-Body:  { "query": str }
-Reply: {
-  "query": str,
-  "dataPoints": [
-    { "entity": str, "metric": str, "value": number|str, "unit": str,
-      "period": str, "sourceTitle": str, "sourceUrl": str, "kind": "live"|"web" }
-  ],
-  "sources": [{ "title": str, "url": str }],
-  "sourceCount": int,
-  "generatedAt": str (ISO)
-}
+Body: { query: str }
+Response: { query, dataPoints: DataPoint[], sourceCount, sources }
+  DataPoint = { entity, metric, value, unit?, period?, sourceTitle?, sourceUrl?, kind? }
 
-This is the "search engine that returns data points" behind the dashboard /
-Excel / CSV export flow — deliberately NOT the narrative report pipeline in
-routes/report.py. Two data streams feed the result:
-  1. Live, verified numeric fundamentals for any companies the query names
-     (via utils.market_data — same source routes/report.py trusts most).
-  2. Web search results (Tavily) run through JSON-mode LLM passes that pull
-     out only numbers explicitly present in the source text — no
-     fabrication, every row keeps its source.
+Current coverage (best-effort, additive — a source that yields nothing is
+simply omitted, same contract as the rest of this backend):
+  1. Screener.in knowledge base — richest source when a company resolves:
+     ratios, multi-period quarterly/annual financials, growth CAGR.
+  2. Live Yahoo fundamentals — fills in any named company not present in
+     the Screener KB (e.g. very recently listed, or an ADR/foreign name).
+  3. Live index quotes — when the query is clearly about NIFTY/SENSEX/etc.
 
-── Reaching ~100 source URLs ──────────────────────────────────────────────
-Tavily caps a single search call at 20 results, and routes.chat.tavily_search
-already fans one query out across every configured TAVILY_API_KEY in
-parallel (deduped by URL) — but same query + same ranking means that alone
-still converges on ~20 unique URLs, not 100, regardless of key count.
-To actually use however many keys are configured (this deployment: 5), we
-expand the user's request into up to 5 differently-angled search queries
-(via one quick LLM call) and run them through tavily_search_multi(), which
-runs tavily_search() — full multi-key fan-out included — once per angle in
-parallel and merges everything deduped by URL. Each angle can return up to
-20 results, so 5 angles caps out at up to 100 unique source URLs.
+Open-ended non-company questions (e.g. "funding raised by fintech
+startups") aren't covered yet — that needs an LLM-driven extraction pass
+over web search results, which is a larger follow-up piece, not a gap in
+this file's wiring.
 """
-import asyncio
 import logging
-from datetime import datetime, timezone
+import re
 
 from fastapi import APIRouter
 from fastapi.requests import Request
 from fastapi.responses import JSONResponse
 
-from routes.chat import tavily_search_multi
-from utils.keys import get_tavily_keys
-from utils.llm_extract import extract_json
-from utils.market_data import fetch_stock_fundamentals
+from utils.screener_kb import fetch_screener_fundamentals
+from utils.market_data import fetch_stock_fundamentals, fetch_index_quotes
+from routes.report import _extract_company_candidates
 
 router = APIRouter()
 log = logging.getLogger("datasearch")
 
-MAX_ANGLES = 5           # one per configured Tavily key, capped at 5
-RESULTS_PER_ANGLE = 20   # Tavily's hard per-call max
-BATCH_SIZE = 50          # sources per extraction LLM call — 50 * ~4000 chars
-                          # of content is ~50K tokens, well inside Groq's
-                          # ~128K primary context and a fraction of Gemini's
-                          # 1M-token fallback context, so 100 sources now
-                          # take 2 batches instead of 5 (fewer, richer calls)
-MAX_DATA_POINTS = 150    # sanity cap on the final table size
+_INDEX_INTENT_RE = re.compile(
+    r"\b(nifty|sensex|bse|nse|bank nifty|market today|indices|indian stock market)\b",
+    re.IGNORECASE,
+)
 
-_QUERY_EXPANSION_SYSTEM_PROMPT = """You expand a data request into several \
-distinct web-search queries that together cover it thoroughly from different \
-angles (e.g. official company filings/reports, financial news coverage, \
-analyst/industry data, historical figures, competitor comparisons) — pick \
-whichever angles actually fit the request rather than forcing all of them.
-
-Respond with ONLY a JSON object of this exact shape, nothing else:
-{ "queries": ["search query 1", "search query 2", ...] }
-Return between 2 and 5 queries. Each must be a short, concrete search-engine \
-query (not a sentence), under 400 characters. If the request is already \
-narrow and specific, fewer, more targeted queries are better than padding \
-to 5."""
-
-_EXTRACTION_SYSTEM_PROMPT = """You are a data-extraction engine. You are given a user's data \
-request and a set of web search results. Your only job is to pull out concrete, \
-quantitative or clearly-stated data points that answer the request, using ONLY \
-numbers and facts that literally appear in the provided source text. Never \
-estimate, infer, or round a number that isn't stated. If a source doesn't \
-contain a usable data point, skip it.
-
-Also identify any specific company names mentioned in the user's request that \
-would benefit from a live stock-fundamentals lookup (empty list if none / not \
-applicable — e.g. skip this for macro, commodity, or non-company queries).
-
-Respond with ONLY a JSON object of this exact shape, nothing else:
-{
-  "entities": ["Company Name", ...],
-  "dataPoints": [
-    {
-      "entity": "who/what this data point is about",
-      "metric": "what is being measured, e.g. Revenue, Funding Raised, YoY Growth",
-      "value": "the number or short value, as stated in the source",
-      "unit": "e.g. USD million, %, INR crore, x (multiple) — empty string if none",
-      "period": "e.g. FY25, Q1 2026, 2026 — empty string if not stated",
-      "sourceTitle": "title of the source article",
-      "sourceUrl": "url of the source article"
-    }
-  ]
-}
-Extract every usable data point you find in these sources — do not hold back \
-for length."""
+# Key financial-statement line items worth surfacing per period — kept short
+# so the dashboard's table/charts stay readable rather than dumping every
+# line item screener tracks.
+_KEY_FINANCIALS = [
+    ("Quarterly", "Sales"),
+    ("Quarterly", "Net Profit"),
+    ("Annual P&L", "Sales"),
+    ("Annual P&L", "Net Profit"),
+    ("Balance Sheet", "Total Assets"),
+]
 
 
-def _fundamentals_to_datapoints(stocks: list[dict]) -> list[dict]:
-    """Converts utils.market_data.fetch_stock_fundamentals() output into flat
-    data-point rows — no LLM in this path, so these numbers are exact."""
-    field_map = [
-        ("price", "Price", lambda s: s.get("currency") or ""),
-        ("marketCap", "Market Cap", lambda s: s.get("currency") or ""),
-        ("peRatio", "Trailing P/E", lambda s: "x"),
-        ("forwardPE", "Forward P/E", lambda s: "x"),
-        ("priceToBook", "Price to Book", lambda s: "x"),
-        ("debtToEquity", "Debt to Equity", lambda s: ""),
-        ("returnOnEquityPct", "Return on Equity", lambda s: "%"),
-        ("profitMarginPct", "Net Profit Margin", lambda s: "%"),
-        ("revenueGrowthPct", "Revenue Growth (YoY)", lambda s: "%"),
-        ("earningsGrowthPct", "Earnings Growth (YoY)", lambda s: "%"),
-        ("epsTTM", "EPS (TTM)", lambda s: ""),
-        ("dividendYieldPct", "Dividend Yield", lambda s: "%"),
-    ]
-    out: list[dict] = []
-    for s in stocks:
-        name = f"{s.get('name', '')} ({s.get('symbol', '')})".strip()
-        for key, label, unit_fn in field_map:
-            val = s.get(key)
+def _base_ticker(symbol: str) -> str:
+    """Strips exchange suffixes so 'RELIANCE.NS' and 'RELIANCE' compare equal."""
+    return re.sub(r"\.(NS|BO)$", "", (symbol or "").upper())
+
+
+def _screener_datapoints(snap: dict) -> list[dict]:
+    c = snap.get("company") or {}
+    name = c.get("name") or c.get("ticker") or "Unknown"
+    url = c.get("company_url")
+    points = []
+
+    for r in snap.get("ratios") or []:
+        val = r.get("raw_value") or r.get("value")
+        if r.get("metric") and val is not None:
+            points.append({
+                "entity": name, "metric": r["metric"], "value": val,
+                "sourceTitle": "Screener.in", "sourceUrl": url, "kind": "live",
+            })
+
+    fin = snap.get("financials") or []
+    for statement, item in _KEY_FINANCIALS:
+        rows = [r for r in fin if r.get("statement") == statement and r.get("line_item") == item][:6]
+        for r in rows:
+            val = r.get("raw_value") or r.get("value")
             if val is None:
                 continue
-            out.append({
-                "entity": name,
-                "metric": label,
-                "value": val,
-                "unit": unit_fn(s),
-                "period": "Live",
-                "sourceTitle": "Live Market Data",
-                "sourceUrl": "",
-                "kind": "live",
+            points.append({
+                "entity": name, "metric": f"{statement} — {item}", "value": val,
+                "period": r.get("period"),
+                "sourceTitle": "Screener.in", "sourceUrl": url, "kind": "live",
             })
-    return out
+
+    for g in snap.get("growth_cagr") or []:
+        val = g.get("raw_value") or g.get("value")
+        if g.get("metric") and val is not None:
+            points.append({
+                "entity": name, "metric": f"CAGR — {g['metric']}", "value": val,
+                "period": g.get("period"),
+                "sourceTitle": "Screener.in", "sourceUrl": url, "kind": "live",
+            })
+
+    return points
 
 
-async def _expand_query(query: str, num_angles: int) -> list[str]:
-    """Best-effort query expansion. Falls back to the original query alone
-    (single-angle, same as before) if the LLM call fails or returns junk —
-    this step is purely additive, never a hard dependency."""
-    if num_angles <= 1:
-        return [query]
-    parsed = await extract_json(
-        _QUERY_EXPANSION_SYSTEM_PROMPT,
-        f"USER REQUEST:\n{query}\n\nGenerate up to {num_angles} search queries.",
-    )
-    queries = (parsed or {}).get("queries") if isinstance(parsed, dict) else None
-    if not isinstance(queries, list):
-        return [query]
-    cleaned = [str(q).strip()[:400] for q in queries if str(q).strip()][:num_angles]
-    return cleaned or [query]
-
-
-def _clean_data_points(raw_points: list, kind: str) -> list[dict]:
-    out: list[dict] = []
-    for p in raw_points:
-        if not isinstance(p, dict):
-            continue
-        entity = str(p.get("entity", "")).strip()
-        metric = str(p.get("metric", "")).strip()
-        value = p.get("value", "")
-        if not entity or not metric or value in ("", None):
-            continue
-        out.append({
-            "entity": entity,
-            "metric": metric,
-            "value": value,
-            "unit": str(p.get("unit", "") or ""),
-            "period": str(p.get("period", "") or ""),
-            "sourceTitle": str(p.get("sourceTitle", "") or ""),
-            "sourceUrl": str(p.get("sourceUrl", "") or ""),
-            "kind": kind,
-        })
-    return out
-
-
-async def _extract_batch(query: str, batch: list[dict]) -> dict:
-    """Runs one JSON-extraction LLM call over a bounded batch of search
-    results. Prefers the fuller fullContent over the short snippet — at
-    BATCH_SIZE=50 and 4000 chars/source a batch is still only ~50K tokens,
-    comfortably inside Groq's context and a small fraction of Gemini's."""
-    parts = [f"USER REQUEST:\n{query}\n\nSEARCH RESULTS:"]
-    for i, r in enumerate(batch, 1):
-        content = (r.get("fullContent") or r.get("snippet") or "")[:4000]
-        parts.append(f"\n[{i}] {r.get('title', '')}\nURL: {r.get('url', '')}\n{content}")
-    parsed = await extract_json(_EXTRACTION_SYSTEM_PROMPT, "\n".join(parts))
-    return parsed if isinstance(parsed, dict) else {}
+def _yahoo_datapoints(stock: dict) -> list[dict]:
+    name = stock.get("name") or stock.get("symbol")
+    symbol = stock.get("symbol")
+    url = f"https://finance.yahoo.com/quote/{symbol}" if symbol else None
+    fields = [
+        ("price", "CMP", stock.get("currency") or ""),
+        ("marketCap", "Market Cap", stock.get("currency") or ""),
+        ("peRatio", "Trailing P/E", "x"),
+        ("forwardPE", "Forward P/E", "x"),
+        ("priceToBook", "P/B", "x"),
+        ("debtToEquity", "Debt-to-Equity", ""),
+        ("returnOnEquityPct", "ROE", "%"),
+        ("profitMarginPct", "Net Margin", "%"),
+        ("revenueGrowthPct", "Revenue Growth (YoY)", "%"),
+        ("earningsGrowthPct", "Earnings Growth (YoY)", "%"),
+        ("epsTTM", "EPS (TTM)", ""),
+        ("dividendYieldPct", "Dividend Yield", "%"),
+    ]
+    points = []
+    for key, label, unit in fields:
+        val = stock.get(key)
+        if val is not None:
+            points.append({
+                "entity": name, "metric": label, "value": round(val, 2) if isinstance(val, float) else val,
+                "unit": unit or None,
+                "sourceTitle": "Yahoo Finance", "sourceUrl": url, "kind": "live",
+            })
+    return points
 
 
 @router.post("")
 async def datasearch(request: Request):
-    body = await request.json()
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
     query = (body.get("query") or "").strip()
     if not query:
-        return JSONResponse({"error": "query is required"}, status_code=400)
+        return JSONResponse({"error": "Missing query"}, status_code=400)
 
-    num_keys = len(get_tavily_keys())
-    num_angles = max(1, min(MAX_ANGLES, num_keys or 1))
-    log.info("datasearch: query=%r  tavily_keys=%d  angles=%d", query[:120], num_keys, num_angles)
+    data_points: list[dict] = []
+    resolved_tickers: set[str] = set()
 
-    angles = await _expand_query(query, num_angles)
-    log.info("datasearch: expanded into %d angle(s): %r", len(angles), [a[:60] for a in angles])
-
-    search_results = await tavily_search_multi(angles, max_results=RESULTS_PER_ANGLE, min_results=10)
-    search_results = search_results[: num_angles * RESULTS_PER_ANGLE]
-    log.info("datasearch: %d unique source URL(s) across %d angle(s)", len(search_results), len(angles))
-
-    sources = [
-        {"title": r.get("title", ""), "url": r.get("url", "")}
-        for r in search_results if r.get("url")
-    ]
-
-    batches = [search_results[i:i + BATCH_SIZE] for i in range(0, len(search_results), BATCH_SIZE)] or [[]]
-    batch_results = await asyncio.gather(*[_extract_batch(query, b) for b in batches])
-
-    entities: list[str] = []
-    web_points: list[dict] = []
-    for parsed in batch_results:
-        batch_entities = parsed.get("entities") or []
-        if isinstance(batch_entities, list):
-            entities.extend(str(e).strip() for e in batch_entities if str(e).strip())
-        raw_points = parsed.get("dataPoints") or []
-        if isinstance(raw_points, list):
-            web_points.extend(_clean_data_points(raw_points, "web"))
-
-    # de-dupe entities case-insensitively, preserve first-seen order, cap at
-    # 6 — fetch_stock_fundamentals already caps there internally
-    seen_entities: set[str] = set()
-    unique_entities: list[str] = []
-    for e in entities:
-        key = e.lower()
-        if key not in seen_entities:
-            seen_entities.add(key)
-            unique_entities.append(e)
-    unique_entities = unique_entities[:6]
-
-    live_points: list[dict] = []
-    if unique_entities:
+    candidates = _extract_company_candidates(query)
+    if candidates:
         try:
-            stocks = await fetch_stock_fundamentals(unique_entities)
-            live_points = _fundamentals_to_datapoints(stocks)
-        except Exception as exc:
-            log.warning("datasearch: fundamentals lookup failed: %s", exc)
+            snaps = await fetch_screener_fundamentals(candidates)
+            for snap in snaps:
+                data_points.extend(_screener_datapoints(snap))
+                ticker = (snap.get("company") or {}).get("ticker")
+                if ticker:
+                    resolved_tickers.add(_base_ticker(ticker))
+        except Exception as e:
+            log.warning("datasearch: screener KB fetch failed: %s", e)
 
-    data_points = (live_points + web_points)[:MAX_DATA_POINTS]
+        try:
+            stocks = await fetch_stock_fundamentals(candidates)
+            for s in stocks:
+                if _base_ticker(s.get("symbol", "")) in resolved_tickers:
+                    continue  # already covered by the richer Screener KB snapshot
+                data_points.extend(_yahoo_datapoints(s))
+        except Exception as e:
+            log.warning("datasearch: Yahoo fundamentals fetch failed: %s", e)
 
-    return JSONResponse({
+    if _INDEX_INTENT_RE.search(query):
+        try:
+            quotes = await fetch_index_quotes()
+            for q in quotes:
+                data_points.append({
+                    "entity": q["label"], "metric": "Index Level", "value": round(q["price"], 2),
+                    "sourceTitle": "Live Market Data", "sourceUrl": None, "kind": "live",
+                })
+                if q.get("changePct") is not None:
+                    data_points.append({
+                        "entity": q["label"], "metric": "Change %", "value": round(q["changePct"], 2), "unit": "%",
+                        "sourceTitle": "Live Market Data", "sourceUrl": None, "kind": "live",
+                    })
+        except Exception as e:
+            log.warning("datasearch: index quote fetch failed: %s", e)
+
+    sources = []
+    seen = set()
+    for p in data_points:
+        key = (p.get("sourceTitle"), p.get("sourceUrl"))
+        if p.get("sourceTitle") and key not in seen:
+            seen.add(key)
+            sources.append({"title": p["sourceTitle"], "url": p.get("sourceUrl") or ""})
+
+    log.info("datasearch: query=%r -> %d data point(s) from %d source(s)",
+              query[:80], len(data_points), len(sources))
+
+    return {
         "query": query,
         "dataPoints": data_points,
-        "sources": sources,
         "sourceCount": len(sources),
-        "generatedAt": datetime.now(timezone.utc).isoformat(),
-    })
+        "sources": sources,
+    }

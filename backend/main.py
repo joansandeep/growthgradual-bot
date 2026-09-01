@@ -8,6 +8,7 @@ Serves:
   POST /api/chat/report/html  — Animated/interactive HTML report from report data (binary, text/html)
   GET  /api/stocks/search     — Search the Screener.in fundamentals knowledge base
   GET  /api/stocks/{id}       — Full fundamentals snapshot for a company
+  POST /api/datasearch        — Free-text query -> structured data points (Data Search Engine)
 """
 import asyncio
 import logging
@@ -66,6 +67,7 @@ from routes.okf import router as okf_router
 from routes.email import router as email_router
 from routes.rag import router as rag_router
 from routes.stocks import router as stocks_router
+from routes.datasearch import router as datasearch_router
 from utils.keys import get_gemini_keys, get_groq_keys, load_persisted_bans
 
 app = FastAPI(title="Growth Gradual API", version="1.0.0")
@@ -86,6 +88,7 @@ app.include_router(html_report_router, prefix="/api/chat/report/html", tags=["ht
 app.include_router(email_router,  prefix="/api/chat/report/email",   tags=["email"])
 app.include_router(rag_router,    prefix="/api/rag",                  tags=["rag"])
 app.include_router(stocks_router, prefix="/api/stocks",                tags=["stocks"])
+app.include_router(datasearch_router, prefix="/api/datasearch",        tags=["datasearch"])
 
 
 @app.middleware("http")

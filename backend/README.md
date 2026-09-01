@@ -11,6 +11,7 @@ Pure-Python backend replacing all Next.js API routes. No browser automation, no 
 | POST | `/api/chat/report/pdf` | PDF export via ReportLab (no Puppeteer) |
 | GET | `/api/stocks/search` | Search the Screener.in fundamentals knowledge base by ticker/name |
 | GET | `/api/stocks/{company_id}` | Full fundamentals snapshot for a company |
+| POST | `/api/datasearch` | Free-text query → structured data points for the frontend Data Search Engine (`/search`) |
 | GET | `/health` | Health check |
 
 ## Environment Variables
