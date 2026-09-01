@@ -33,6 +33,7 @@ from email.utils import parsedate_to_datetime as _parse_rfc2822
 from utils.rag_client import rag_query as _rag_query
 from utils.auth import get_user_id
 from utils.screener_kb import get_company_context_with_meta as _get_kb_context_with_meta
+from utils.orchestrator import orchestrate, OrchestrationResult
 
 # ─── Supabase persistence ──────────────────────────────────────────────────────
 _SUPABASE_URL  = os.environ.get("SUPABASE_URL", "").rstrip("/")
@@ -738,11 +739,18 @@ COUNTRY_ALIASES: dict[str, list[str]] = {
 }
 
 
-def detect_country(query: str) -> str | None:
+def detect_country(query: str, default: str | None = "india") -> str | None:
     """
-    "" / no mention             -> "india" (default)
-    explicit country mentioned  -> that country's Tavily value
-    "global"/"world"/"worldwide"-> None (no country bias — search everything)
+    explicit country mentioned   -> that country's Tavily value
+    "global"/"world"/"worldwide" -> None (no country bias — search everything)
+    no mention                   -> `default`
+
+    `default` used to be unconditionally "india", which geo-biased every
+    single search — including questions with nothing to do with any country
+    ("what is quantum computing?"). Callers that genuinely want an
+    India-first search (the legacy finance flows) keep the old behaviour by
+    not passing `default`; the orchestrator passes default=None so an
+    unqualified question searches worldwide.
     """
     q = f" {query.lower()} "
     if any(term in q for term in GLOBAL_TERMS):
@@ -750,7 +758,7 @@ def detect_country(query: str) -> str | None:
     for country, keywords in COUNTRY_ALIASES.items():
         if any(kw in q for kw in keywords):
             return country
-    return "india"
+    return default
 
 
 _FILE_INTENT_RE = re.compile(
@@ -905,17 +913,26 @@ def _detect_recency_time_range(query: str) -> str | None:
 
 
 async def _tavily_one_call(
-    key: str, query: str, max_results: int, qtype: str,
+    key: str, query: str, max_results: int, topic: str = "general",
     country: str | None = "india", images_out: list | None = None,
     time_range: str | None = None,
 ) -> list[dict]:
     """
     One Tavily SDK call on a single key. No include_domains restriction —
     which domains actually show up is decided per-query by Tavily's own
-    relevance ranking (biased by topic="finance"/country when applicable),
-    not by a fixed allow-list. country=None means no geographic boost (used
-    for "globally"/"world" style queries). Returns [] on any failure —
-    caller decides what to do with a thin/empty result.
+    relevance ranking (biased by `topic`/`country` when applicable), not by a
+    fixed allow-list. country=None means no geographic boost (used for
+    "globally"/"world" style queries, and now the default for any query that
+    doesn't name a country). Returns [] on any failure — caller decides what
+    to do with a thin/empty result.
+
+    topic: a Tavily search vertical — "general", "news" or "finance". This used
+    to be the app's internal finance/general query classification, which meant
+    only finance questions could ever get a non-default vertical. It's now a
+    plain pass-through parameter chosen per-request (in practice by the
+    orchestrator's planning LLM), so a news question can ask for topic="news"
+    without the app needing a category taxonomy. Legacy "general"/"finance"
+    values behave exactly as before.
 
     images_out: if provided, any images Tavily returns for this query are
     appended to it in-place as {"url": ..., "description": ...} dicts. Safe
@@ -930,7 +947,9 @@ async def _tavily_one_call(
     try:
         from tavily import AsyncTavilyClient
     except ImportError:
-        return await _tavily_search_httpx_fallback(query, max_results, qtype, images_out, time_range)
+        return await _tavily_search_httpx_fallback(
+            query, max_results, topic, images_out, time_range, country
+        )
 
     if is_rate_limited(key):
         return []
@@ -950,8 +969,8 @@ async def _tavily_one_call(
         }
         if country:
             search_kwargs["country"] = country
-        if qtype == "finance":
-            search_kwargs["topic"] = "finance"
+        if topic in ("finance", "news"):
+            search_kwargs["topic"] = topic
         if time_range:
             search_kwargs["time_range"] = time_range
 
@@ -1211,9 +1230,17 @@ async def tavily_search_multi(
 
 async def _tavily_search_httpx_fallback(
     query: str, max_results: int, qtype: str, images_out: list | None = None,
-    time_range: str | None = None,
+    time_range: str | None = None, country: str | None = "india",
 ) -> list[dict]:
-    """Raw httpx fallback if tavily-python SDK is unavailable."""
+    """
+    Raw httpx fallback if tavily-python SDK is unavailable.
+
+    `qtype` is really a Tavily topic ("general"/"news"/"finance") — the legacy
+    "finance"/"general" values map straight onto it. `country` is now an
+    explicit parameter: it used to be hard-coded to "india", which silently
+    geo-biased every fallback search regardless of subject. Pass None for an
+    unbiased worldwide search.
+    """
     keys = get_tavily_keys()
     t0 = time.perf_counter()
     async with httpx.AsyncClient(timeout=15) as client:
@@ -1230,10 +1257,11 @@ async def _tavily_search_httpx_fallback(
                     "include_raw_content": True,
                     "include_images": images_out is not None,
                     "include_image_descriptions": images_out is not None,
-                    "country": "india",
                 }
-                if qtype == "finance":
-                    body["topic"] = "finance"
+                if country:
+                    body["country"] = country
+                if qtype in ("finance", "news"):
+                    body["topic"] = qtype
                 if time_range:
                     body["time_range"] = time_range
                 res = await client.post("https://api.tavily.com/search", json=body)
@@ -1330,16 +1358,27 @@ async def load_headlines(limit: int = 30) -> str:
         return ""
 
 
-def build_system(headlines: str, search_results: list[dict], qtype: str, smalltalk: bool = False,
-                  kb_context: str | None = None) -> str:
+def build_system(context_blocks: str = "", smalltalk: bool = False,
+                  limitations: list[str] | None = None) -> str:
+    """
+    Single domain-neutral persona for /api/chat.
+
+    ``context_blocks`` is pre-formatted text handed back by
+    ``utils.orchestrator.orchestrate()`` (``OrchestrationResult.context()``) —
+    each tool (web_search, document_search, company_fundamentals, market_data,
+    news_headlines) already wraps its own output in a labelled block, so this
+    function's only job is to state the persona/voice/grounding rules once and
+    append whatever context the orchestrator actually gathered. There is no
+    finance/general branch here — the same assistant answers everything, and
+    which (if any) tools ran is decided upstream, per request, by the planner.
+    """
     from datetime import date
     today = date.today().strftime("%A, %B %d, %Y")
 
     if smalltalk:
         # Greetings / self-introductions get a short, warm, human reply —
-        # no headlines, no web context, no data-dump instructions. This is
-        # what keeps "hi" or "hi i am albin" simple instead of triggering a
-        # full analyst-style response.
+        # no context, no data-dump instructions. This is what keeps "hi" or
+        # "hi i am albin" simple instead of triggering a full response.
         return f"""You are **Growth Gradual Assistant**, built into the Growth Gradual platform. Today is {today}.
 
 The user just sent a greeting or introduced themselves — nothing else.
@@ -1347,89 +1386,54 @@ The user just sent a greeting or introduced themselves — nothing else.
 **Behaviour:**
 - Reply in 1-3 short, warm sentences. No headers, no bullet lists, no tables, no markdown formatting.
 - If they gave their name, use it naturally.
-- Briefly mention you can help with Indian stocks, mutual funds, IPOs, market news, or general finance questions — in one short sentence, not a list.
-- Do NOT pull in market data, headlines, statistics, or citations. Do NOT add a "verify live prices" disclaimer — there's no market data here to verify.
+- Briefly mention you can help with all kinds of things — general questions, current events, programming, documents, and finance/markets — in one short sentence, not a list.
+- Do NOT pull in market data, headlines, statistics, or citations. Do NOT add a "verify live prices" disclaimer — there's no data here to verify.
 - Keep it conversational, like a person saying hello back — not a report."""
 
-    web_ctx = ""
-    if search_results:
-        snippets = []
-        for i, r in enumerate(search_results[:18]):
-            content = r.get("fullContent", "")
-            if len(content) > len(r.get("snippet", "")):
-                content = content[:1200]
-            else:
-                content = r.get("snippet", "")
-            pub = f" ({r['published']})" if r.get("published") else ""
-            snippets.append(f"- {r['title']}\nSource: {r['url']}{pub}\n{content}")
-        web_ctx = f"\n\n---\n🌐 WEB SEARCH RESULTS — TOP {len(search_results)} PAGES (with full page content):\n\n" + "\n\n".join(snippets) + "\n---"
+    persona = f"""You are **Growth Gradual Assistant** — a general-purpose, knowledgeable AI assistant built into the Growth Gradual platform. Today is {today}.
 
-    kb_ctx = ""
-    if kb_context:
-        kb_ctx = (
-            "\n\n---\n📊 COMPANY FUNDAMENTALS DATABASE — verified structured data "
-            "sourced directly from Screener.in filings (treat every figure in this "
-            "block as ground truth, higher-confidence than web search snippets for "
-            "this company's financials/ratios/shareholding):\n\n" + kb_context + "\n---"
-        )
+You help with anything the user brings: general knowledge, current events, science and technology, programming and debugging, companies and business questions, Indian and global financial markets, personal finance, the user's own uploaded documents, writing and analysis, and everyday conversation. You are not limited to any one domain — read what the question actually needs and answer it directly, whether or not any retrieved context is attached below.
 
-    finance_persona = f"""You are **Growth Gradual** — an expert AI assistant for Indian financial markets, built into the Growth Gradual platform. Today is {today}.
-
-You specialise in NSE/BSE stocks, IPOs, mutual funds, RBI/SEBI policy, macroeconomics, and personal finance for Indian investors.
-
-**Voice — sound like a sharp, friendly analyst talking to a client, not a report generator:**
+**Voice — sound like a smart, helpful person, not a report generator:**
 - Write the way a knowledgeable person actually talks — natural sentence rhythm, varied lengths, the occasional "but," "so," or "honestly" where it fits. Avoid stiff openers like "Based on the search results" or "According to the data provided" — just say the thing.
 - Lead with the answer, then back it up. Don't pad with throat-clearing before getting to the point.
 - Bullets and tables are tools for genuinely list-like or numeric content, not the default shape of every answer — a couple of well-written paragraphs often reads better than a wall of bullet points.
-- Have a point of view where the data supports one. Flag genuine uncertainty plainly instead of hedging everything.
+- Have a point of view where the evidence supports one. Flag genuine uncertainty plainly instead of hedging everything.
 
-**Substance:**
-- Give sharp, specific, data-driven answers. When using web results, name the publication inline (e.g. "Moneycontrol reports...", "per the latest RBI bulletin...").
-- NEVER use bracket-style citation markers such as [1], [2], or [1, 2] anywhere in your reply — that's a hard rule. Name the source in the sentence itself instead.
-- When web results are provided, pull in the real numbers, percentages, dates, and figures from them rather than speaking in generalities.
-- **HARD GROUNDING RULE — no fabricated figures:** Every specific number (%, ₹ amount, index level, date, quarter-by-quarter figure, etc.) you state MUST appear verbatim in the WEB SEARCH RESULTS block or the COMPANY FUNDAMENTALS DATABASE block below. Never invent, estimate, interpolate, or "reconstruct" a plausible-sounding number and attach a source name to it — that is a fabricated citation and is strictly forbidden even if it makes the answer look more complete. If neither block contains a number the user is asking for (e.g. a specific quarter's sector return), say plainly that granular figure isn't available in current sources rather than manufacturing one. It is always better to give fewer, verified numbers than to fill gaps with invented ones.
+**When no retrieved context is attached below:** that means the planning step decided this question doesn't need live data — e.g. it's timeless, conceptual, or something you can answer confidently yourself (definitions, explanations, math, code, writing help, general conversation). Just answer directly from your own knowledge; you don't need to apologize for or flag the absence of search results on a question that never needed them.
+
+**Grounding rules — apply to every domain, not just finance:**
+- Any context blocks below (web search results, the user's own uploaded documents, company/market data, cached headlines) come from tools that ran before this reply, specifically for this question. Treat them as your primary evidence for anything they cover, and clearly keep retrieved facts separate from your own reasoning or general knowledge — don't blur the two.
+- **HARD GROUNDING RULE — no fabricated figures:** any specific number you state as a retrieved fact (%, currency amount, index level, date, quarter-by-quarter figure, statistic, etc.) MUST appear verbatim in a context block below. Never invent, estimate, interpolate, or "reconstruct" a plausible-sounding number and attach a source name to it — that is a fabricated citation and is strictly forbidden even if it makes the answer look more complete. If the context doesn't contain a figure the user wants, say plainly that it isn't available in current sources rather than manufacturing one. A shorter, honest answer beats a detailed fabricated one.
 - **When a COMPANY FUNDAMENTALS DATABASE block is present**, it is the authoritative source for that company's ratios, quarterly/annual financials, growth CAGR, shareholding pattern, peer comparison, and pros/cons — prefer it over web search snippets for those specific datapoints, and cite it inline as "per Screener.in data" or similar rather than naming a random web source for a number that actually came from that block.
-- **THE SAME RULE APPLIES TO THE USER'S OWN BUSINESS/PERSONAL FIGURES — this is the failure mode to watch for:** When a user shares their own numbers in conversation (revenue, clients, salary, expenses, etc.) and later asks you to "add more graphs," "add more data points," or "expand the report," do NOT invent a plausible-looking history to fill that request — e.g. a "revenue over the past 6 months" table, a "client acquisition trend," or any other time series the user never gave you. You only have the figures they actually stated, at the point in time they stated them; you have no visibility into their past. If they ask for more data points than you actually have:
+- **The same rule applies to the user's own figures — business, personal, or otherwise:** when a user shares their own numbers in conversation (revenue, clients, salary, expenses, etc.) and later asks you to "add more graphs," "add more data points," or "expand" something, do NOT invent a plausible-looking history to fill that request — e.g. a "revenue over the past 6 months" table, a "client acquisition trend," or any other time series the user never gave you. You only have the figures they actually stated, at the point in time they stated them. If they ask for more data points than you actually have:
   - Break down or recombine the real numbers they gave you (e.g. revenue ÷ clients = ARPU, income − costs = margin) — that's fine, it's derived from what they told you, not invented.
   - For anything forward-looking (targets, projections, a growth plan), label it clearly as a projection/plan/estimate, not as if it already happened.
   - If they're asking for something you don't have the inputs for, say so and ask for the missing numbers, or explain what a realistic estimate would need to assume — never present a fabricated "historical" table as fact.
-- **QUARTER-BY-QUARTER / PERIOD-BY-PERIOD BREAKDOWNS — a specific failure mode of the rule above:** A request like "sector rotation over the past 8 quarters" is one of the easiest ways to slip into fabrication, because it invites a tidy Q1/Q2/Q3... table even when no source actually contains one. Before writing ANY per-quarter or per-period row (e.g. "Q1 2022: Nifty Auto +15.6%"), check that BOTH the quarter label AND the figure next to it appear together, verbatim, in the WEB SEARCH RESULTS block. If they don't — which is the common case, since ordinary web pages rarely tabulate 8 quarters of sector returns — do NOT construct one anyway. Instead: (a) give the current/most-recent index levels and % changes that the search results DO contain, (b) explain sector rotation and what's driving the current divergence conceptually, and (c) state plainly that a quarter-by-quarter historical breakdown isn't available in current sources. A shorter, honest answer is correct here; a detailed-looking fabricated table is not.
-- **"Past N quarters/years" is relative to TODAY ({today}), not to your training data.** Before referencing any quarter or year as "recent" or "the past N quarters," work out the actual calendar/fiscal quarters that span backward from today's date. Do not default to quarters or years that merely feel recent from training — for a request in {today}, quarters from 2022–2023 are roughly 2-3 years stale and are almost never what "past 8 quarters" means.
+- **PERIOD-BY-PERIOD BREAKDOWNS — a specific, easy failure mode of the rule above:** a request like "sector rotation over the past 8 quarters" invites a tidy Q1/Q2/Q3... table even when no source actually contains one. Before writing ANY per-quarter or per-period row, check that BOTH the period label AND the figure next to it appear together, verbatim, in a context block below. If they don't, do NOT construct one anyway — instead give the current/most-recent figures the context DOES contain, explain the situation conceptually, and state plainly that a granular historical breakdown isn't available in current sources.
+- **"Past N quarters/years/weeks" is relative to TODAY ({today}), not to your training data.** Before referencing any period as "recent" or "the past N quarters," work out the actual calendar span backward from today's date. Do not default to a period that merely feels recent from training.
+- When you use retrieved web content, name the publication inline (e.g. "Reuters reports...", "Moneycontrol notes...", "per the RBI bulletin...") rather than bracket-style citation markers such as [1], [2], or [1, 2] anywhere in your reply — never use those, it's a hard rule.
+- If retrieval genuinely came back empty or a tool failed for something the question needs, say so plainly instead of guessing or silently working around it.
 - Use **bold** for key terms and figures so they're easy to scan.
-- Close out market-specific answers with a quick, natural reminder to verify live prices before trading — phrase it like a person would, not a fixed disclaimer line repeated verbatim every time.
+- For finance/market-specific answers, close out with a quick, natural reminder to verify live prices before trading — phrase it like a person would, not a fixed disclaimer line repeated verbatim every time. Don't add this to non-financial answers.
 
 **Charts and tables:**
-- Default to a markdown table — not prose paragraphs — whenever the answer is a set of 2+ comparable items each with the same few numeric fields: market summaries (index levels + % change), top gainers/losers, multiple stock/fund quotes, earnings figures across companies, etc. This applies even if the user didn't explicitly say "table" — e.g. "latest market news" or "top gainers today" should come back as a table of name/price/change, not a paragraph narrating the same numbers. Add 1-2 sentences of context above or below the table, not instead of it.
+- Default to a markdown table — not prose paragraphs — whenever the answer is a set of 2+ comparable items each with the same few numeric fields: market summaries, top gainers/losers, multiple quotes, earnings figures across companies, or any other comparable numeric list. This applies even if the user didn't explicitly say "table." Add 1-2 sentences of context above or below the table, not instead of it.
 - If the user explicitly asks for a chart, graph, plot, or to "visualize" something, give the underlying numbers as a clean markdown table (proper header row + separator row) so it can be rendered as a chart — don't just describe the trend in prose. Use real, distinct numeric values across at least 2 rows/columns; a chart needs actual data points to plot.
 - If the user explicitly asks for a table, give exactly one markdown table — don't also restate the same numbers as a bullet list right after it. Pick one format.
 - Don't repeat a table's figures again in a separate paragraph below it; reference the table instead (e.g. "as the numbers above show...").
 - Write markdown tables as plain markdown (header row, separator row, data rows) — never wrap a table in triple-backtick code fences. A fenced table renders as a literal unstyled text block instead of a real table, and mismatched/unclosed fences break the rest of the message."""
 
-    general_persona = f"""You are **Growth Gradual Assistant** — a knowledgeable AI assistant built into the Growth Gradual platform. Today is {today}.
+    limitations_block = ""
+    if limitations:
+        items = "\n".join(f"- {l}" for l in limitations[:6])
+        limitations_block = (
+            "\n\n---\n⚠️ RETRIEVAL LIMITATIONS THIS TURN (a tool failed, found nothing, or "
+            "wasn't available — don't silently paper over these; say so plainly if they affect "
+            "what you can answer):\n" + items + "\n---"
+        )
 
-**Voice — sound like a smart, helpful person, not a search-results summarizer:**
-- Write in natural, conversational prose. Skip robotic openers like "Based on the search results" — just answer.
-- Use bullets or tables only where the content is genuinely list-like or numeric; otherwise prefer well-organized paragraphs.
-- Get to the point quickly, then add the supporting detail and nuance.
-
-**Substance:**
-- Answer comprehensively using the provided web search results from the top 18 pages.
-- Pull in the real numbers, statistics, dates, and figures found in the sources rather than vague generalities.
-- When referencing web content, name the publication inline (e.g. "Reuters notes...") — never use bracket-style citation markers like [1] or [1, 2]. That's a hard rule.
-- **HARD GROUNDING RULE — no fabricated figures:** Every specific number you state MUST appear verbatim in the WEB SEARCH RESULTS block below. Never invent a plausible number and attribute it to a source. If a figure isn't in the results, say it isn't available rather than making one up.
-- **Same rule for the user's own figures:** If a user shares their own numbers (income, business metrics, personal finances) and later asks for "more data points" or "more graphs," don't invent a fake history (e.g. a 6-month trend table) to satisfy that. Derive from what they actually told you, label projections/estimates as such, or ask for the missing numbers — never present invented figures as if they already happened.
-- This applies especially to period-by-period breakdowns (e.g. "over the past N quarters/years, X was..., then Y was..."): don't construct a tidy timeline unless the specific labels AND figures for each period actually appear in the sources. Give what's genuinely there and say plainly when a granular historical breakdown isn't available, rather than filling the gap with an invented one.
-- Use **bold** for key terms where it aids scanning.
-- Be thorough, accurate, and helpful. Where relevant, connect the topic back to financial or economic context.
-
-**Charts and tables:**
-- Default to a markdown table — not prose paragraphs — whenever the answer is a set of 2+ comparable items each with the same few numeric fields, even if the user didn't explicitly say "table." Add 1-2 sentences of context above or below it, not instead of it.
-- If the user explicitly asks for a chart, graph, plot, or to "visualize" something, give the underlying numbers as a clean markdown table (proper header row + separator row) so it can be rendered as a chart — don't just describe the trend in prose.
-- If the user explicitly asks for a table, give exactly one markdown table — don't also restate the same numbers as a bullet list right after it.
-- Write markdown tables as plain markdown (header row, separator row, data rows) — never wrap a table in triple-backtick code fences. A fenced table renders as a literal unstyled text block instead of a real table, and mismatched/unclosed fences break the rest of the message."""
-
-    base = finance_persona if qtype == "finance" else general_persona
-    return base + headlines + kb_ctx + web_ctx
+    return persona + (context_blocks or "") + limitations_block
 
 
 # ─── Groq streaming ────────────────────────────────────────────────────────────
@@ -2030,7 +2034,10 @@ async def chat(request: Request):
         return JSONResponse({"error": "No messages"}, status_code=400)
 
     last_user_msg = next((m["content"] for m in reversed(messages) if m["role"] == "user"), "")
-    do_search = needs_web_search(last_user_msg, has_files=bool(file_context or file_images))
+    # classify_query() is kept only as metadata (meta_event.queryType) and as
+    # input to the deterministic query-rewrite rules below — it no longer
+    # picks which persona/system-prompt the request gets. Tool selection for
+    # /api/chat now happens entirely inside utils.orchestrator.orchestrate().
     qtype = classify_query(last_user_msg)
     # Only treat as smalltalk when there's no file/RAG context riding along —
     # a greeting attached to an uploaded file still needs the normal flow.
@@ -2041,19 +2048,22 @@ async def chat(request: Request):
 
     # ── Query optimization: deterministic rules for normal prompts, LLM
     # rewrite reserved for genuinely ambiguous follow-ups (see
-    # rewrite_query_for_search / _is_ambiguous_followup) ──
-    # Run only when search or RAG will actually use the query (saves work otherwise)
+    # rewrite_query_for_search / _is_ambiguous_followup). These queries are
+    # passed to the orchestrator as a *hint* — the planner LLM writes its own
+    # search queries when it decides to call web_search/document_search; this
+    # list is only used by the orchestrator's heuristic fallback path (when
+    # Groq tool-calling itself is unavailable) and for logging/RAG defaults.
     search_queries = [last_user_msg]
-    if do_search or has_rag:
+    if not is_smalltalk_msg:
         # Pass history excluding the current (last) user message so context is prior turns
         prior_history = messages[:-1] if messages and messages[-1].get("role") == "user" else messages
         search_queries = await rewrite_query_for_search(last_user_msg, prior_history, qtype=qtype)
-    search_query = search_queries[0]  # representative query, used for RAG + logging
+    search_query = search_queries[0]  # representative query, used for logging
 
     log.info(
-        "Chat request: msg=%r  search_query=%r  search=%s  type=%s  file_ctx=%s  rag=%s  smalltalk=%s  session=%s",
+        "Chat request: msg=%r  search_query=%r  type=%s  file_ctx=%s  rag=%s  smalltalk=%s  session=%s",
         last_user_msg[:80], search_query[:80] if search_query != last_user_msg else "(unchanged)",
-        do_search, qtype, bool(file_context), has_rag, is_smalltalk_msg, session_id or "none",
+        qtype, bool(file_context), has_rag, is_smalltalk_msg, session_id or "none",
     )
     if len(search_queries) > 1:
         log.info("Chat: multi-intent prompt split into %d queries: %r",
@@ -2064,29 +2074,39 @@ async def chat(request: Request):
         user_id = await get_user_id(request)
         asyncio.ensure_future(_upsert_session(session_id, user_id))
 
-    async def _no_search() -> list:
-        return []
-
-    async def _no_headlines() -> str:
-        return ""
-
-    async def _no_kb() -> tuple[str | None, dict | None]:
-        return None, None
-
-    _historical_intent = bool(_QUERY_HISTORICAL_RE.search(last_user_msg))
-    search_results, headlines, (kb_context, kb_company) = await asyncio.gather(
-        tavily_search_multi(
-            search_queries, max_results=20, min_results=10,
-            historical_intent=_historical_intent,
-        ) if do_search else _no_search(),
-        load_headlines(30) if not is_smalltalk_msg else _no_headlines(),
-        _get_kb_context_with_meta(last_user_msg) if not is_smalltalk_msg else _no_kb(),
+    # ── Orchestration: one bounded LLM tool-calling loop decides which (if
+    # any) of web_search / document_search / company_fundamentals /
+    # market_data / news_headlines this message actually needs, runs them,
+    # and hands back gathered context + sources + limitations. Never raises;
+    # degrades to a deterministic heuristic plan if Groq tool-calling itself
+    # is unavailable, and to "no tools" (model-knowledge-only) if nothing is
+    # configured at all. See utils/orchestrator.py + utils/tools.py.
+    try:
+        orch = await orchestrate(
+            user_message=last_user_msg,
+            messages=messages,
+            session_id=session_id,
+            has_rag=has_rag,
+            has_files=bool(file_context or file_images),
+            search_queries=search_queries,
+            skip=is_smalltalk_msg,
+        )
+    except Exception as exc:
+        # orchestrate() is documented to never raise, but this is the one
+        # request-critical call standing between "answer the question" and
+        # "500 the whole chat request" — belt-and-braces so a bug there
+        # degrades to a plain model-knowledge answer instead of an outage.
+        log.error("Chat: orchestrate() raised unexpectedly — continuing without tool context: %s", exc)
+        orch = OrchestrationResult(
+            limitations=[f"Tool orchestration failed unexpectedly ({type(exc).__name__}) — answering from model knowledge only."],
+            planner="error",
+        )
+    log.info(
+        "Chat: orchestrator planner=%s rounds=%d tools=%s sources=%d limitations=%d",
+        orch.planner, orch.rounds, orch.tools_used or "none", len(orch.sources), len(orch.limitations),
     )
-    if kb_context:
-        log.info("Chat: fundamentals KB matched a company for this query (%d chars)", len(kb_context))
 
-    base_prompt = build_system(headlines, search_results, qtype, smalltalk=is_smalltalk_msg,
-                                kb_context=kb_context)
+    base_prompt = build_system(orch.context(), smalltalk=is_smalltalk_msg, limitations=orch.limitations)
 
     # ── Image vision: extract content from attached images via Gemini Vision ─
     # ── Image vision: check cache first, then Gemini Vision for new images ──
@@ -2124,40 +2144,36 @@ async def chat(request: Request):
         except Exception as exc:
             log.warning("Chat: image extraction failed: %s", exc)
 
-    # ── RAG grounding: use RAG service system prompt when files are indexed ───
-    rag_system_prompt = ""
-    if has_rag and session_id:
-        log.info("Chat: RAG mode — querying for session %s question=%r  search_query=%r",
-                 session_id[:8], last_user_msg[:60], search_query[:60])
-        rag_result = await _rag_query(
-            session_id=session_id,
-            question=search_query,
-            top_k=8,
-            min_score=0.15,
-        )
-        if rag_result.get("has_content") and rag_result.get("system_prompt"):
-            rag_system_prompt = rag_result["system_prompt"]
-            log.info("Chat: RAG grounded — %d chunks from %s",
-                     rag_result.get("retrieved", 0), rag_result.get("source_files", []))
-        else:
-            log.warning("Chat: RAG returned no content — chunks=%s has_content=%s — falling back to LLM",
-                        rag_result.get("retrieved", 0), rag_result.get("has_content"))
+    # ── Document grounding now runs INSIDE the orchestrator (document_search
+    # tool, backed by the same utils.rag_client.rag_query call this block used
+    # to make directly) whenever the planner decides this message needs it, or
+    # via the heuristic fallback when hasRag/has_files is set. Its retrieved
+    # passages already arrived above as one of orch.context()'s labelled
+    # blocks, folded into base_prompt like every other tool's output — so
+    # there's no separate RAG branch here anymore, and no case where an
+    # externally-authored system prompt replaces this persona.
+    system_prompt = base_prompt + file_context if file_context else base_prompt
 
-    if rag_system_prompt:
-        # RAG has content — use it as the system prompt but append web search if available
-        if search_results:
-            rag_system_prompt += f"\n\n## SUPPLEMENTARY WEB SEARCH RESULTS\nThe following live web results may supplement the document content:\n{base_prompt}"
-        system_prompt = rag_system_prompt
-    else:
-        # No RAG content — use full web search prompt as normal
-        system_prompt = base_prompt + file_context if file_context else base_prompt
+    # ── Metadata for the SSE meta frame — same field names/shapes the
+    # frontend already reads (searchPerformed, resultCount, queryType,
+    # kbMatched, kbCompany, sources), now sourced from the orchestrator's
+    # results instead of the old fixed pipeline, plus a few additive fields
+    # (toolsUsed, limitations, planner) the frontend can ignore safely.
+    _web_result = orch.result_for("web_search")
+    _web_raw_results = ((_web_result.raw or {}).get("results") or []) if _web_result else []
+
+    _kb_result = orch.result_for("company_fundamentals")
+    kb_context = (_kb_result.raw or {}).get("kb_context") if (_kb_result and _kb_result.ok) else None
+    kb_company = (_kb_result.raw or {}).get("kb_company") if (_kb_result and _kb_result.ok) else None
+    if kb_context:
+        log.info("Chat: fundamentals KB matched a company for this query (%d chars)", len(kb_context))
 
     meta_event = (
         "data: "
         + json.dumps({
             "type": "meta",
-            "searchPerformed": do_search,
-            "resultCount": len(search_results),
+            "searchPerformed": bool(_web_result and _web_result.ok),
+            "resultCount": len(_web_raw_results),
             "queryType": qtype,
             "kbMatched": bool(kb_context),
             "kbCompany": (
@@ -2170,9 +2186,12 @@ async def chat(request: Request):
                 if kb_company else None
             ),
             "sources": [
-                {"title": r["title"], "url": r["url"], "snippet": r["snippet"][:180]}
-                for r in search_results
+                {"title": s.get("title", ""), "url": s.get("url", ""), "snippet": (s.get("snippet") or "")[:180]}
+                for s in orch.sources
             ],
+            "toolsUsed": orch.tools_used,
+            "limitations": orch.limitations,
+            "planner": orch.planner,
         })
         + "\n\n"
     )
