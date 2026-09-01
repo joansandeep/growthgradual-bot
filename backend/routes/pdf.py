@@ -2136,7 +2136,40 @@ def build_pdf(report: str, title: str, question: str, summary: str,
     def _line_sig(text: str) -> str:
         return re.sub(r"\s+", " ", text.lower().strip(" .,-—:"))
 
-    for tok in tokens:
+    def _trailing_min_h(next_tok: dict | None) -> float:
+        """Estimate the minimum height the block right after a sub-heading
+        needs, so the heading's page-break check can require both the
+        banner AND that trailing content to fit together. Without this, a
+        heading can pass a flat 'is there roughly enough room?' check, get
+        drawn, and then the very next block (most often a table) fails its
+        own space check and jumps to the next page — leaving the heading
+        stranded alone with its content starting on the following page.
+        This mirrors the atomic whole-card need() check chart cards already
+        use, just with a cheap estimate instead of exact layout, since the
+        real column widths for a table aren't computed until it renders.
+        """
+        if not next_tok:
+            return 0.0
+        ntp = next_tok.get("type")
+        if ntp == "table":
+            rows = next_tok.get("rows") or []
+            if not rows:
+                return 0.0
+            # Header row (7.5pt, essentially always 1 line) + worst-case
+            # first data row wrapped to 3 lines (LINE_H=11, ROW_H formula
+            # from the table renderer below: max(15, n_lines*11+6)).
+            return 17 + 39
+        if ntp in ("chart_placeholder", "file_img_placeholder", "web_img_placeholder",
+                   "h2", "h3"):
+            # These all run their own atomic need() check before drawing
+            # anything, so they can never be split from a heading above
+            # them by this same failure mode — no extra reservation needed.
+            return 0.0
+        if ntp in ("bullet", "numbered", "para", "h4", "quote"):
+            return 30.0   # room for at least one wrapped line
+        return 30.0
+
+    for _tidx, tok in enumerate(tokens):
         tp = tok["type"]
 
         if _past_data_sources[0]:
@@ -2381,7 +2414,7 @@ def build_pdf(report: str, title: str, question: str, summary: str,
                     and _stat_pool and _stat_strip_count[0] < _STAT_STRIP_MAX):
                 _take = _pick_relevant_stats(_stat_pool, _sec_text_buf[0])
                 if _take:
-                    stat_strip(_take, f"{_truncate_words(current_section[0], 44)} — Key Metrics", strip_color=_prev_accent)
+                    stat_strip(_take, f"{current_section[0][:44]} — Key Metrics", strip_color=_prev_accent)
                     _stat_strip_count[0] += 1
             elif ("conclusion" in text_display.lower() and _stat_pool
                     and _stat_strip_count[0] < _STAT_STRIP_MAX):
@@ -2396,28 +2429,20 @@ def build_pdf(report: str, title: str, question: str, summary: str,
             _sec_text_buf[0] = ""
 
             current_section[0] = text
-            # Section headings need enough room below them that they never
-            # look "orphaned" — a title sitting right above the page's
-            # footer with no body text under it. But unconditionally forcing
-            # every heading onto a brand-new page (the previous rule) had
-            # the opposite problem: whenever a section's tail end was short
-            # (e.g. just a pull-quote + a small stat strip, as happens right
-            # after a data-rich section), that short tail would land alone
-            # near the top of a page and the NEXT heading would still jump
-            # to a fresh page regardless — stranding the tail content with a
-            # large empty gap beneath it and wasting most of a page.
-            #
-            # Instead, only force a page break when there genuinely isn't
-            # comfortable room left for the heading plus a meaningful chunk
-            # of body copy beneath it. Otherwise the next section simply
-            # continues to flow on the current page, so a short leftover
-            # tail and the next heading share the page instead of each
-            # getting their own mostly-blank one.
-            MIN_ROOM_FOR_NEW_SECTION = 300  # heading block + a few body lines
-            if y[0] - MIN_ROOM_FOR_NEW_SECTION < BODY_BOT:
+            # Every major (H2) section heading now ALWAYS starts at the very
+            # top of a fresh page — never mid-page, never near the bottom.
+            # A soft "is there enough room?" check (the old need(190, ...))
+            # still let a heading land mid-page whenever ~190pt happened to
+            # be free, which is exactly what produced headings sitting in
+            # the middle of a page with unrelated content above them, or
+            # (when the guess was too small) squeezed near the bottom with
+            # its body pushed to the next page. Forcing an unconditional
+            # page break here — unless we're already at the top of a blank
+            # page, i.e. this is the very first section right after the
+            # intro page — guarantees "SECTION 0N" + its title is always the
+            # first thing a reader sees on its page.
+            if abs(y[0] - BODY_TOP) > 0.5:
                 c.showPage(); hf(text); y[0] = BODY_TOP
-            else:
-                need(28, text)  # still guard the heading block itself
             nl(20)   # visible gap before section heading block
             col = accent()
             # Gold "SECTION 0N" overline, letter-spaced small caps
@@ -2454,9 +2479,15 @@ def build_pdf(report: str, title: str, question: str, summary: str,
         # ── H3 — sub-section ─────────────────────────────────────────────────
         if tp == "h3":
             text = _strip_inline(tok["text"])
-            # Was need(80, ...) — same "orphaned heading" risk as h2 above,
-            # just smaller scale: bump the guaranteed post-banner slack.
-            need(120, current_section[0])
+            # The banner itself costs nl(10) + nl(28) = 38pt. Older code
+            # reserved a flat 120pt (i.e. ~82pt of guessed slack for whatever
+            # comes next) — enough for most cases but not for a table whose
+            # header + first row wrap to multiple lines, which is exactly
+            # what produced this banner sitting alone at the bottom of a
+            # page with the table it introduces starting fresh on the next
+            # page. Look ahead at the actual next block instead of guessing.
+            _next_tok = tokens[_tidx + 1] if _tidx + 1 < len(tokens) else None
+            need(38 + _trailing_min_h(_next_tok), current_section[0])
             nl(10)   # visible gap before sub-section
             # Section-accent-tinted background (was a fixed mid-navy block for
             # every section) — each section now reads as visually its own.
@@ -2471,7 +2502,11 @@ def build_pdf(report: str, title: str, question: str, summary: str,
         # ── H4 ───────────────────────────────────────────────────────────────
         if tp == "h4":
             text = _strip_inline(tok["text"])
-            need(20, current_section[0])
+            # Same orphaned-heading fix as h3 above: require the heading's
+            # own height AND a minimum for whatever follows it, in one
+            # atomic check, instead of just this heading's own 20pt.
+            _next_tok = tokens[_tidx + 1] if _tidx + 1 < len(tokens) else None
+            need(20 + _trailing_min_h(_next_tok), current_section[0])
             nl(6)
             c.setFillColorRGB(0.22, 0.28, 0.52); c.setFont("Helvetica-Bold", 10)
             c.drawString(MARGIN, y[0], text[:90])
