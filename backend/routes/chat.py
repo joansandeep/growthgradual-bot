@@ -32,7 +32,7 @@ from datetime import timezone as _tz
 from email.utils import parsedate_to_datetime as _parse_rfc2822
 from utils.rag_client import rag_query as _rag_query
 from utils.auth import get_user_id
-from utils.screener_kb import get_company_context as _get_kb_context
+from utils.screener_kb import get_company_context_with_meta as _get_kb_context_with_meta
 
 # ─── Supabase persistence ──────────────────────────────────────────────────────
 _SUPABASE_URL  = os.environ.get("SUPABASE_URL", "").rstrip("/")
@@ -2070,17 +2070,17 @@ async def chat(request: Request):
     async def _no_headlines() -> str:
         return ""
 
-    async def _no_kb() -> str | None:
-        return None
+    async def _no_kb() -> tuple[str | None, dict | None]:
+        return None, None
 
     _historical_intent = bool(_QUERY_HISTORICAL_RE.search(last_user_msg))
-    search_results, headlines, kb_context = await asyncio.gather(
+    search_results, headlines, (kb_context, kb_company) = await asyncio.gather(
         tavily_search_multi(
             search_queries, max_results=20, min_results=10,
             historical_intent=_historical_intent,
         ) if do_search else _no_search(),
         load_headlines(30) if not is_smalltalk_msg else _no_headlines(),
-        _get_kb_context(last_user_msg) if not is_smalltalk_msg else _no_kb(),
+        _get_kb_context_with_meta(last_user_msg) if not is_smalltalk_msg else _no_kb(),
     )
     if kb_context:
         log.info("Chat: fundamentals KB matched a company for this query (%d chars)", len(kb_context))
@@ -2160,6 +2160,15 @@ async def chat(request: Request):
             "resultCount": len(search_results),
             "queryType": qtype,
             "kbMatched": bool(kb_context),
+            "kbCompany": (
+                {
+                    "id": kb_company["id"],
+                    "ticker": kb_company["ticker"],
+                    "name": kb_company["name"],
+                    "downloadUrl": f"/api/stocks/{kb_company['id']}/export",
+                }
+                if kb_company else None
+            ),
             "sources": [
                 {"title": r["title"], "url": r["url"], "snippet": r["snippet"][:180]}
                 for r in search_results

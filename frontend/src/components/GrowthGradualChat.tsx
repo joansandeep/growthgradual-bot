@@ -19,9 +19,11 @@ interface DatawrapperInfo { id: string; embedUrl: string; publicUrl: string; }
 interface ChartSpec { type: 'bar' | 'line' | 'pie' | 'table'; title: string; series?: ChartSeries[]; unit?: string; columns?: string[]; rows?: string[][]; datawrapper?: DatawrapperInfo; }
 interface WebImage { url: string; caption?: string; }
 interface ReportData { report: string; title?: string; charts: ChartSpec[]; images?: WebImage[]; keyStats: {label:string;value:string;change?:string}[]; summary: string; fileImages?: {name:string;mimeType:string;data:string}[]; sourceDocuments?: {name:string;text:string;file_type?:string}[]; recommendedFormat?: 'pdf' | 'html'; }
+interface KbCompany { id: number; ticker: string; name: string; downloadUrl: string; }
 interface Message {
   id: string; role: 'user' | 'assistant'; text: string; ts: number;
   sources?: Source[]; searchPerformed?: boolean; queryType?: string;
+  kbCompany?: KbCompany | null;
   reportData?: ReportData; reportLoading?: boolean; reportError?: string;
   inlineCharts?: ChartSpec[]; wantsVisual?: boolean;
   // Report is no longer auto-generated — these carry what's needed so the
@@ -1153,7 +1155,7 @@ function buildAttachmentContext(files: AttachedFile[], pasted: PastedText[]): st
   return `\n\n---\n📎 USER-ATTACHED CONTEXT:\n${parts.join('\n\n')}\n---\n\nUse the attached content above when answering.`;
 }
 
-interface StreamMeta { type:'meta'; searchPerformed:boolean; resultCount:number; queryType:string; sources:Source[]; }
+interface StreamMeta { type:'meta'; searchPerformed:boolean; resultCount:number; queryType:string; sources:Source[]; kbCompany?: KbCompany | null; }
 
 /** Current Supabase access token, if logged in — attached so the backend can
  *  tie this session's chat history to the user's account. */
@@ -1699,9 +1701,11 @@ export default function GrowthGradualChat() {
             meta.sources?.map((s: { url?: string }) => s.url) ?? [],
           );
         }
-        // Store metadata on message for future reference — intentionally NOT rendered in JSX
+        // Store metadata on message. kbCompany IS rendered — it's the
+        // downloadable Excel "source of truth" chip for stock answers
+        // pulled from the screener fundamentals KB (companies/ratios/financials).
         setMessages(prev => prev.map(m => m.id === botMsg.id
-          ? { ...m, searchPerformed: meta.searchPerformed, sources: meta.sources, queryType: meta.queryType } : m));
+          ? { ...m, searchPerformed: meta.searchPerformed, sources: meta.sources, queryType: meta.queryType, kbCompany: meta.kbCompany } : m));
       }, fileCtx, getOrCreateSessionId(), ragIndexed, chatFileImages)) {
         if (!metaDone) { setSearching(false); metaDone = true; }
         acc += chunk;
@@ -2986,6 +2990,27 @@ export default function GrowthGradualChat() {
                               );
                             }}
                           />
+                        )}
+                        {/* Source-of-truth download — shown whenever this answer used the
+                            screener fundamentals KB (companies/ratios/financials tables) */}
+                        {!isUser && msg.kbCompany && (
+                          <div style={{ marginTop: 8 }}>
+                            <a
+                              href={msg.kbCompany.downloadUrl}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              download
+                              style={{
+                                display: 'inline-flex', alignItems: 'center', gap: 6,
+                                fontSize: 11.5, color: '#1a1f4e', fontFamily: 'DM Sans,sans-serif',
+                                textDecoration: 'none', padding: '5px 10px', borderRadius: 8,
+                                border: '1px solid #e2e5f0', background: '#f8f9fc',
+                              }}
+                            >
+                              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+                              Download source data — {msg.kbCompany.ticker} fundamentals (.xlsx)
+                            </a>
+                          </div>
                         )}
                         {/* Follow-up question chips */}
                         {!isUser && isLast && !streaming && msg.followUpQuestions && msg.followUpQuestions.length > 0 && (

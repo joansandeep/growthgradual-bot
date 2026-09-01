@@ -515,19 +515,158 @@ async def get_company_context(user_message: str) -> Optional[str]:
     """Resolve a company from free text and return a formatted fundamentals
     context block, or None if the KB isn't configured, no company can be
     confidently resolved, or the lookup fails for any reason."""
+    ctx, _meta = await get_company_context_with_meta(user_message)
+    return ctx
+
+
+async def get_company_context_with_meta(user_message: str) -> tuple[Optional[str], Optional[dict]]:
+    """Same resolution as get_company_context(), but also returns a small
+    {id, ticker, name} dict identifying the matched company so callers
+    (routes/chat.py) can point the user at a downloadable source-of-truth
+    export (see build_snapshot_workbook / GET /api/stocks/{id}/export.xlsx)
+    for the exact data used to answer. Returns (None, None) on no match."""
     if not kb_configured() or not user_message:
-        return None
+        return None, None
     try:
         async with httpx.AsyncClient() as client:
             await _ensure_index(client)
             match = _resolve_from_index(user_message)
             if not match:
-                return None
+                return None, None
             snap = await _fetch_snapshot(client, match)
-            return format_snapshot_as_context(snap)
+            ctx = format_snapshot_as_context(snap)
+            c = snap.get("company") or match
+            meta = {
+                "id": match["id"],
+                "ticker": c.get("ticker") or match.get("ticker"),
+                "name": c.get("name") or match.get("name"),
+            }
+            return ctx, meta
     except Exception as exc:
-        log.warning("screener_kb: get_company_context failed: %s", exc)
-        return None
+        log.warning("screener_kb: get_company_context_with_meta failed: %s", exc)
+        return None, None
+
+
+# ─── Excel export — the exact KB data as a downloadable "source of truth" ───
+# Rebuilds a workbook shaped like the original Screener.in export (one sheet
+# per table) directly from what's stored in Postgres, so a user can verify
+# any number the chatbot quoted against the underlying rows.
+
+def build_snapshot_workbook(snap: dict) -> bytes:
+    from io import BytesIO
+    from openpyxl import Workbook
+
+    c = snap.get("company") or {}
+    wb = Workbook()
+    _first_sheet_used = {"done": False}
+
+    def sheet(name):
+        if not _first_sheet_used["done"]:
+            _first_sheet_used["done"] = True
+            ws = wb.active
+            ws.title = name[:31]
+            return ws
+        return wb.create_sheet(name[:31])
+
+    # Company_Info
+    ws = sheet("Company_Info")
+    info_fields = [
+        ("Ticker", c.get("ticker")), ("Company Name", c.get("name")),
+        ("Company URL", c.get("company_url")), ("Website", c.get("website")),
+        ("Consolidated", c.get("consolidated")), ("Current Price", c.get("current_price")),
+        ("Price Change %", c.get("price_change_pct")), ("Price Date", c.get("price_date_label")),
+        ("Market Cap", c.get("market_cap")), ("Stock P/E", c.get("pe_ratio")),
+    ]
+    ws.append([f for f, _ in info_fields])
+    ws.append([v for _, v in info_fields])
+
+    # Top_Ratios
+    ws = sheet("Top_Ratios")
+    ws.append(["Metric", "Value", "Numeric Value"])
+    for r in snap.get("ratios") or []:
+        ws.append([r.get("metric"), r.get("raw_value"), r.get("value")])
+
+    # Financials — one sheet per statement, wide (line item x period)
+    fin = snap.get("financials") or []
+    by_statement: dict[str, dict[str, dict[str, str]]] = {}
+    periods_by_statement: dict[str, list[str]] = {}
+    for row in fin:
+        st, period, item = row.get("statement"), row.get("period"), row.get("line_item")
+        if not st or not item:
+            continue
+        by_statement.setdefault(st, {}).setdefault(item, {})[period] = row.get("raw_value") or row.get("value")
+        plist = periods_by_statement.setdefault(st, [])
+        if period not in plist:
+            plist.append(period)
+    sheet_name_for = {
+        "Quarterly": "Quarterly Results", "Annual P&L": "Profit & Loss_1",
+        "Balance Sheet": "Balance Sheet", "Cash Flow": "Cash Flow",
+        "Annual Ratios": "Ratios",
+    }
+    for statement, items in by_statement.items():
+        periods = sorted(periods_by_statement.get(statement, []))
+        ws = sheet(sheet_name_for.get(statement, statement)[:31])
+        ws.append(["Line Item"] + periods)
+        for item, values in items.items():
+            ws.append([item] + [values.get(p) for p in periods])
+
+    # Growth_CAGR
+    ws = sheet("Growth_CAGR")
+    ws.append(["Metric", "Period", "Value", "Numeric Value"])
+    for g in snap.get("growth_cagr") or []:
+        ws.append([g.get("metric"), g.get("period"), g.get("raw_value"), g.get("value")])
+
+    # Shareholding — split by frequency, wide (holder x period)
+    sh = snap.get("shareholding") or []
+    for freq, sheet_name in (("Quarterly", "Shareholding_Quarterly"), ("Yearly", "Shareholding_Yearly")):
+        rows = [r for r in sh if r.get("frequency") == freq]
+        if not rows:
+            continue
+        by_holder: dict[str, dict[str, str]] = {}
+        periods: list[str] = []
+        for r in rows:
+            by_holder.setdefault(r["holder_type"], {})[r["period"]] = r.get("raw_value") or r.get("value")
+            if r["period"] not in periods:
+                periods.append(r["period"])
+        periods = sorted(periods)
+        ws = sheet(sheet_name)
+        ws.append(["Holder"] + periods)
+        for holder, values in by_holder.items():
+            ws.append([holder] + [values.get(p) for p in periods])
+
+    # Peers
+    peers = snap.get("peers") or []
+    if peers:
+        ws = sheet("Peers")
+        cols: list[str] = []
+        for p in peers:
+            for k in (p.get("metrics") or {}).keys():
+                if k not in cols:
+                    cols.append(k)
+        ws.append(["Name"] + cols)
+        for p in peers:
+            metrics = p.get("metrics") or {}
+            ws.append([p.get("peer_name")] + [metrics.get(k) for k in cols])
+
+    # Pros_Cons
+    pc = snap.get("pros_cons") or []
+    if pc:
+        ws = sheet("Pros_Cons")
+        ws.append(["Type", "Point"])
+        for p in pc:
+            ws.append([p.get("kind"), p.get("point")])
+
+    # Documents
+    docs = snap.get("documents") or []
+    if docs:
+        ws = sheet("Documents")
+        ws.append(["Document", "URL"])
+        for d in docs:
+            ws.append([d.get("title"), d.get("url")])
+
+    buf = BytesIO()
+    wb.save(buf)
+    return buf.getvalue()
 
 
 async def search_companies(query: str, limit: int = 10) -> list[dict]:
