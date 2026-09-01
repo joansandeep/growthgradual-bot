@@ -2900,3 +2900,82 @@ async def generate_pdf(request: Request):
             "Cache-Control": "no-store",
         },
     )
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# POST /api/chat/report/pdf/enhanced  — Enhanced Platypus-based PDF generation
+# With KeepTogether, better page breaks, improved charts
+# ─────────────────────────────────────────────────────────────────────────────
+@router.post("/report/pdf/enhanced")
+async def generate_pdf_enhanced(request: Request):
+    """
+    Generate an enhanced PDF report using Platypus (flow-based layout).
+    
+    Improvements over Canvas-based approach:
+      • Automatic page breaks with KeepTogether to prevent orphaned headers
+      • Better typography and spacing
+      • Improved matplotlib-based charts with clear axis labels
+      • Professional color theme support
+      • Cleaner section hierarchy
+    
+    Body: { report, title, summary, charts, keyStats, question, theme }
+    """
+    t0 = time.perf_counter()
+    
+    try:
+        body = await request.json()
+    except Exception as e:
+        return JSONResponse({"error": f"Invalid JSON: {e}"}, status_code=400)
+    
+    report = body.get("report", "").strip()
+    title = body.get("title", "Market Intelligence Report").strip()
+    summary = body.get("summary", "").strip()
+    question = body.get("question", "").strip()
+    key_stats = body.get("keyStats", [])
+    charts = body.get("charts", [])
+    theme = body.get("theme")
+    logo_b64 = body.get("logo", "")
+    
+    if not report:
+        return JSONResponse({"error": "report field is required"}, status_code=400)
+    
+    # Import enhanced PDF generator
+    try:
+        from routes.pdf_enhanced import build_pdf_enhanced
+    except ImportError as e:
+        log.error("pdf_enhanced import failed: %s", e)
+        return JSONResponse(
+            {"error": "Enhanced PDF generator unavailable"},
+            status_code=503
+        )
+    
+    try:
+        pdf_bytes = build_pdf_enhanced(
+            report=report,
+            title=title,
+            summary=summary,
+            question=question,
+            key_stats=key_stats,
+            charts=charts,
+            theme=theme,
+            logo_b64=logo_b64
+        )
+    except Exception as e:
+        log.error("pdf_enhanced generation failed: %s", e)
+        return JSONResponse(
+            {"error": f"Failed to generate enhanced PDF: {e}"},
+            status_code=500
+        )
+    
+    elapsed = (time.perf_counter() - t0) * 1000
+    log.info("Enhanced PDF: done — %.1f KB in %.0fms", len(pdf_bytes) / 1024, elapsed)
+    
+    date_filename = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    return Response(
+        content=pdf_bytes,
+        media_type="application/pdf",
+        headers={
+            "Content-Disposition": f'attachment; filename="growth-gradual-report-enhanced-{date_filename}.pdf"',
+            "Cache-Control": "no-store",
+        },
+    )
