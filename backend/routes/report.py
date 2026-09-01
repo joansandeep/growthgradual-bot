@@ -710,6 +710,17 @@ For a grounded research report, the anchors are:
      nothing more; raw URLs never appear anywhere in the report, in this table or elsewhere.
      This is the ONLY sources listing — no second copy anywhere else in the report.
      Omit this section entirely rather than list a source that wasn't actually used.
+     HARD RULE — every "Publication" name in this table MUST be copied from the actual title/
+     domain of one of the sources you were handed in this request (the "- **<title>** / Source:
+     <url>" blocks above). Do NOT write in a well-known finance outlet (Reuters, Bloomberg,
+     Yahoo Finance, Screener.in, Moneycontrol, etc.) from memory just because it sounds plausible
+     for this kind of report — if it isn't one of the sources actually provided to you this turn, it
+     does not go in the table, full stop. A dead giveaway of a fabricated table is one row per body
+     section with a "Data type" that just restates that section's topic (e.g. a neat 1:1 map like
+     "Publication A → financials", "Publication B → valuation", "Publication C → risk commentary")
+     — real source lists are messier than that, because real facts don't distribute themselves one
+     tidy publication per section. If you genuinely only have 1-2 real sources, list only those 1-2
+     rows; a short, accurate table beats a padded, invented one.
 
 EVERYTHING BETWEEN Executive Summary and Risks & Considerations IS YOURS TO DESIGN:
   → Pick 3-6 body sections (with subsections where useful) that map onto the REAL angles this

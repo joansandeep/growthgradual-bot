@@ -2354,19 +2354,20 @@ def build_pdf(report: str, title: str, question: str, summary: str,
             _sec_text_buf[0] = ""
 
             current_section[0] = text
-            # Was need(110, ...) — 22(overline+gap) + up to 2 title lines +
-            # 10(rule) + 14(gap) + only ~30pt of guaranteed room for whatever
-            # comes next. A 2-line title actually consumes up to ~92pt of
-            # that 110pt reservation, leaving as little as ~18pt of slack —
-            # under one line's worth of body text — before the very next
-            # paragraph/bullet's own need() check forces ANOTHER page break
-            # right away. The visible result was a heading (sometimes just
-            # its "SECTION 0N" overline) landing alone at the bottom of a
-            # page with its actual body text pushed entirely onto the next
-            # page. Bumping to 190 guarantees enough headroom after even a
-            # 2-line title for several lines of follow-on content before a
-            # break can happen, so a heading is never left dangling alone.
-            need(190, text)
+            # Every major (H2) section heading now ALWAYS starts at the very
+            # top of a fresh page — never mid-page, never near the bottom.
+            # A soft "is there enough room?" check (the old need(190, ...))
+            # still let a heading land mid-page whenever ~190pt happened to
+            # be free, which is exactly what produced headings sitting in
+            # the middle of a page with unrelated content above them, or
+            # (when the guess was too small) squeezed near the bottom with
+            # its body pushed to the next page. Forcing an unconditional
+            # page break here — unless we're already at the top of a blank
+            # page, i.e. this is the very first section right after the
+            # intro page — guarantees "SECTION 0N" + its title is always the
+            # first thing a reader sees on its page.
+            if abs(y[0] - BODY_TOP) > 0.5:
+                c.showPage(); hf(text); y[0] = BODY_TOP
             nl(20)   # visible gap before section heading block
             col = accent()
             # Gold "SECTION 0N" overline, letter-spaced small caps
