@@ -1439,10 +1439,17 @@ You help with anything the user brings: general knowledge, current events, scien
 # ─── Groq streaming ────────────────────────────────────────────────────────────
 _GROQ_MODELS = [
     # llama-3.3-70b-versatile was decommissioned by Groq on 2026-08-16
-    # (returns 404 model_not_found). Replaced with Groq's own recommended
-    # successors — both support tool/function calling, same as before.
+    # (returns 404 model_not_found). openai/gpt-oss-120b is Groq's
+    # recommended successor and is confirmed live and reachable on this
+    # account/key (verified via production logs: 200 on tool-calling and
+    # on streaming). qwen/qwen3-32b was tried as a second fallback but
+    # 404'd — "does not exist or you do not have access to it" — on this
+    # same account/key, so it isn't actually usable here; removed rather
+    # than left in as a fallback that only ever wastes a request before
+    # falling through to Gemini. Re-add it (or another model) here once
+    # it's confirmed reachable — check available models in the Groq
+    # console for this account rather than guessing at IDs.
     "openai/gpt-oss-120b",
-    "qwen/qwen3-32b",
 ]
 
 async def stream_groq(system_prompt: str, messages: list[dict]) -> AsyncGenerator[str, None] | None:
@@ -1522,8 +1529,26 @@ async def stream_groq(system_prompt: str, messages: list[dict]) -> AsyncGenerato
                     continue
 
                 if not res.is_success:
+                    body = await res.aread()
                     await res.aclose(); await client.aclose()
-                    log.warning("Groq HTTP %d model=%s key=...%s", res.status_code, model, key[-4:])
+                    # Read the actual error body (truncated) instead of just
+                    # the status code — this is what's needed to tell
+                    # "context/request too large" apart from "model
+                    # unavailable for this account/tier" apart from anything
+                    # else that maps to a generic non-2xx. Safe to log: this
+                    # is Groq's own error JSON, never the API key.
+                    detail = body.decode(errors="replace")[:300]
+                    log.warning("Groq HTTP %d model=%s key=...%s — %s",
+                                res.status_code, model, key[-4:], detail)
+                    if res.status_code == 413:
+                        # Payload/context too large for this model/tier at
+                        # this key — same as a 503, not worth retrying with
+                        # the exact same body on the next key, but a
+                        # *different* model in this same pass might still
+                        # have room, so just move on rather than banning
+                        # the key itself (the key isn't the problem).
+                        mark_rate_limited(combo, 30_000)
+                    continue
                     continue
 
                 log.info("Groq: streaming started model=%s key=...%s", model, key[-4:])
