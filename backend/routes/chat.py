@@ -32,6 +32,7 @@ from datetime import timezone as _tz
 from email.utils import parsedate_to_datetime as _parse_rfc2822
 from utils.rag_client import rag_query as _rag_query
 from utils.auth import get_user_id
+from utils.screener_kb import get_company_context as _get_kb_context
 
 # ─── Supabase persistence ──────────────────────────────────────────────────────
 _SUPABASE_URL  = os.environ.get("SUPABASE_URL", "").rstrip("/")
@@ -1302,7 +1303,8 @@ async def load_headlines(limit: int = 30) -> str:
         return ""
 
 
-def build_system(headlines: str, search_results: list[dict], qtype: str, smalltalk: bool = False) -> str:
+def build_system(headlines: str, search_results: list[dict], qtype: str, smalltalk: bool = False,
+                  kb_context: str | None = None) -> str:
     from datetime import date
     today = date.today().strftime("%A, %B %d, %Y")
 
@@ -1335,6 +1337,15 @@ The user just sent a greeting or introduced themselves — nothing else.
             snippets.append(f"- {r['title']}\nSource: {r['url']}{pub}\n{content}")
         web_ctx = f"\n\n---\n🌐 WEB SEARCH RESULTS — TOP {len(search_results)} PAGES (with full page content):\n\n" + "\n\n".join(snippets) + "\n---"
 
+    kb_ctx = ""
+    if kb_context:
+        kb_ctx = (
+            "\n\n---\n📊 COMPANY FUNDAMENTALS DATABASE — verified structured data "
+            "sourced directly from Screener.in filings (treat every figure in this "
+            "block as ground truth, higher-confidence than web search snippets for "
+            "this company's financials/ratios/shareholding):\n\n" + kb_context + "\n---"
+        )
+
     finance_persona = f"""You are **Growth Gradual** — an expert AI assistant for Indian financial markets, built into the Growth Gradual platform. Today is {today}.
 
 You specialise in NSE/BSE stocks, IPOs, mutual funds, RBI/SEBI policy, macroeconomics, and personal finance for Indian investors.
@@ -1349,7 +1360,8 @@ You specialise in NSE/BSE stocks, IPOs, mutual funds, RBI/SEBI policy, macroecon
 - Give sharp, specific, data-driven answers. When using web results, name the publication inline (e.g. "Moneycontrol reports...", "per the latest RBI bulletin...").
 - NEVER use bracket-style citation markers such as [1], [2], or [1, 2] anywhere in your reply — that's a hard rule. Name the source in the sentence itself instead.
 - When web results are provided, pull in the real numbers, percentages, dates, and figures from them rather than speaking in generalities.
-- **HARD GROUNDING RULE — no fabricated figures:** Every specific number (%, ₹ amount, index level, date, quarter-by-quarter figure, etc.) you state MUST appear verbatim in the WEB SEARCH RESULTS block below. Never invent, estimate, interpolate, or "reconstruct" a plausible-sounding number and attach a source name to it — that is a fabricated citation and is strictly forbidden even if it makes the answer look more complete. If the search results don't contain a number the user is asking for (e.g. a specific quarter's sector return), say plainly that granular figure isn't available in current sources rather than manufacturing one. It is always better to give fewer, verified numbers than to fill gaps with invented ones.
+- **HARD GROUNDING RULE — no fabricated figures:** Every specific number (%, ₹ amount, index level, date, quarter-by-quarter figure, etc.) you state MUST appear verbatim in the WEB SEARCH RESULTS block or the COMPANY FUNDAMENTALS DATABASE block below. Never invent, estimate, interpolate, or "reconstruct" a plausible-sounding number and attach a source name to it — that is a fabricated citation and is strictly forbidden even if it makes the answer look more complete. If neither block contains a number the user is asking for (e.g. a specific quarter's sector return), say plainly that granular figure isn't available in current sources rather than manufacturing one. It is always better to give fewer, verified numbers than to fill gaps with invented ones.
+- **When a COMPANY FUNDAMENTALS DATABASE block is present**, it is the authoritative source for that company's ratios, quarterly/annual financials, growth CAGR, shareholding pattern, peer comparison, and pros/cons — prefer it over web search snippets for those specific datapoints, and cite it inline as "per Screener.in data" or similar rather than naming a random web source for a number that actually came from that block.
 - **THE SAME RULE APPLIES TO THE USER'S OWN BUSINESS/PERSONAL FIGURES — this is the failure mode to watch for:** When a user shares their own numbers in conversation (revenue, clients, salary, expenses, etc.) and later asks you to "add more graphs," "add more data points," or "expand the report," do NOT invent a plausible-looking history to fill that request — e.g. a "revenue over the past 6 months" table, a "client acquisition trend," or any other time series the user never gave you. You only have the figures they actually stated, at the point in time they stated them; you have no visibility into their past. If they ask for more data points than you actually have:
   - Break down or recombine the real numbers they gave you (e.g. revenue ÷ clients = ARPU, income − costs = margin) — that's fine, it's derived from what they told you, not invented.
   - For anything forward-looking (targets, projections, a growth plan), label it clearly as a projection/plan/estimate, not as if it already happened.
@@ -1390,7 +1402,7 @@ You specialise in NSE/BSE stocks, IPOs, mutual funds, RBI/SEBI policy, macroecon
 - Write markdown tables as plain markdown (header row, separator row, data rows) — never wrap a table in triple-backtick code fences. A fenced table renders as a literal unstyled text block instead of a real table, and mismatched/unclosed fences break the rest of the message."""
 
     base = finance_persona if qtype == "finance" else general_persona
-    return base + headlines + web_ctx
+    return base + headlines + kb_ctx + web_ctx
 
 
 # ─── Groq streaming ────────────────────────────────────────────────────────────
@@ -2031,16 +2043,23 @@ async def chat(request: Request):
     async def _no_headlines() -> str:
         return ""
 
+    async def _no_kb() -> str | None:
+        return None
+
     _historical_intent = bool(_QUERY_HISTORICAL_RE.search(last_user_msg))
-    search_results, headlines = await asyncio.gather(
+    search_results, headlines, kb_context = await asyncio.gather(
         tavily_search_multi(
             search_queries, max_results=20, min_results=10,
             historical_intent=_historical_intent,
         ) if do_search else _no_search(),
         load_headlines(30) if not is_smalltalk_msg else _no_headlines(),
+        _get_kb_context(last_user_msg) if not is_smalltalk_msg else _no_kb(),
     )
+    if kb_context:
+        log.info("Chat: fundamentals KB matched a company for this query (%d chars)", len(kb_context))
 
-    base_prompt = build_system(headlines, search_results, qtype, smalltalk=is_smalltalk_msg)
+    base_prompt = build_system(headlines, search_results, qtype, smalltalk=is_smalltalk_msg,
+                                kb_context=kb_context)
 
     # ── Image vision: extract content from attached images via Gemini Vision ─
     # ── Image vision: check cache first, then Gemini Vision for new images ──
@@ -2113,6 +2132,7 @@ async def chat(request: Request):
             "searchPerformed": do_search,
             "resultCount": len(search_results),
             "queryType": qtype,
+            "kbMatched": bool(kb_context),
             "sources": [
                 {"title": r["title"], "url": r["url"], "snippet": r["snippet"][:180]}
                 for r in search_results

@@ -27,6 +27,10 @@ from utils.market_data import (
     fetch_historical_stock_quotes, format_historical_quotes_as_source as format_historical_series_as_source,
 )
 from utils.tax_calc import extract_salary_figures, format_tax_comparison_as_source
+from utils.screener_kb import (
+    fetch_screener_fundamentals as _fetch_screener_fundamentals,
+    format_screener_snapshots_as_source as _format_screener_snapshots_as_source,
+)
 
 router = APIRouter()
 log = logging.getLogger("report")
@@ -3029,6 +3033,20 @@ async def generate_report(request: Request):
         try:
             company_candidates = _extract_company_candidates(question)
             if company_candidates:
+                # Screener.in knowledge base first: unlike the live Yahoo
+                # snapshot below, this returns real multi-period series
+                # (quarterly/annual financials, growth CAGR, shareholding
+                # history) straight from filings — exactly what a chart/table
+                # needs, without depending on scraped snippets happening to
+                # contain a clean historical breakdown. Prepended ahead of
+                # the Yahoo block so the model sees it first.
+                screener_snaps = await _fetch_screener_fundamentals(company_candidates)
+                screener_source = _format_screener_snapshots_as_source(screener_snaps)
+                if screener_source:
+                    sources = [screener_source] + sources
+                    log.info("Report: prepended Screener.in fundamentals for %d/%d candidate name(s)",
+                              len(screener_snaps), len(company_candidates))
+
                 stocks = await fetch_stock_fundamentals(company_candidates)
                 stock_source = format_stock_fundamentals_as_source(stocks)
                 if stock_source:

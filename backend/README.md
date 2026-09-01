@@ -9,6 +9,8 @@ Pure-Python backend replacing all Next.js API routes. No browser automation, no 
 | POST | `/api/chat` | SSE streaming chat (Groq → Gemini fallback + Tavily search) |
 | POST | `/api/chat/report` | Research report generation (JSON) |
 | POST | `/api/chat/report/pdf` | PDF export via ReportLab (no Puppeteer) |
+| GET | `/api/stocks/search` | Search the Screener.in fundamentals knowledge base by ticker/name |
+| GET | `/api/stocks/{company_id}` | Full fundamentals snapshot for a company |
 | GET | `/health` | Health check |
 
 ## Environment Variables
@@ -20,6 +22,10 @@ Pure-Python backend replacing all Next.js API routes. No browser automation, no 
 | `GEMINI_API_KEY` | Comma-separated Gemini API keys |
 | `DATAWRAPPER_API_TOKEN` | Datawrapper API token (Settings → API Tokens). Powers the report's bar/line/pie charts in both the chat view and PDF export. If unset, charts fall back to the built-in lightweight SVG renderer. |
 | `LOGO_B64` | (Optional) Base64-encoded logo image for PDF cover |
+| `SUPABASE_URL` / `SUPABASE_ANON_KEY` | Also powers the Screener.in fundamentals knowledge base (see `screener_kb/README.md`) unless overridden below |
+| `SCREENER_SUPABASE_URL` / `SCREENER_SUPABASE_ANON_KEY` | (Optional) Point the fundamentals knowledge base at a separate Supabase project instead of reusing `SUPABASE_URL`/`SUPABASE_ANON_KEY` |
+
+See `screener_kb/README.md` for how to load the fundamentals knowledge base (Screener.in workbooks → Postgres) and how chat/report use it.
 
 ## Local Development
 

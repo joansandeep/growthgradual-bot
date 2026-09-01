@@ -1,4 +1,4 @@
-export type Category = 'all' | 'banks' | 'finance' | 'mutual_funds' | 'stocks' | 'search';
+export type Category = 'all' | 'banks' | 'finance' | 'mutual_funds' | 'stocks';
 
 export interface Article {
   id: string;
@@ -24,23 +24,4 @@ export interface QuickStat {
   label: string;
   value: string;
   sub: string;
-}
-
-export interface DataPoint {
-  entity: string;
-  metric: string;
-  value: string | number;
-  unit: string;
-  period: string;
-  sourceTitle: string;
-  sourceUrl: string;
-  kind: 'live' | 'web';
-}
-
-export interface DataSearchResult {
-  query: string;
-  dataPoints: DataPoint[];
-  sources: { title: string; url: string }[];
-  sourceCount: number;
-  generatedAt: string;
 }
