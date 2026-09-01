@@ -2136,40 +2136,7 @@ def build_pdf(report: str, title: str, question: str, summary: str,
     def _line_sig(text: str) -> str:
         return re.sub(r"\s+", " ", text.lower().strip(" .,-—:"))
 
-    def _trailing_min_h(next_tok: dict | None) -> float:
-        """Estimate the minimum height the block right after a sub-heading
-        needs, so the heading's page-break check can require both the
-        banner AND that trailing content to fit together. Without this, a
-        heading can pass a flat 'is there roughly enough room?' check, get
-        drawn, and then the very next block (most often a table) fails its
-        own space check and jumps to the next page — leaving the heading
-        stranded alone with its content starting on the following page.
-        This mirrors the atomic whole-card need() check chart cards already
-        use, just with a cheap estimate instead of exact layout, since the
-        real column widths for a table aren't computed until it renders.
-        """
-        if not next_tok:
-            return 0.0
-        ntp = next_tok.get("type")
-        if ntp == "table":
-            rows = next_tok.get("rows") or []
-            if not rows:
-                return 0.0
-            # Header row (7.5pt, essentially always 1 line) + worst-case
-            # first data row wrapped to 3 lines (LINE_H=11, ROW_H formula
-            # from the table renderer below: max(15, n_lines*11+6)).
-            return 17 + 39
-        if ntp in ("chart_placeholder", "file_img_placeholder", "web_img_placeholder",
-                   "h2", "h3"):
-            # These all run their own atomic need() check before drawing
-            # anything, so they can never be split from a heading above
-            # them by this same failure mode — no extra reservation needed.
-            return 0.0
-        if ntp in ("bullet", "numbered", "para", "h4", "quote"):
-            return 30.0   # room for at least one wrapped line
-        return 30.0
-
-    for _tidx, tok in enumerate(tokens):
+    for tok in tokens:
         tp = tok["type"]
 
         if _past_data_sources[0]:
@@ -2479,15 +2446,9 @@ def build_pdf(report: str, title: str, question: str, summary: str,
         # ── H3 — sub-section ─────────────────────────────────────────────────
         if tp == "h3":
             text = _strip_inline(tok["text"])
-            # The banner itself costs nl(10) + nl(28) = 38pt. Older code
-            # reserved a flat 120pt (i.e. ~82pt of guessed slack for whatever
-            # comes next) — enough for most cases but not for a table whose
-            # header + first row wrap to multiple lines, which is exactly
-            # what produced this banner sitting alone at the bottom of a
-            # page with the table it introduces starting fresh on the next
-            # page. Look ahead at the actual next block instead of guessing.
-            _next_tok = tokens[_tidx + 1] if _tidx + 1 < len(tokens) else None
-            need(38 + _trailing_min_h(_next_tok), current_section[0])
+            # Was need(80, ...) — same "orphaned heading" risk as h2 above,
+            # just smaller scale: bump the guaranteed post-banner slack.
+            need(120, current_section[0])
             nl(10)   # visible gap before sub-section
             # Section-accent-tinted background (was a fixed mid-navy block for
             # every section) — each section now reads as visually its own.
@@ -2502,11 +2463,7 @@ def build_pdf(report: str, title: str, question: str, summary: str,
         # ── H4 ───────────────────────────────────────────────────────────────
         if tp == "h4":
             text = _strip_inline(tok["text"])
-            # Same orphaned-heading fix as h3 above: require the heading's
-            # own height AND a minimum for whatever follows it, in one
-            # atomic check, instead of just this heading's own 20pt.
-            _next_tok = tokens[_tidx + 1] if _tidx + 1 < len(tokens) else None
-            need(20 + _trailing_min_h(_next_tok), current_section[0])
+            need(20, current_section[0])
             nl(6)
             c.setFillColorRGB(0.22, 0.28, 0.52); c.setFont("Helvetica-Bold", 10)
             c.drawString(MARGIN, y[0], text[:90])
@@ -2940,85 +2897,6 @@ async def generate_pdf(request: Request):
         media_type="application/pdf",
         headers={
             "Content-Disposition": f'attachment; filename="growth-gradual-report-{date_filename}.pdf"',
-            "Cache-Control": "no-store",
-        },
-    )
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# POST /api/chat/report/pdf/enhanced  — Enhanced Platypus-based PDF generation
-# With KeepTogether, better page breaks, improved charts
-# ─────────────────────────────────────────────────────────────────────────────
-@router.post("/report/pdf/enhanced")
-async def generate_pdf_enhanced(request: Request):
-    """
-    Generate an enhanced PDF report using Platypus (flow-based layout).
-    
-    Improvements over Canvas-based approach:
-      • Automatic page breaks with KeepTogether to prevent orphaned headers
-      • Better typography and spacing
-      • Improved matplotlib-based charts with clear axis labels
-      • Professional color theme support
-      • Cleaner section hierarchy
-    
-    Body: { report, title, summary, charts, keyStats, question, theme }
-    """
-    t0 = time.perf_counter()
-    
-    try:
-        body = await request.json()
-    except Exception as e:
-        return JSONResponse({"error": f"Invalid JSON: {e}"}, status_code=400)
-    
-    report = body.get("report", "").strip()
-    title = body.get("title", "Market Intelligence Report").strip()
-    summary = body.get("summary", "").strip()
-    question = body.get("question", "").strip()
-    key_stats = body.get("keyStats", [])
-    charts = body.get("charts", [])
-    theme = body.get("theme")
-    logo_b64 = body.get("logo", "")
-    
-    if not report:
-        return JSONResponse({"error": "report field is required"}, status_code=400)
-    
-    # Import enhanced PDF generator
-    try:
-        from routes.pdf_enhanced import build_pdf_enhanced
-    except ImportError as e:
-        log.error("pdf_enhanced import failed: %s", e)
-        return JSONResponse(
-            {"error": "Enhanced PDF generator unavailable"},
-            status_code=503
-        )
-    
-    try:
-        pdf_bytes = build_pdf_enhanced(
-            report=report,
-            title=title,
-            summary=summary,
-            question=question,
-            key_stats=key_stats,
-            charts=charts,
-            theme=theme,
-            logo_b64=logo_b64
-        )
-    except Exception as e:
-        log.error("pdf_enhanced generation failed: %s", e)
-        return JSONResponse(
-            {"error": f"Failed to generate enhanced PDF: {e}"},
-            status_code=500
-        )
-    
-    elapsed = (time.perf_counter() - t0) * 1000
-    log.info("Enhanced PDF: done — %.1f KB in %.0fms", len(pdf_bytes) / 1024, elapsed)
-    
-    date_filename = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-    return Response(
-        content=pdf_bytes,
-        media_type="application/pdf",
-        headers={
-            "Content-Disposition": f'attachment; filename="growth-gradual-report-enhanced-{date_filename}.pdf"',
             "Cache-Control": "no-store",
         },
     )
