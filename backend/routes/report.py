@@ -2558,10 +2558,24 @@ def _augment_query_for_historical_data(query: str) -> str:
 # Conversational lead-ins that add nothing for a search engine and, worse,
 # eat into the character budget that should go to the actual topic once an
 # angle suffix is appended (see _build_multi_angle_search_queries below).
+#
+# Bug fix: this used to only strip the leading verb ("give me", "show me",
+# ...), which left the noun-phrase filler that follows completely intact —
+# "give me a research report on HDFC Bank's results" became "a research
+# report on HDFC Bank's results", not "HDFC Bank's results". That filler
+# ("a research report on", "an analysis of", ...) is exactly as useless to
+# Tavily as the verb was, and on a finance-scoped (topic="finance",
+# country="india", search_depth="advanced") query it was enough on its own
+# to zero out results across every key — see the "Tavily N-key fan-out
+# done: 0 results" incident this was written to fix. Now strips both the
+# verb AND the following noun-phrase/preposition in one pass.
 _LEADING_INSTRUCTION_RE = re.compile(
     r"^(?:please\s+)?(?:can you\s+|could you\s+)?"
     r"(?:show me|tell me|give me|walk me through|explain|analyze|analyse|"
-    r"what(?:'s| is| are)|how(?:'s| is| are)|describe)\s+",
+    r"what(?:'s| is| are)|how(?:'s| is| are)|describe)\s+"
+    r"(?:(?:a|an|the)\s+)?"
+    r"(?:research\s+report|report|analysis|breakdown|summary|overview|"
+    r"information|details?)\s*(?:on|about|of|for|regarding)?\s*",
     re.IGNORECASE,
 )
 
@@ -2684,8 +2698,22 @@ async def _llm_build_multi_angle_queries(question: str) -> list[str] | None:
 async def _build_multi_angle_search_queries(
     question: str, conversation_context: str, qtype: str,
 ) -> list[str]:
+    # Bug fix: the base/angle-1 query used to be built straight from the raw
+    # `question` — conversational framing ("Give me a research report on...")
+    # and all — and only the *later* regex-fallback angles ran it through
+    # the instruction-stripper. That meant angle 1 always shipped to Tavily
+    # as a full run-on sentence, which combined with topic="finance" +
+    # country="india" + search_depth="advanced" was enough to return 0
+    # results on its own. Clean the question the same way before it ever
+    # reaches _build_followup_search_query/_augment_query_for_historical_data,
+    # so every angle — LLM-built or regex-fallback — starts from a clean
+    # topic phrase, not just the ones built here as a fallback.
+    cleaned_question = _TRAILING_TIME_PHRASE_RE.sub(
+        "", _LEADING_INSTRUCTION_RE.sub("", question)
+    ).strip() or question
+
     base = _augment_query_for_historical_data(
-        _build_followup_search_query(question, conversation_context)
+        _build_followup_search_query(cleaned_question, conversation_context)
     )
 
     if qtype != "finance":
@@ -2717,8 +2745,11 @@ async def _build_multi_angle_search_queries(
     #
     # Strip a leading instruction/question phrase and a trailing time-window
     # clause so `topic` is a compact noun phrase (e.g. "Nifty 50's daily
-    # price action") that angle suffixes can cleanly attach to.
-    raw_clause = re.split(r"[.\n]", question, maxsplit=1)[0].strip()
+    # price action") that angle suffixes can cleanly attach to. Built from
+    # cleaned_question (already stripped above) rather than the raw question,
+    # so a filler phrase split across the "first clause" boundary can't
+    # survive into topic the way "a research report on" used to.
+    raw_clause = re.split(r"[.\n]", cleaned_question, maxsplit=1)[0].strip()
     topic = _LEADING_INSTRUCTION_RE.sub("", raw_clause).strip()
     topic = _TRAILING_TIME_PHRASE_RE.sub("", topic).strip()
     topic = (topic or raw_clause)[:80] or base

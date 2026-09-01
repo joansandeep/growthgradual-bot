@@ -1107,6 +1107,33 @@ async def tavily_search(
                     r["trusted_source"] = True
                     combined_results.append(r)
 
+        # Safety net: every key coming back with 0 results (all 200 OK, no
+        # 429/auth exceptions logged) means the query itself didn't match
+        # anything under the current country/topic narrowing — not that the
+        # keys or Tavily are down. Retrying the exact same call would just
+        # reproduce the same 0. Instead, retry once with country/topic
+        # dropped: that's strictly a widening of the candidate pool (still
+        # deduped, still freshness-filtered afterward), so it can only add
+        # sources, never mask a real "nothing exists for this" case. This
+        # is a fallback for genuinely-bad/over-narrow queries slipping
+        # through, not a substitute for fixing the query itself.
+        if not combined_results and (country or qtype == "finance"):
+            log.info(
+                "Tavily %d-key fan-out: 0 results for %r with country=%r qtype=%s — "
+                "retrying once with country/topic narrowing dropped",
+                len(keys), query[:60], country, qtype,
+            )
+            retry_lists = await asyncio.gather(*[
+                _tavily_one_call(k, query, max_results, "general", None, images_out, time_range)
+                for k in keys
+            ])
+            for res in retry_lists:
+                for r in res:
+                    if r["url"] and r["url"] not in seen_urls:
+                        seen_urls.add(r["url"])
+                        r["trusted_source"] = True
+                        combined_results.append(r)
+
         combined = await _enrich_thin_results(combined_results)
         combined = _sort_and_filter_by_freshness(combined, keep_old=historical_intent)
         elapsed = (time.perf_counter() - t0) * 1000
