@@ -3784,7 +3784,7 @@ async def generate_report(request: Request):
         "1. The uploaded file content (if provided) is your PRIMARY source — extract ALL numbers, tables, charts, and statistics from it first.\n"
         "2. Use web sources to supplement and validate the file data.\n"
         "3. Follow CHART RULES exactly — reproduce actual data from the file as charts where it exists.\n"
-        "4. Write the full 6-section, long-form report (target 3500-4500 words (MINIMUM 22000 characters — shorter responses will be rejected and retried)). Insert [CHART_n] inline where valid chart data exists.\n"
+        "4. Write the full long-form report, with sections you choose per REPORT STRUCTURE above (target 3500-4500 words (MINIMUM 22000 characters — shorter responses will be rejected and retried)). Insert [CHART_n] inline where valid chart data exists.\n"
         "5. Data → [CHART_n] or a table, always. Only if a section is genuinely non-numeric/thematic and would "
         "otherwise be plain text, you MAY add up to 2 AI-generated illustrative images total — see AI IMAGE RULES. "
         "Default to zero images; most reports should return \"images\": [].\n"
