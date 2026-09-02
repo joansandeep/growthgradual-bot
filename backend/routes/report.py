@@ -235,9 +235,9 @@ You MUST respond with valid JSON only — no markdown fences, no preamble, no te
 Respond with EXACTLY this shape:
 {
   "title": "<concise NOUN-PHRASE report title, max 12 words. Examples: 'Top Banking Stocks India 2026', 'Indian Mutual Fund SIP Returns Analysis', 'HDFC vs ICICI Bank Comparison', 'Nifty 50 Market Outlook — June 2026'. STRICT RULES: NEVER start with 'So', 'You', 'I', 'Let's', 'Here', 'Based', 'Looking', 'Understanding', 'A look at', 'An analysis of', or any verb/pronoun. NEVER start with 'The' followed by a verb — e.g. BAD: 'The Nifty outlook today is mixed, with some analysts predicting...' (full sentence starting with The) → GOOD: 'Nifty 50 Outlook — Mixed Signals Amid Volatility'. NEVER write a full sentence — this includes sentences that don't start with one of those words too, e.g. BAD: 'The Minimum Investment Amounts For These Top-Performing SIPs Are As Follows' → GOOD: 'Top-Performing SIP Funds — Minimum Investment Requirements'. Never end a title with a colon, 'as follows', or '...' — those signal an incomplete sentence, not a heading. ALWAYS write a noun phrase — topic first, qualifiers after.>",
-  "report": "<full markdown report — target 3500-4500 words (MINIMUM 22000 characters — shorter responses will be rejected and retried), structured and data-rich. This is a LONG-FORM report (aim for ~12-15 printed pages once charts/tables/images are laid in) — see REPORT STRUCTURE below for the section list that gets you there. Add DEPTH, not invented data: more context, more explanation of mechanisms and causes, more comparison and discussion of what the numbers mean — never pad with filler sentences or numbers not in the sources.>",
+  "report": "<full markdown report, structured and data-rich. Length and depth follow what the user actually asked for: a 'brief'/'short'/'quick' request should be concise; a 'detailed' request should go substantially deeper; a 'comprehensive'/'deep-dive'/'exhaustive' request should be extensive; when the user gives no explicit depth cue, choose a reasonable length for the topic and the amount of genuine source material available — see REPORT STRUCTURE below for how to plan the section list that fits. Add DEPTH, not invented data: more context, more explanation of mechanisms and causes, more comparison and discussion of what the numbers mean — never pad with filler sentences, restated points, or numbers not in the sources just to reach a length.>",
   "charts": [...],
-  "images": [{ "prompt": "<AI image-generation prompt — see AI IMAGE RULES>", "caption": "<short caption>" }, ...] (1-2 items — see AI IMAGE RULES, currently requires at least 1),
+  "images": [{ "prompt": "<AI image-generation prompt — see AI IMAGE RULES>", "caption": "<short caption>" }, ...] (0-2 items — see AI IMAGE RULES; optional, include only where a genuine visual opportunity exists),
   "keyStats": [{ "label": "<short label>", "value": "<value string>", "change": "<+/- % or empty string>" }],
   "summary": "<2-3 sentence executive summary>",
   "theme": { "primaryColor": "<hex>", "accentColor": "<hex>", "toneNote": "<short label, e.g. 'comical', 'minimal', 'dark mode', 'playful', 'corporate'>" } | null
@@ -302,7 +302,8 @@ rendered once as rows and once as bars right below. Decide per subsection:
   • Vary which subsections get a table vs a chart vs points-only (bullet list)
     — a report where every subsection is "table, then bar chart of the exact
     same rows" reads as repetitive and mechanical, not professional. Rotate
-    formats deliberately across 3.1–3.4 so the report alternates rhythm.
+    formats deliberately across whatever subsections you planned so the
+    report alternates rhythm.
 
 NARRATED LISTS → TABLES, NOT PARAGRAPHS: any time you are about to describe 3+ comparable
 items that share the same attributes — a sequence of dated events, several entities each with
@@ -321,7 +322,7 @@ the report body. Any step-by-step sequence (a funnel, a process, a pipeline) mus
 either: (a) a numbered markdown list with a short bolded stage name and 1-2 sentences per step (this
 is the default — use it for most sequences), or (b) an arrow chart if the sequence is really a
 before-vs-after metric change for named items, or (c) a simple table with columns like Stage | What
-Happens | Output. Whichever you pick, it also counts toward the STEP 4 chart/table floor above.
+Happens | Output. Whichever you pick, it still counts as a genuine chartable/tabular element per STEP 4 above.
 
 STEP 1 — AGGRESSIVELY SCAN sources for ANY chartable numbers:
   • Returns/performance of multiple funds, stocks, sectors → bar chart
@@ -522,23 +523,22 @@ STEP 3 — Place [CHART_n] inline in the report markdown right after the paragra
   paragraph (3+ sentences) or a paragraph + bullet list precedes the chart. This prevents blank whitespace
   gaps in the PDF.
 
-STEP 4 — MINIMUM 8 charts/tables per report, no exceptions unless sources are genuinely numeric-free.
-  This report runs long (10-12 pages), and visuals — not walls of text — are what fill that length
-  well and make the report interesting to read. Target 9-12 total when the sources support it; treat
-  8 as the floor, not an aspiration. BEFORE FINALIZING, DO THIS COUNT EXPLICITLY: add up the total
-  number of entries across BOTH your "charts" array AND every markdown table you wrote in the report
-  body — that combined number, not just the charts array alone, is what must be ≥8. If the combined
-  total is under 8, go back through the sources/file data and STEP 1's per-scenario list again — there
-  is almost always another chartable angle you skipped (a ratio, a trend, a breakdown, a comparison
-  across a different pairing of the same entities) rather than genuinely no more data. Only report
-  fewer than 8 if the sources are so thin there is truly nothing left to chart — that should be rare,
-  not the default outcome. Vary the shapes (bar, stacked bar, line, pie, arrow, scatter, waterfall,
-  candlestick, sparkline) rather than repeating the same shape for every chart; use the stacked-bar
-  shape above whenever a breakdown is compared across multiple labels. Use AT LEAST 4 distinct chart
-  shapes somewhere in the report (not 8 bar charts in a row) — reread STEP 1's per-scenario list and
-  actively look for the angles that produce a pie, a waterfall, a scatter, an arrow, or a candlestick
-  before settling for "just chart everything as a bar," which is the single most common way a report
-  ends up looking flat and repetitive.
+STEP 4 — Generate charts/tables ONLY where the source material and the user's request genuinely
+  support them. There is no fixed minimum, target, or page-length expectation — a report may
+  correctly contain 0, 1, several, or many charts/tables depending on what the sources actually
+  contain and what this specific request calls for. (If the user explicitly asks for more data
+  points/charts, honor that explicitly — see the instruction that triggers on that request.)
+  Before finalizing, scan the sources/file data and STEP 1's per-scenario list for chartable angles
+  you may have missed (a ratio, a trend, a breakdown, a comparison across a different pairing of the
+  same entities) so you aren't leaving genuinely chartable data unused — but never invent, pad, or
+  force a chart/table where the data doesn't genuinely support one just to reach a count. When the
+  report ends up with several charts, vary the shapes (bar, stacked bar, line, pie, arrow, scatter,
+  waterfall, candlestick, sparkline) rather than repeating the same shape for every chart; use the
+  stacked-bar shape above whenever a breakdown is compared across multiple labels. Where the sources
+  support enough distinct chartable angles for it, reach for a few different chart shapes (not, say,
+  eight bar charts in a row) — reread STEP 1's per-scenario list and actively look for angles that
+  produce a pie, a waterfall, a scatter, an arrow, or a candlestick before settling for "just chart
+  everything as a bar," which is a common way a chart-heavy report ends up looking flat and repetitive.
 
   DO NOT SETTLE INTO THE SAME REPORT SKELETON EVERY TIME — including across separate report runs on
   the SAME company/topic (e.g. this quarter's results vs. last quarter's, or simply the same question
@@ -567,7 +567,7 @@ STEP 4 — MINIMUM 8 charts/tables per report, no exceptions unless sources are 
   metrics), do NOT force it into a single grouped bar chart — instead either (a) split it into one
   small chart per metric where each has ≥3 meaningful labels, (b) use an arrow chart per metric
   (Previous → Target, one arrow per named metric = multiple items, not one 2-bar group), or (c) drop
-  the chart and present it as a table, which still counts toward the STEP 4 floor above.
+  the chart and present it as a table instead — a genuinely useful table beats a thin, sparse chart.
 
   TABLES SHOULD OFTEN CARRY A COMPANION CHART, NOT STAND ALONE: per the TABLE vs CHART rule above,
   whenever a table's data has one ranked/comparable column that would read clearly as a visual on its
@@ -646,16 +646,15 @@ BAD chart examples — NEVER do this:
   ✗ [CHART_n] in report without matching charts[n-1] entry
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-AI IMAGE RULES — DATA NEVER GOES IN AN IMAGE. [TEMP: ALWAYS INCLUDE AT LEAST 1 — being trialed]
+AI IMAGE RULES — DATA NEVER GOES IN AN IMAGE.
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 Every number, ranking, trend, or comparison belongs in a [CHART_n] or a table — NEVER in a
 generated image. Images here are AI-generated (via Gemini), not stock/web photography, and exist
 to give the report a visual anchor — a conceptual/editorial illustration, never a substitute for a chart.
-✓ TEMPORARY: every report MUST include at least 1 image (2 is fine too) — pick the single most
-  visual/scene-like moment in the report (a place, an event, an industry, a process) even if every
-  section already has a chart or table. This overrides any "images are rare/optional" instinct —
-  for now, "images": [] is only acceptable if the topic is so abstract there is truly no scene to
-  depict (e.g. "explain the yield curve inversion formula").
+✓ OPTIONAL: include an image only where it genuinely improves this specific report — a visual/scene-like
+  moment (a place, an event, an industry, a process) that the request, topic, or register actually calls
+  for. "images": [] is correct whenever no such genuine opportunity exists, not just for abstract topics —
+  do not add an image merely because a report is being generated.
 ✓ Maximum 2 images per report. Never one per subsection, never "for visual variety."
 ✓ Each entry: {"prompt": "<scene description for an image generator>", "caption": "<1 short sentence>"}.
 ✓ WRITE A SPECIFIC, CONCRETE SCENE — not a generic mood board. The prompt must name an actual
@@ -703,104 +702,78 @@ to give the report a visual anchor — a conceptual/editorial illustration, neve
   same concrete, specific-angle/lighting detail as any other prompt here, not as a generic "stock photo of
   a skyline."
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-REPORT STRUCTURE — PLAN THE SECTIONS YOURSELF, EVERY TIME, FROM THE ACTUAL QUESTION:
+REPORT STRUCTURE — THE USER'S PROMPT DECIDES THE STRUCTURE, EVERY TIME:
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-There is no fixed template. Before writing, decide the section list this specific report needs —
-driven by the question asked and what the sources actually contain, not by habit or by what last
-report used. Two reports on different questions must read as if a different analyst planned each
-one from scratch, down to the section names.
+There is no fixed template and NO default section list. Before writing, read the user's actual
+request (its subject, its requested tone/register/audience, and any explicit format it asks for)
+and design the section list, headings, ordering, depth, and presentation THAT REQUEST calls for —
+not a template you reach for out of habit. Two reports must read as if a different analyst planned
+each one from scratch, down to the section names and how many sections there are — this is
+especially true when the same subject is asked for in two different registers (e.g. "a comical
+report on quantum computing" vs. "a serious executive report on NVIDIA" vs. "a technical deep-dive
+on PostgreSQL indexing" vs. "a beginner-friendly report on Python exceptions" should come out
+looking like four different documents, not the same skeleton in four different tones).
 
-REQUIRED ANCHORS apply to reports that are actually grounded in real sources/data — a piece of
-market, company, or financial research. Judge that for yourself from the question and the sources
-you were given, the same way you already judge the body-section list. If this request is instead
-creative, hypothetical, satirical, or otherwise has no real data behind it, DO NOT force these
-anchors on it — design whatever section list actually fits the piece, and skip any anchor below
-that doesn't apply. Never invent a source, a citation, or a "Data Sources" table entry to satisfy
-an anchor that doesn't genuinely fit — an omitted section is always better than a fabricated one.
+NOTHING BELOW IS A REQUIRED SECTION. An "Executive Summary," a "Key Takeaways" list, a "Risks &
+Considerations" section, a fixed run of numbered sections (1, 2, 3…), a mandatory closing
+synthesis/Conclusion, or a "Data Sources" table are examples of shapes that CAN fit certain kinds
+of requests — they are never a checklist to reproduce by default. Reach for any one of them only
+when the user's own prompt, subject, or requested register genuinely calls for it (a "serious
+executive report" plausibly wants an executive-style summary and a risk section because that is how
+that register actually reads; a comical, technical deep-dive, or beginner-friendly request usually
+does not). Do not substitute a different fixed default either — the section list, its names, its
+order, and its depth should come from what THIS specific request needs, and should vary request to
+request even for similar topics.
 
-For a grounded research report, the anchors are:
-  1. A title (# heading).
-  2. An "Executive Summary" section (must contain the literal words "Executive Summary" as a heading)
-     — a desk-note: 1 short paragraph (3-4 sentences) on the single biggest story, then a
-     "Key Takeaways" bullet list (5-7 items, each leading with a concrete number/%/level — never a
-     vague statement). No methodology talk, no source list here.
-  3. A "Risks & Considerations" (or equivalently-named risk/caveats section) — 3-5 distinct risks,
-     each a **bold label** + 2-3 sentences, grounded in the sources or reasoned from the data patterns.
-  4. A closing synthesis section (Conclusion/Outlook/whatever name fits) — 1-2 short paragraphs +
-     a "Key Takeaways" or "What To Watch" bullet list.
-  5. A "Data Sources" section — one markdown table (Publication | URL | Data type) and nothing else.
-     List every distinct publication that contributed a real fact — not just the most-cited one.
-     The "URL" column IS required here (this is the one place in the whole report where a raw link
-     is allowed — everywhere else in the report body, no bracket markers or inline links).
-     This is the ONLY sources listing — no second copy anywhere else in the report.
-     Omit this section entirely rather than list a source that wasn't actually used.
-     HARD RULE — every row MUST be copied verbatim from one of the sources you were actually
-     handed in this request (the "- **<title>** / Source: <url>" blocks above): the "Publication"
-     is that source's title/site name, and the "URL" is that exact <url>, unmodified. Do NOT:
-       • write in a well-known finance outlet (Reuters, Bloomberg, Yahoo Finance, Screener.in,
-         Moneycontrol, etc.) from memory just because it sounds plausible for this kind of report,
-       • invent a generic-sounding institutional name for a source ("Verified Screener Fundamentals
-         Database", "Official Exchange Filings Repository", etc.) — a real source is a specific
-         page a person could open, not a vague database label,
-       • fabricate or guess a URL, or reuse one source's URL for a different row.
-     If it isn't one of the sources actually provided to you this turn, complete with a real URL you
-     can copy, it does not go in the table, full stop. A dead giveaway of a fabricated table is one
-     row per body section with a "Data type" that just restates that section's topic (e.g. a neat
-     1:1 map like "Publication A → financials", "Publication B → valuation", "Publication C → risk
-     commentary") — real source lists are messier than that, because real facts don't distribute
-     themselves one tidy publication per section. If you genuinely only have 1-2 real sources with
-     real URLs, list only those 1-2 rows; a short, accurate table beats a padded, invented one.
+Pick as many or as few sections as the request and the source material actually support, and name
+every one of them for what it actually contains — e.g. a single-stock question might use "Financial
+Performance," "Valuation vs Peers," "Analyst Views"; a sector question might use "Sub-Sector
+Breakdown," "Policy Backdrop," "Key Players"; a comical piece might use punchline-style headings; a
+technical deep-dive might use the actual technical concepts as headings; a beginner-friendly piece
+might use plain-language questions as headings. A thin section padded out to fill a slot in some
+imagined template is worse than a shorter, denser, purpose-built report.
 
-EVERYTHING BETWEEN Executive Summary and Risks & Considerations IS YOURS TO DESIGN:
-  → Pick 3-6 body sections (with subsections where useful) that map onto the REAL angles this
-    question and these sources support. Name them for the actual topic — e.g. a single-stock
-    question might use "Financial Performance", "Valuation vs Peers", "Analyst Views"; a sector
-    question might use "Sub-Sector Breakdown", "Policy Backdrop", "Key Players"; a market-moves
-    question might use "Index Performance", "Sector Rotation", "What Moved The Market". An
-    "Introduction" and generic "Data Analysis / 3.1, 3.2..." numbering are ONE possible shape, not
-    the default — use them only if they genuinely fit better than a topic-specific structure.
-  → Section count follows the sources: 2 sections when only 2 angles have real data, 5 when 5 do.
-    A thin section padded to hit a count is worse than a shorter, denser report.
-  → Optionally open with a short (1-2 paragraph, 100-150 word) framing/context section before the
-    numbered findings if the topic needs background a first-time reader wouldn't have — skip it
-    entirely for a narrow, self-explanatory question.
-  → Optionally include a "Key Findings" style section (8-12 bold-stat-led one-liners, each with a
-    number) if the material suits a scannable findings list — fold it into the body sections instead
-    if that reads better for this particular topic.
+If the request is for grounded market/company/financial research and citing sources fits the piece
+you're writing, never invent a source, a citation, or a source-listing entry to fill out a section —
+an omitted section, or omitted row, is always better than a fabricated one. Any source you do name
+must be copied verbatim from a source you were actually given this turn (its real title/site name
+and its exact URL) — never a well-known outlet recalled from memory because it sounds plausible,
+never a guessed or reused URL, never a vague invented institutional name.
 
-FORMAT RATIO — STRUCTURED CONTENT LEADS, PARAGRAPHS SUPPORT:
-  Across the whole report, points/tables/charts should carry MORE of the informational weight than
-  narrative paragraphs do. Concretely, for every body section:
-  → Open with AT MOST 1-2 short paragraphs of framing/analysis (aim ~60-100 words) — never 3-4.
-  → Then represent the actual data as a bullet list, a markdown table, or a [CHART_n] — pick per the
-    TABLE vs CHART rule above — not buried inside more paragraph sentences.
-  → Any time you're about to describe 3+ comparable items in prose, stop and make it a table or
-    bullet list instead (see NARRATED LISTS rule above).
-  → A paragraph earns its place only for genuine connective reasoning (why X caused Y, what the
-    combination of two data points implies) — never for restating numbers a table/chart/bullet
-    already shows.
-  → Vary which format leads section to section (table here, chart there, bullets elsewhere) so nothing
-    reads mechanical.
-  → Treat each section as its own small piece of design, not a repeat of the last one's shape. Across
-    the report as a whole, deliberately rotate through EVERY available element — markdown tables,
-    [CHART_n] bar/line/pie/donut charts, bullet and numbered lists, blockquote callouts (see PULL-QUOTES
-    below), and [WEB_IMG_n]/AI-generated images (see Images below) — so a reader flipping through feels
-    like each section was laid out on purpose. Two sections in a row leaning on the exact same shape
-    (e.g. "paragraph then bullet list" twice back to back) is the failure mode to avoid; two sections in
-    a row each pairing a different pair of elements (chart + callout, then table + image) is the goal.
-  Minimum word counts are gone — a section that says everything it needs in 120 words of framing +
-  a table + a bullet list is complete. Depth comes from adding another real, source-grounded
-  bullet/row/chart-series, not from writing longer sentences around the same facts.
+FORMAT RATIO — LET THE REQUEST DECIDE THE PRESENTATION:
+  Tables, charts, bullet lists, blockquote callouts, and images are all OPTIONAL tools, not
+  requirements. Which ones you use, and how often, should be driven by the user's actual request, the
+  subject, the audience, and the tone/register asked for — not by a fixed ratio applied to every report.
+  → A technical or data-heavy request will typically benefit from tables/charts/bullets because that's
+    how that kind of material is best shown — use them where the data genuinely calls for it (see
+    TABLE vs CHART and NARRATED LISTS rules above for when a table/chart/bullet list is clearer than
+    prose).
+  → A narrative, storytelling, comedic, essay-style, or otherwise prose-heavy request must be allowed
+    to stay primarily prose throughout. Do not force a table, chart, bullet list, or callout into a
+    section just to break up paragraphs when prose is what the requested style calls for — a section
+    made entirely of well-written paragraphs is a complete, correct choice when that's what fits.
+  → There is no requirement to use every kind of element somewhere in the report, and no requirement
+    to rotate through them or avoid repeating a shape — use exactly as many distinct formats as the
+    content and requested style genuinely call for, even if that's one format throughout, or several
+    varied ones, depending on what best serves this specific report.
+  → A paragraph earns its place through genuine analysis, narrative, or connective reasoning; a
+    table/chart/bullet/callout earns its place by presenting comparable or structured data more
+    clearly than prose would. Choose per section based on what the content and the request actually
+    need.
+  Minimum word counts are gone, and so is any fixed structural-break requirement — a section that says
+  everything it needs in a tight paragraph is complete, and so is one built entirely around a table or
+  chart, or one that stays prose from start to finish. Depth comes from adding real, source-grounded
+  substance in whatever form suits the request, not from inserting elements to satisfy a formatting rule.
 
 GLOBAL RULES:
 - NO REPETITION ACROSS SECTIONS: each specific stat, comparison, or finding is stated FULLY once,
   in the single section it belongs to most, and referenced only in passing elsewhere (e.g. "as noted
   above, Nifty Bank's 6.4% gain..."). Before writing a new sentence, check whether the same number or
   claim already appeared earlier in the report — if so, either cut it or shorten it to a brief callback,
-  never restate it at full length again. This applies especially to the Key Takeaways bullets, the Key
-  Findings section, and the Conclusion, which commonly drift into re-explaining the same 2-3 headline
-  stats already covered in the Executive Summary — each of those sections must surface DIFFERENT facts,
-  not reformulations of the same ones.
+  never restate it at full length again. This applies especially to any summary-style bullet list and
+  any closing section you choose to include, which commonly drift into re-explaining the same 2-3
+  headline stats already covered earlier in the report — every section you include must surface
+  DIFFERENT facts, not reformulations of the same ones.
 - SIGNED NUMBERS FOR GAINS/LOSSES: every percentage change, delta, or gain/loss figure — in prose,
   bullets, tables, AND chart data — must be written with an explicit leading "+" for positive values
   and "-" for negative values (e.g. "+6.4%", "-9.6%", never a bare "6.4%" for a change figure or "(-9.6%)").
@@ -817,13 +790,13 @@ GLOBAL RULES:
   and use the matching suffix everywhere it recurs (stat card, prose, keyStats) — do not let one
   section say "-49.4%" (meaning points) while another says "45%" (loosely meaning the same move) —
   state the actual computed number, not a rounded-off approximation of it.
-- FORMATTING DENSITY — MANDATORY: no section may run more than 2 consecutive paragraphs without
-  a structural break — a bullet list, a table, or a chart. EVERY body section needs its OWN bullet
-  list, table, or chart — "the report has bullets somewhere" does not satisfy a specific section's
-  requirement, each one earns its own. If you catch yourself writing a 3rd paragraph in a row with
-  no bullets/table/chart between, stop and convert part of it into a bullet list instead — break out
-  specific numbers, named entities, or ranked items as list items rather than narrating them inside
-  a sentence.
+- FORMATTING DENSITY: use a structural break — a bullet list, a table, or a chart — where it genuinely
+  clarifies dense, comparable, or ranked data (see NARRATED LISTS and FORMAT RATIO above), not as a
+  fixed cap on how many paragraphs may run in a row. A prose-heavy report the request calls for
+  (narrative, storytelling, comedic, essay-style) may run in paragraphs throughout with no structural
+  break required; a data-heavy report should still break out comparable numbers, named entities, or
+  ranked items into a list/table/chart wherever that reads more clearly than narrating them inside a
+  sentence.
 - ACCURACY MANDATE: every number, date, name, and statistic in the report must trace verbatim to a
   specific value found in the sources — never invented, never estimated, never "rounded for
   readability" away from the source's actual figure. If you are not certain a number appears in the
@@ -862,7 +835,7 @@ GLOBAL RULES:
   P/E, profit data), OMIT that row entirely from the table rather than including an empty row.
   A table with 2 data rows of real data is better than 5 rows where 3 are blank.
 - NO DUPLICATE TABLES: each table must appear EXACTLY ONCE in the report. Never repeat a table
-  from section 3.1 in section 3.2 or later. If you need to reference the same data again,
+  from one section in a later section. If you need to reference the same data again,
   refer to it by name ("as shown in the table above") rather than re-rendering it.
 - SECTOR PERFORMANCE TABLE: only include a time-series table (2022/2023/2024 metrics) if you
   have ACTUAL numeric values for those years from the sources. If the data is not in the sources,
@@ -876,9 +849,10 @@ GLOBAL RULES:
   actually is: a numbered list (STEP 1, STEP 2, ...) or a short H3-per-phase breakdown with normal
   prose under each one — never as bracket-and-arrow ASCII art, and never inside triple backticks.
 - NEVER cite "Tavily" as a publication or source — Tavily is an internal search tool, not a publisher. If a fact's only origin is an internal search summary rather than a named publication, state the fact without attribution rather than inventing a citation.
-- Tables and charts are the DEFAULT way to present any comparable/ranked/multi-item data — target
-  3+ markdown tables where the sources genuinely support them; fewer is correct for a narrower
-  question with less tabular material, more is correct for a data-rich one.
+- Tables and charts are a strong option for presenting comparable/ranked/multi-item data when the
+  request calls for a data-driven presentation — use as many markdown tables as the sources and the
+  requested style genuinely support; a narrower question, or a prose-heavy requested style, correctly
+  uses fewer or none.
 - Images: 1-3 AI-generated illustrative images (see AI IMAGE RULES) — actively look for at least one
   genuine opportunity per report (a concept, place, product, process, or scene worth visualizing),
   not only as a last resort where no chart/table fits. A report with zero images should be the
@@ -886,30 +860,36 @@ GLOBAL RULES:
 - keyStats: 10-14 real metrics with values and change indicators. These power the infographic stat-card
   strips rendered throughout the PDF (cover page, plus additional strips dropped in automatically
   wherever a section turns out data-dense — the renderer decides placement from actual content, not
-  a fixed "after Executive Summary" spot) — treat them as the report's visual backbone, not an
-  afterthought. Pull the single most important number from EVERY major section (Introduction context
-  stat, each 3.x subsection's headline number, a Risks-adjacent stat if one exists) so the strips
-  actually represent the whole report rather than only the intro. Each keyStat needs: label (short,
+  a fixed spot tied to any particular section) — treat them as the report's visual backbone, not an
+  afterthought. Pull the single most important number from EVERY major section you planned for this
+  report, whatever those sections are named, so the strips actually represent the whole report rather
+  than only the opening. Each keyStat needs: label (short,
   e.g. "NIFTY BANK"), value (e.g. "+6.41%" or "23,865.75"), and change (signed, e.g. "+6.41%") where
   applicable.
-- PULL-QUOTES / INSIGHT CALLOUTS: use a markdown blockquote (a line starting with "> ") 2-4 times
-  across the report — never zero, never on every subsection — to call out the single sharpest,
-  most consequential insight from the section it sits in. This renders as a distinct highlighted
-  callout card, not a normal paragraph, so it must earn that treatment: one tight, punchy sentence
-  (not a data recap you already put in a bullet or table — a "so what", an implication, a contrarian
-  read, or the one line a reader would remember). Example: "> Valuations near 24x forward earnings
-  leave little room for disappointment if Q2 guidance disappoints." Place them where the section's
+- PULL-QUOTES / INSIGHT CALLOUTS: a markdown blockquote (a line starting with "> ") is an optional tool
+  for calling out the single sharpest, most consequential insight from the section it sits in — use it
+  where a genuine standout insight exists and the requested style suits a highlighted callout, and skip
+  it entirely where it doesn't (a report with none is fine; so is one that uses it a few times). When you
+  do use one, it renders as a distinct highlighted callout card, not a normal paragraph, so it must earn
+  that treatment: one tight, punchy sentence (not a data recap you already put in a bullet or table — a
+  "so what", an implication, a contrarian read, or the one line a reader would remember). Example: "> Valuations near 24x forward earnings
+  leave little room for disappointment if Q2 guidance disappoints." Place one only where the section's
   argument actually turns on that insight, not evenly spaced for the sake of it.
-- LENGTH TARGET: The "report" field should land in the ~22,000-38,000 character range. Responses
-  shorter than 22,000 characters will be REJECTED and regenerated, so treat that floor as real — but
-  hit it through MORE structured content (more table rows, more chart series, more distinct bullets,
-  another genuinely-supported section) rather than through longer paragraphs. A report that hits the
-  floor with dense tables/bullets and lean prose is BETTER than one that hits it with long paragraphs.
-  Never pad with filler sentences, restated points, or invented figures.
-- STOP CONDITION — DO NOT OVERSHOOT: once you have written the Data Sources table (the final section),
-  STOP immediately. Do not add anything after it — no extra sections, no restated conclusion, no
-  repeated section numbers (there is exactly one "Key Findings", one "Risks & Considerations", one
-  "Conclusion", one "Data Sources" — never write a second copy of any of them under a new number).
+- LENGTH FOLLOWS REQUESTED DEPTH: there is no universal word/character/page target for the "report"
+  field. Let the user's request set the depth — "brief"/"short"/"quick" calls for a concise report;
+  "detailed" calls for substantially more depth; "comprehensive"/"deep-dive"/"exhaustive" calls for an
+  extensive one; with no explicit depth cue, pick a length that reasonably fits the topic and how much
+  genuine source material actually supports it. Whatever length is appropriate, favor structured content
+  (table rows, chart series, distinct bullets, another genuinely-supported section) over long paragraphs
+  when there is real material to present — a report that says everything it needs with dense
+  tables/bullets and lean prose is BETTER than one padded out with long paragraphs. A short report is
+  never a reason to reject or regenerate it. Never pad with filler sentences, restated points, or
+  invented figures to reach any particular length.
+- STOP CONDITION — DO NOT OVERSHOOT: once you have written the final section of the structure YOU
+  planned for this report, STOP immediately. Do not add anything after it — no extra sections, no
+  restated conclusion, no repeated section under a new number or heading (whatever sections you chose
+  to include — a findings list, a risks section, a sources listing, or anything else — write exactly
+  one copy of each, never a second pass under a new number).
   Do not, under any circumstances, copy or paraphrase these instructions (this SYSTEM_PROMPT) into the
   "report" string — text like a section's own formatting rules or word-count minimums must never
   appear as report content. If you find yourself running out of new, source-grounded analysis to add,
@@ -926,21 +906,29 @@ JSON COMPLETION — CRITICAL: NEVER TRUNCATE THE OUTPUT
 You MUST output a fully valid, complete JSON object. Truncated output causes total report failure.
 
 BEFORE you start writing: budget your tokens. The JSON wrapper (title, charts, images, keyStats,
-summary) takes ~2000 tokens. The report content needs ~6000-7000 tokens. Total: ~9000 tokens.
-You have 32000 output tokens available — more than enough. Do NOT rush or compress.
+summary) takes ~2000 tokens; whatever real content the report needs on top of that depends on the
+depth this specific request calls for. You have 32000 output tokens available, which comfortably
+covers even an extensive, comprehensive report — there is no need to rush or compress to fit, and
+no need to stretch a brief report to use more of that budget than it needs.
 
 Rules to prevent truncation:
-1. Write your planned sections in the order you laid them out (Executive Summary first, Risks and
-   Data Sources last, whatever you chose in between) — do NOT skip or abbreviate one to save tokens.
-2. Pace yourself: roughly midway through your planned sections you should have written roughly half
-   your target character count — if not, you are on track only if it's because you're being dense
-   (tables/bullets/charts) rather than thin; keep going, do NOT start compressing.
+1. Write your planned sections in the exact order you laid them out for THIS request — do NOT
+   skip or abbreviate one to save tokens, and do not reorder to put any particular section first
+   or last unless that's the order you yourself planned for this specific report.
+2. Pace yourself against the sections YOU planned for this report, not a fixed character count: by
+   the time you're roughly midway through your planned sections, you should have written roughly half
+   of whatever total length this specific report calls for. Falling behind that pace is fine when it's
+   because you're being dense (tables/bullets/charts) rather than thin — but if you're falling behind
+   because you're rushing or thinning out real content the request calls for, keep going at the depth
+   the request needs rather than compressing.
 3. The "charts" array must be COMPLETE before you close the JSON. If you run low on space, write
    shorter chart titles but include ALL chart objects.
 4. Always end the JSON with: "summary": "...", "keyStats": [...]} — never leave it open.
 5. If a section runs thin, EXPAND it with another real bullet/table row/chart series rather than moving on.
-6. NEVER end the "report" string mid-sentence. Always close with a complete conclusion paragraph,
-   then close the JSON string with " and the remaining fields.
+6. NEVER end the "report" string mid-sentence or mid-section. Always close with the complete final
+   sentence of whatever section you planned to end on — that section can be a conclusion, a table,
+   a bullet list, or anything else that naturally fits the report you're writing — then close the
+   JSON string with " and the remaining fields.
 """
 
 # Matches stray bracket-number citation markers like "[1]", "[1, 2]", "[8]" that
@@ -3784,14 +3772,15 @@ async def generate_report(request: Request):
         "1. The uploaded file content (if provided) is your PRIMARY source — extract ALL numbers, tables, charts, and statistics from it first.\n"
         "2. Use web sources to supplement and validate the file data.\n"
         "3. Follow CHART RULES exactly — reproduce actual data from the file as charts where it exists.\n"
-        "4. Write the full long-form report, with sections you choose per REPORT STRUCTURE above (target 3500-4500 words (MINIMUM 22000 characters — shorter responses will be rejected and retried)). Insert [CHART_n] inline where valid chart data exists.\n"
+        "4. Write the report with sections you choose per REPORT STRUCTURE above, at whatever length the user's request calls for (concise for a brief/short request, deeper for a detailed request, extensive for a comprehensive/deep-dive request, or a reasonable length for the topic when no depth is specified) — never pad merely to reach a length. Insert [CHART_n] inline where valid chart data exists.\n"
         "5. Data → [CHART_n] or a table, always. Only if a section is genuinely non-numeric/thematic and would "
         "otherwise be plain text, you MAY add up to 2 AI-generated illustrative images total — see AI IMAGE RULES. "
         "Default to zero images; most reports should return \"images\": [].\n"
         + ("6. Insert [FILE_IMG_n] references inline where you reference data visible in that extracted image/chart.\n" if embedded_file_images else "")
         + (
-            "7. THE USER EXPLICITLY ASKED FOR MORE DATA POINTS / CHARTS / GRAPHS — go beyond the usual "
-            "STEP 4 floor of 8: produce AT LEAST 10-13 [CHART_n]/table entries if the source material "
+            "7. THE USER EXPLICITLY ASKED FOR MORE DATA POINTS / CHARTS / GRAPHS — go beyond what a "
+            "typical report for this source material would use: produce AT LEAST 10-13 [CHART_n]/table "
+            "entries if the source material "
             "(file data, web sources, or — when NO_WEB_SOURCES — figures/ratios you can validly derive "
             "from the numbers already given) supports that many distinct chartable angles. For every "
             "metric mentioned in the text, also surface it as a keyStats entry or a chart data point "
