@@ -50,10 +50,14 @@ const _EDIT_INTENT_RE = /\b(edit|update|modify|change|revise|rewrite|redo|rephra
 // ANY non-chitchat message): a plain factual or explanatory question
 // ("What is quantum computing?", "Where is Chennai?", "Explain Python
 // exceptions.") should never show a report button just for being a real
-// question — only "report", "research", "compare/analyze", "deep dive",
-// "due diligence", "valuation", or "in-depth"/"comprehensive" (which always
-// appear alongside "analysis"/"report" in practice) should.
-const _REPORT_INTENT_RE = /\b(report|research|compar(?:e|ison)|analy(?:sis|ze|zing|tical)|deep\s*dive|due\s+diligence|valuation|in-?depth)\b/i;
+// question — only "report", "research", "analyze/analysis", "deep dive",
+// "due diligence", "valuation", or "in-depth" should.
+//
+// NOTE: "compare/comparison" was deliberately removed from this list — a bare
+// "Compare X and Y in a table" is an ordinary inline answer, not a report ask
+// (unlike "comparative analysis" or "comparison report", which still match via
+// "analy…"/"report" and correctly show the button).
+const _REPORT_INTENT_RE = /\b(report|research|analy(?:sis|ze|zing|tical)|deep\s*dive|due\s+diligence|valuation|in-?depth)\b/i;
 
 function uid() { return Math.random().toString(36).slice(2, 10); }
 function fmtTime(ts: number) {
