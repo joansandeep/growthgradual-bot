@@ -50,14 +50,10 @@ const _EDIT_INTENT_RE = /\b(edit|update|modify|change|revise|rewrite|redo|rephra
 // ANY non-chitchat message): a plain factual or explanatory question
 // ("What is quantum computing?", "Where is Chennai?", "Explain Python
 // exceptions.") should never show a report button just for being a real
-// question — only "report", "research", "analyze/analysis", "deep dive",
-// "due diligence", "valuation", or "in-depth" should.
-//
-// NOTE: "compare/comparison" was deliberately removed from this list — a bare
-// "Compare X and Y in a table" is an ordinary inline answer, not a report ask
-// (unlike "comparative analysis" or "comparison report", which still match via
-// "analy…"/"report" and correctly show the button).
-const _REPORT_INTENT_RE = /\b(report|research|analy(?:sis|ze|zing|tical)|deep\s*dive|due\s+diligence|valuation|in-?depth)\b/i;
+// question — only "report", "research", "compare/analyze", "deep dive",
+// "due diligence", "valuation", or "in-depth"/"comprehensive" (which always
+// appear alongside "analysis"/"report" in practice) should.
+const _REPORT_INTENT_RE = /\b(report|research|compar(?:e|ison)|analy(?:sis|ze|zing|tical)|deep\s*dive|due\s+diligence|valuation|in-?depth)\b/i;
 
 function uid() { return Math.random().toString(36).slice(2, 10); }
 function fmtTime(ts: number) {
@@ -1662,44 +1658,6 @@ export default function GrowthGradualChat() {
       return;
     }
 
-    // ── Explicit report/research/analysis request → skip the normal chat
-    // reply entirely and go straight to the existing report pipeline.
-    // Reuses the SAME intent check (_REPORT_INTENT_RE) that already gates
-    // the manual "Generate Report" button — so detection stays in exactly
-    // one place. The only thing that changes is WHEN it fires: previously
-    // only after a normal chat answer had already streamed in (requiring a
-    // click to then also get a report); now, for a message that already
-    // reads as an explicit report ask, it fires immediately instead of
-    // first producing an answer the user didn't ask for.
-    if (_REPORT_INTENT_RE.test(q)) {
-      setInput('');
-      if (inputRef.current) { inputRef.current.style.height = 'auto'; }
-
-      const userMsg: Message = { id: uid(), role: 'user', text: q, ts: Date.now() };
-      const botMsg: Message = {
-        id: uid(), role: 'assistant', text: '', ts: Date.now(),
-        reportEligible: true, reportQuestion: q, reportFiles: attachedFiles,
-      };
-      setMessages(prev => [...prev, userMsg, botMsg]);
-
-      // Same conversation-context shape the manual button already builds
-      // from prior turns (see the ReportPanel onGenerate handler below) —
-      // included by default since there's no button click to toggle it off.
-      const conversationContext = messages
-        .filter(m => m.text && m.text.trim())
-        .map(m => `${m.role === 'user' ? 'User' : 'Assistant'}: ${m.text.slice(0, 800)}`)
-        .join('\n\n');
-
-      historyRef.current = [...historyRef.current, { role: 'user', content: q }];
-
-      // generateReport() is the EXISTING report pipeline (same /api/chat/report
-      // call the button already makes) — not duplicated, just invoked earlier.
-      // appendToHistory=true: this flow has no normal chat answer to record
-      // in historyRef, unlike the manual-button flow (see generateReport).
-      generateReport(botMsg.id, q, attachedFiles, conversationContext || undefined, true);
-      return;
-    }
-
     setInput('');
     if (inputRef.current) { inputRef.current.style.height = 'auto'; }
 
@@ -1976,7 +1934,7 @@ export default function GrowthGradualChat() {
    *  Triggered on demand by the "Generate Report" button — reports are no
    *  longer generated automatically after every reply.
    *  `conversationContext` is a summary of all prior Q&A in the thread. */
-  const generateReport = useCallback((botMsgId: string, question: string, files: AttachedFile[], conversationContext?: string, appendToHistory: boolean = false) => {
+  const generateReport = useCallback((botMsgId: string, question: string, files: AttachedFile[], conversationContext?: string) => {
     setMessages(prev => prev.map(m => m.id === botMsgId ? { ...m, reportLoading: true } : m));
 
     const buildFilePayload = async () => {
@@ -2191,18 +2149,8 @@ export default function GrowthGradualChat() {
           return;
         }
 
-        // Concise in-chat preview, built from the SAME generation response —
-        // no second LLM call. Only fills in when the bubble has no text yet
-        // (the auto-triggered explicit-report flow skips the normal chat
-        // reply entirely, so this is what the user sees in the message
-        // bubble above the report panel/download buttons; the manual
-        // "Generate Report" button flow already has a normal chat answer in
-        // `text`, so this is a no-op there).
-        const previewText = (data.summary ?? '').trim();
-
         setMessages(prev => prev.map(m => m.id === botMsgId ? {
           ...m,
-          text: m.text && m.text.trim() ? m.text : previewText,
           reportLoading: false,
           reportError: undefined,
           reportData: {
@@ -2221,18 +2169,6 @@ export default function GrowthGradualChat() {
             recommendedFormat: data.recommendedFormat ?? 'pdf',
           },
         } : m));
-
-        // Keep chat history continuity for follow-up messages in this
-        // session. The normal /api/chat flow already does this for ordinary
-        // replies (see historyRef.current update after streamReply above);
-        // the auto-triggered report flow bypasses that call entirely, so it
-        // needs its own (equivalent) bookkeeping here. Gated on
-        // `appendToHistory` so the pre-existing manual "Generate Report"
-        // button flow — which already had its normal-answer turn added to
-        // history when that answer streamed in — is completely unaffected.
-        if (appendToHistory && previewText) {
-          historyRef.current = [...historyRef.current, { role: 'assistant', content: previewText }];
-        }
       })
       .catch((e) => {
         console.error('[generateReport]', e);
