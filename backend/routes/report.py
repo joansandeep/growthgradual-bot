@@ -523,11 +523,12 @@ STEP 3 — Place [CHART_n] inline in the report markdown right after the paragra
   paragraph (3+ sentences) or a paragraph + bullet list precedes the chart. This prevents blank whitespace
   gaps in the PDF.
 
-STEP 4 — Generate charts/tables ONLY where the source material and the user's request genuinely
-  support them. There is no fixed minimum, target, or page-length expectation — a report may
-  correctly contain 0, 1, several, or many charts/tables depending on what the sources actually
-  contain and what this specific request calls for. (If the user explicitly asks for more data
-  points/charts, honor that explicitly — see the instruction that triggers on that request.)
+STEP 4 — Generate charts/tables where the source material and the user's request genuinely support
+  them — but note the report as a whole DOES have a hard minimum length (see "MINIMUM LENGTH — HARD
+  FLOOR" below: at least 8 rendered PDF pages by default), so actively look for enough genuinely
+  chartable/tabular angles to help clear that floor rather than settling for the first couple that
+  come to mind. (If the user explicitly asks for more data points/charts, honor that explicitly — see
+  the instruction that triggers on that request.)
   Before finalizing, scan the sources/file data and STEP 1's per-scenario list for chartable angles
   you may have missed (a ratio, a trend, a breakdown, a comparison across a different pairing of the
   same entities) so you aren't leaving genuinely chartable data unused — but never invent, pad, or
@@ -882,16 +883,24 @@ GLOBAL RULES:
   "so what", an implication, a contrarian read, or the one line a reader would remember). Example: "> Valuations near 24x forward earnings
   leave little room for disappointment if Q2 guidance disappoints." Place one only where the section's
   argument actually turns on that insight, not evenly spaced for the sake of it.
-- LENGTH FOLLOWS REQUESTED DEPTH: there is no universal word/character/page target for the "report"
-  field. Let the user's request set the depth — "brief"/"short"/"quick" calls for a concise report;
-  "detailed" calls for substantially more depth; "comprehensive"/"deep-dive"/"exhaustive" calls for an
-  extensive one; with no explicit depth cue, pick a length that reasonably fits the topic and how much
-  genuine source material actually supports it. Whatever length is appropriate, favor structured content
-  (table rows, chart series, distinct bullets, another genuinely-supported section) over long paragraphs
-  when there is real material to present — a report that says everything it needs with dense
-  tables/bullets and lean prose is BETTER than one padded out with long paragraphs. A short report is
-  never a reason to reject or regenerate it. Never pad with filler sentences, restated points, or
-  invented figures to reach any particular length.
+- MINIMUM LENGTH — HARD FLOOR, NOT OPTIONAL: every report MUST contain enough real, source-grounded
+  content to render as AT LEAST 8 full PDF pages once typeset (cover page does not count toward this).
+  As a concrete target, that means roughly 4,500-6,000+ words of body content across your planned
+  sections (on top of charts/tables/images/keyStats, which add further page space) — treat this as a
+  floor to clear, not a ceiling to stop at once reached. This applies by default to every report,
+  including ones with no explicit depth cue. The only exception is when the user's own request
+  EXPLICITLY asks for something short ("brief"/"short"/"quick"/a stated page or word limit) — in that
+  case honor their explicit limit instead of the 8-page floor. Absent such an explicit ask, "detailed"
+  calls for substantially more than the floor, and "comprehensive"/"deep-dive"/"exhaustive" calls for
+  an extensive report well beyond it. To reach the floor without padding: plan MORE sections (not
+  longer filler sentences in existing ones) — go back over the source material for additional
+  chartable angles, additional comparison tables, additional sub-sections a thorough analyst would
+  include (peer comparisons, historical context, scenario analysis, a deeper risk breakdown, sourcing
+  detail) — favor structured content (table rows, chart series, distinct bullets, another
+  genuinely-supported section) over long paragraphs when there is real material to present. Never pad
+  with filler sentences, restated points, repeated stats, or invented figures to reach the floor — if
+  you are tempted to pad, add another genuinely-supported section or data angle instead. A report that
+  comes in under the floor is treated as incomplete and will be regenerated.
 - STOP CONDITION — DO NOT OVERSHOOT: once you have written the final section of the structure YOU
   planned for this report, STOP immediately. Do not add anything after it — no extra sections, no
   restated conclusion, no repeated section under a new number or heading (whatever sections you chose
@@ -913,10 +922,11 @@ JSON COMPLETION — CRITICAL: NEVER TRUNCATE THE OUTPUT
 You MUST output a fully valid, complete JSON object. Truncated output causes total report failure.
 
 BEFORE you start writing: budget your tokens. The JSON wrapper (title, charts, images, keyStats,
-summary) takes ~2000 tokens; whatever real content the report needs on top of that depends on the
-depth this specific request calls for. You have 32000 output tokens available, which comfortably
-covers even an extensive, comprehensive report — there is no need to rush or compress to fit, and
-no need to stretch a brief report to use more of that budget than it needs.
+summary) takes ~2000 tokens; on top of that, remember the 8-page/4,500-6,000+ word MINIMUM LENGTH
+floor described above applies by default. You have 32000+ output tokens available, which comfortably
+covers even an extensive, comprehensive report with room to spare — there is no need to rush or
+compress to fit, and no need to stop early once you've technically cleared the floor if the request
+calls for a "detailed"/"comprehensive" depth.
 
 Rules to prevent truncation:
 1. Write your planned sections in the exact order you laid them out for THIS request — do NOT
@@ -1696,6 +1706,11 @@ async def call_groq(user_prompt: str) -> str:
 
     log.info("Groq: calling for report generation with %d key(s)  prompt=%d chars", len(keys), len(user_prompt))
 
+    # See the matching fallback net in call_gemini(): ship the longest
+    # under-floor attempt rather than failing outright if no key clears
+    # MIN_REPORT_CHARS.
+    best_text = ""
+
     for key in round_robin(keys):
         if is_rate_limited(key):
             log.debug("Groq: skipping rate-limited key ...%s", key[-4:])
@@ -1757,20 +1772,31 @@ async def call_groq(user_prompt: str) -> str:
                 elapsed = (time.perf_counter() - t0) * 1000
                 log.info("Groq: report generated in %.0fms (%d chars)", elapsed, len(text))
                 if len(text) < MIN_REPORT_CHARS:
-                    # Length is no longer a retry trigger — a short report reflects
-                    # thin source data, not a bad generation (see report.py notes
-                    # on call_gemini for the full rationale). Retrying here just
-                    # burns API keys for the same shallow sourcing. Accept as-is
-                    # and log the shortfall for visibility only.
-                    log.info(
-                        "Groq: report is %d chars (< %d target) — accepting as-is, no retry",
+                    # The system prompt mandates an 8-page/~30K-char floor. A short
+                    # report here is treated as a soft failure and retried against
+                    # the next key rather than accepted — this was previously
+                    # downgraded to "accept as-is, log only," which is what let
+                    # sub-5K-char / 4-page reports ship. Restored as a real retry
+                    # trigger.
+                    log.warning(
+                        "Groq: report is %d chars (< %d floor) — retrying next key",
                         len(text), MIN_REPORT_CHARS,
                     )
+                    if len(text) > len(best_text):
+                        best_text = text
+                    continue
                 return text
         except Exception as exc:
             log.warning("Groq exception on key ...%s: %s", key[-4:], exc)
             continue
 
+    if best_text:
+        log.warning(
+            "Groq: all keys exhausted without clearing the %d-char floor — shipping the longest "
+            "attempt seen (%d chars) rather than failing the report outright",
+            MIN_REPORT_CHARS, len(best_text),
+        )
+        return best_text
     log.error("Groq: all keys exhausted for report generation")
     return ""
 
@@ -1837,10 +1863,15 @@ GEMINI_MODELS = [
     "gemini-3.5-flash",        # 65 536 output tokens — GA, but currently timing out for this account — kept as last-resort in case it recovers
 ]
 
-# Minimum acceptable report length — see the "target 3500-4500 words" mandate
-# in SYSTEM_PROMPT. Kept as one constant so Groq/Gemini paths (and any future
-# provider) enforce the same floor.
-MIN_REPORT_CHARS = 22_000
+# Minimum acceptable report length — see the "MINIMUM LENGTH — HARD FLOOR" mandate
+# in SYSTEM_PROMPT (>= 8 rendered PDF pages, ~4,500-6,000+ words). Kept as one
+# constant so Groq/Gemini paths (and any future provider) enforce the same floor.
+# Raised from 22_000 -> 30_000 after reports were shipping at ~5K chars / 4 pages
+# despite the old floor, because BOTH call paths below had this check downgraded
+# to "log only, accept as-is" during the research-engine pivot — it was never
+# actually rejecting short output. Restored as a real retry trigger; see the
+# checks in call_groq() and call_gemini().
+MIN_REPORT_CHARS = 30_000
 
 # NOTE: this used to also enforce a hard wall-clock budget across the whole
 # attempt loop (GEMINI_TIME_BUDGET_SECONDS = 100s). That budget was cutting
@@ -1917,6 +1948,15 @@ async def call_gemini(user_prompt: str) -> tuple[str, str]:
     # Tracks consecutive exceptions per model (resets to 0 on any non-exception
     # outcome for that model) — feeds GEMINI_MAX_CONSECUTIVE_EXCEPTIONS below.
     consecutive_exceptions: dict[str, int] = {}
+
+    # Fallback net for the under-length retry loop below: if EVERY key×model
+    # combination comes back under MIN_REPORT_CHARS (e.g. genuinely thin source
+    # material that can't support an 8-page report no matter how many times we
+    # ask), we still want to ship the longest usable attempt rather than fail
+    # the whole report outright. Only candidates that pass the other structural
+    # checks (not MAX_TOKENS-truncated, not runaway-length, no stale heading)
+    # are tracked here.
+    best_text, best_model = "", ""
 
     loop_start = time.perf_counter()
 
@@ -2013,18 +2053,19 @@ async def call_gemini(user_prompt: str) -> tuple[str, str]:
                     )
                     continue
                 if len(text) < MIN_REPORT_CHARS:
-                    # Length is no longer a retry trigger (see note by
-                    # MIN_REPORT_CHARS) — short output usually means thin
-                    # source data, not a bad generation. Retrying here just
-                    # burns keys re-asking the same shallow sources the same
-                    # question. Log for visibility and fall through to the
-                    # structural checks below (runaway/legacy-heading/exec
-                    # summary) — those still guard against genuinely broken
-                    # output; only the character-count floor is relaxed.
-                    log.info(
-                        "Gemini: report is %d chars (< %d target) — accepting as-is, no retry",
+                    # The system prompt mandates an 8-page/~30K-char floor (see
+                    # MIN_REPORT_CHARS). This check was previously downgraded to
+                    # "log only, accept as-is," which is exactly what let
+                    # sub-5K-char / 4-page reports ship despite the floor.
+                    # Restored as a real soft-failure retry trigger — try the
+                    # next model/key rather than shipping an under-length report.
+                    log.warning(
+                        "Gemini: report is %d chars (< %d floor) — retrying next slot",
                         len(text), MIN_REPORT_CHARS,
                     )
+                    if len(text) > len(best_text):
+                        best_text, best_model = text, model
+                    continue
                 # Reject runaway-length output. Target is ~3500-4500 words
                 # (roughly 22K-38K chars incl. markdown/tables). Output has
                 # been observed to balloon to 400K+ chars when the model,
@@ -2094,6 +2135,14 @@ async def call_gemini(user_prompt: str) -> tuple[str, str]:
             continue
 
     total_elapsed = time.perf_counter() - loop_start
+    if best_text:
+        log.warning(
+            "Gemini: all key×model combinations exhausted (%.0fs total) without clearing the "
+            "%d-char floor — shipping the longest attempt seen (%d chars, model=%s) rather than "
+            "failing the report outright",
+            total_elapsed, MIN_REPORT_CHARS, len(best_text), best_model,
+        )
+        return best_text, best_model
     log.error("Gemini: all key×model combinations exhausted (%.0fs total)", total_elapsed)
     return "", ""
 
