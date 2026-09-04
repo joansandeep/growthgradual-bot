@@ -1873,24 +1873,45 @@ GEMINI_MODELS = [
 # checks in call_groq() and call_gemini().
 MIN_REPORT_CHARS = 30_000
 
-# NOTE: this used to also enforce a hard wall-clock budget across the whole
-# attempt loop (GEMINI_TIME_BUDGET_SECONDS = 100s). That budget was cutting
-# the loop off after only ~3 attempts against a single struggling model —
-# before most keys, and often before any other model, ever got tried. In
-# particular it meant keys that were actually being rate-limited/banned
-# never got far enough in the loop to be marked as such (see
-# utils/keys.py's mark_rate_limited/persist logic) — so the same dead keys
-# kept getting reached first on the next request too. Removed: the loop now
-# runs until it finds a working response or genuinely exhausts every
-# key×model combination, bounded only by the per-attempt timeout and the
-# per-model consecutive-exception circuit breaker below (not by a global
-# clock). If this turns out to run too long against a client/proxy timeout,
-# reintroduce a budget that's a multiple of (max keys per model × per-attempt
-# timeout × number of models) rather than an arbitrary flat 100s.
+# A prior revision removed the global wall-clock budget entirely (see history
+# below) because it was cutting the loop off after only ~3 attempts against a
+# single struggling model. But with no budget at all, and MIN_REPORT_CHARS
+# rejecting every attempt that comes in under 30K chars, production logs show
+# the loop burning through every key×model combination anyway (2026-09-04:
+# 22 keys × 4 models, every single attempt landing between 7K-16K chars,
+# 327s total) before finally giving up and shipping the best under-floor
+# attempt regardless — the exact same outcome a much shorter budget would
+# have reached, just 300+s slower, and long enough to blow past the
+# frontend's 170s timeout (frontend/src/app/api/chat/report/route.ts),
+# surfacing as a hard failure to the user instead of a (still under-floor,
+# but usable) report. Reintroducing a budget generous enough to still let
+# most keys/models get a turn, but not so large it can exceed the frontend
+# timeout: at ~10-13s per successful attempt (or up to the 35s per-attempt
+# read timeout for a stuck one), 100s covers roughly 3-9 real attempts across
+# different models/keys while leaving ~70s of the 170s budget for the report
+# pipeline's other steps (source gathering, images, chart publishing).
+GEMINI_TIME_BUDGET_SECONDS = 100
+# Old note, still relevant to why this is a soft time budget and not a hard
+# abort: it is only ever consulted between attempts (never mid-request), so
+# a key/model that's already in flight always gets to finish or hit its own
+# 35s per-attempt timeout — it never gets cut off partway through.
+#
+# Separately: once several models/keys in a row all land under the 30K floor,
+# further attempts are very unlikely to suddenly clear it — see
+# GEMINI_MAX_UNDER_FLOOR_ATTEMPTS below, which stops the loop early in that
+# case rather than waiting for the full time budget to elapse.
+#
 # Cap on keys tried per model before moving on — with many keys configured,
 # exhausting all of them against one struggling/overloaded model is rarely
 # worth it; better to give the remaining models their turn sooner.
 GEMINI_MAX_KEYS_PER_MODEL = 6
+
+# If this many valid (structurally OK, just short) attempts in a row all
+# land under MIN_REPORT_CHARS, stop retrying and ship the longest one seen —
+# consistently short output across several different models/keys means the
+# floor isn't reachable for this request's source material, not that the
+# next attempt will suddenly clear it.
+GEMINI_MAX_UNDER_FLOOR_ATTEMPTS = 4
 
 # Per-model max output tokens — used to set the right ceiling per attempt.
 # Setting this too high on flash-lite causes it to hang; match the actual model limit.
@@ -1957,6 +1978,7 @@ async def call_gemini(user_prompt: str) -> tuple[str, str]:
     # checks (not MAX_TOKENS-truncated, not runaway-length, no stale heading)
     # are tracked here.
     best_text, best_model = "", ""
+    under_floor_streak = 0
 
     loop_start = time.perf_counter()
 
@@ -1965,6 +1987,12 @@ async def call_gemini(user_prompt: str) -> tuple[str, str]:
             continue
         if is_rate_limited(f"{key}:{model}"):
             continue
+        if time.perf_counter() - loop_start > GEMINI_TIME_BUDGET_SECONDS:
+            log.warning(
+                "Gemini: time budget (%ds) exceeded — stopping the attempt loop early",
+                GEMINI_TIME_BUDGET_SECONDS,
+            )
+            break
         try:
             log.debug("Gemini: trying model=%s key=...%s", model, key[-4:])
             t0 = time.perf_counter()
@@ -2065,7 +2093,17 @@ async def call_gemini(user_prompt: str) -> tuple[str, str]:
                     )
                     if len(text) > len(best_text):
                         best_text, best_model = text, model
+                    under_floor_streak += 1
+                    if under_floor_streak >= GEMINI_MAX_UNDER_FLOOR_ATTEMPTS:
+                        log.warning(
+                            "Gemini: %d consecutive under-floor attempts — floor isn't "
+                            "reachable for this request, shipping best attempt seen "
+                            "(%d chars, model=%s) instead of continuing",
+                            under_floor_streak, len(best_text), best_model,
+                        )
+                        break
                     continue
+                under_floor_streak = 0
                 # Reject runaway-length output. Target is ~3500-4500 words
                 # (roughly 22K-38K chars incl. markdown/tables). Output has
                 # been observed to balloon to 400K+ chars when the model,

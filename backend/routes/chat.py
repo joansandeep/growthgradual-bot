@@ -561,6 +561,15 @@ def optimize_search_query(text: str, current_year: int | None = None, qtype: str
         m = _MULTI_INTENT_SPLIT_RE.match(text)
         if m and not _JOINT_SUFFIX_RE.search(stripped_end):
             first, second = m.group(1).strip(), m.group(2).strip()
+            # Guard against a plain/Oxford-comma list ("open, high, low, and
+            # close") being misread as two independent intents — a comma
+            # immediately before "and" signals enumeration within ONE ask,
+            # not a joiner between two separate asks. Without this guard,
+            # "give me the open, high, low, and close for each session"
+            # split into "...the open, high, low," + "close for each
+            # session" — two useless, truncated search queries.
+            if first.rstrip().endswith(","):
+                first = None
             if first and second:
                 return [
                     _finalize_query(first, current_year),

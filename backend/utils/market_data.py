@@ -125,6 +125,97 @@ async def _yf_chart_history(
         return None
 
 
+async def _yf_chart_ohlc(
+    client: httpx.AsyncClient, yf_symbol: str, range_str: str, interval: str,
+) -> Optional[list[dict]]:
+    """Like _yf_chart_history, but keeps the full open/high/low/close for each
+    bar instead of collapsing to just the close — needed for "daily price
+    action" / "OHLC for each session" style questions that _yf_chart_history
+    (period-end closes only) can't answer.
+    """
+    try:
+        r = await client.get(
+            f"https://query1.finance.yahoo.com/v8/finance/chart/{yf_symbol}",
+            params={"interval": interval, "range": range_str},
+            headers=YF_HEADERS,
+            timeout=10.0,
+        )
+        if r.status_code != 200:
+            return None
+        result = (r.json().get("chart", {}).get("result") or [None])[0]
+        if not result:
+            return None
+        timestamps = result.get("timestamp") or []
+        quote = (result.get("indicators", {}).get("quote") or [{}])[0]
+        opens  = quote.get("open") or []
+        highs  = quote.get("high") or []
+        lows   = quote.get("low") or []
+        closes = quote.get("close") or []
+
+        from datetime import datetime, timezone
+        bars: list[dict] = []
+        for i, ts in enumerate(timestamps):
+            o = opens[i]  if i < len(opens)  else None
+            h = highs[i]  if i < len(highs)  else None
+            l = lows[i]   if i < len(lows)   else None
+            c = closes[i] if i < len(closes) else None
+            if None in (o, h, l, c):
+                continue  # incomplete bar (e.g. today's still-forming session)
+            bars.append({
+                "date":  datetime.fromtimestamp(ts, tz=timezone.utc).strftime("%d %b %Y"),
+                "open":  round(float(o), 2),
+                "high":  round(float(h), 2),
+                "low":   round(float(l), 2),
+                "close": round(float(c), 2),
+            })
+        return bars or None
+    except Exception as e:
+        log.debug("yf_chart_ohlc failed for %s: %s", yf_symbol, e)
+        return None
+
+
+async def fetch_index_daily_ohlc(range_str: str = "5d", interval: str = "1d") -> list[dict]:
+    """Returns real per-session OHLC bars for major Indian indices, e.g.:
+        [{"label": "NIFTY 50", "bars": [{"date": "01 Sep 2026", "open": ...,
+                                          "high": ..., "low": ..., "close": ...}, ...]}, ...]
+    Default range/interval (5d/1d) covers "last week of trading" style asks.
+    Yahoo-only, same best-effort contract as the other fetchers here.
+    """
+    out: list[dict] = []
+    async with httpx.AsyncClient() as client:
+        for _, yf_sym, label in INDEX_SYMBOLS:
+            bars = await _yf_chart_ohlc(client, yf_sym, range_str, interval)
+            if bars:
+                out.append({"label": label, "bars": bars})
+    log.info("market_data: fetched daily OHLC for %d/%d indices (range=%s, interval=%s)",
+              len(out), len(INDEX_SYMBOLS), range_str, interval)
+    return out
+
+
+def format_ohlc_history_as_source(series: list[dict]) -> Optional[dict]:
+    """Wraps a fetch_index_daily_ohlc() series as a synthetic, high-trust
+    "source" dict — same shape/contract as format_quotes_as_source() below."""
+    if not series:
+        return None
+    lines = []
+    for s in series:
+        for bar in s["bars"]:
+            lines.append(
+                f"{s['label']} — {bar['date']}: Open {bar['open']:.2f}, High {bar['high']:.2f}, "
+                f"Low {bar['low']:.2f}, Close {bar['close']:.2f}"
+            )
+    return {
+        "title": (
+            "VERIFIED DAILY OHLC (authoritative — real per-session open/high/low/close "
+            "levels from Yahoo Finance; use these exact figures, one line per trading "
+            "session, do not invent or estimate any figure not listed here)"
+        ),
+        "url": "internal://verified-daily-ohlc",
+        "snippet": " | ".join(lines)[:2000],
+        "fullContent": "\n".join(lines),
+    }
+
+
 async def fetch_historical_index_quotes(
     range_str: str = "2y", interval: str = "3mo",
 ) -> list[dict]:

@@ -306,6 +306,10 @@ async def _run_market_data(args: dict, ctx: ToolContext) -> ToolResult:
         symbols = [symbols]
     symbols = [str(s).strip() for s in symbols if str(s).strip()][:8]
     want_indices = bool(args.get("include_indices", not symbols))
+    # "daily OHLC / price action / open-high-low-close for each session"
+    # style asks need actual per-session bars, not just a single live quote —
+    # see fetch_index_daily_ohlc(). Only applies to indices for now.
+    want_daily_ohlc = bool(args.get("daily_ohlc", False))
 
     blocks: list[str] = []
     sources: list[dict] = []
@@ -318,6 +322,13 @@ async def _run_market_data(args: dict, ctx: ToolContext) -> ToolResult:
             errors.append(f"indices: {type(exc).__name__}")
             return None
 
+    async def _daily_ohlc():
+        try:
+            return md.format_ohlc_history_as_source(await md.fetch_index_daily_ohlc())
+        except Exception as exc:
+            errors.append(f"daily_ohlc: {type(exc).__name__}")
+            return None
+
     async def _stocks():
         try:
             return md.format_stock_fundamentals_as_source(await md.fetch_stock_fundamentals(symbols))
@@ -326,7 +337,9 @@ async def _run_market_data(args: dict, ctx: ToolContext) -> ToolResult:
             return None
 
     tasks = []
-    if want_indices:
+    if want_daily_ohlc:
+        tasks.append(_daily_ohlc())
+    elif want_indices:
         tasks.append(_indices())
     if symbols:
         tasks.append(_stocks())
@@ -512,9 +525,12 @@ ALL_TOOLS: list[Tool] = [
     Tool(
         name="market_data",
         description=(
-            "Fetch live market quotes: major index levels and/or current price data for "
-            "specific listed companies. Use only when the question needs an up-to-the-minute "
-            "market level or quote."
+            "Fetch verified market data: live index levels/current price data for specific "
+            "listed companies, or (set daily_ohlc=true) the last few trading sessions' real "
+            "open/high/low/close bars for major Indian indices. Use daily_ohlc=true whenever "
+            "the question asks for daily price action, OHLC, or open/high/low/close 'for each "
+            "session' over a recent period — web_search will not have this. Use the plain "
+            "quote mode only when the question needs a single up-to-the-minute market level."
         ),
         parameters={
             "type": "object",
@@ -527,6 +543,14 @@ ALL_TOOLS: list[Tool] = [
                 "include_indices": {
                     "type": "boolean",
                     "description": "Include broad index levels. Defaults to true when no symbols are given.",
+                },
+                "daily_ohlc": {
+                    "type": "boolean",
+                    "description": (
+                        "Set true to fetch the last ~5 trading sessions' real open/high/low/close "
+                        "for major indices (NIFTY 50, SENSEX, NIFTY BANK, etc.) instead of a single "
+                        "live quote. Use for 'daily price action', 'OHLC', or per-session breakdown asks."
+                    ),
                 },
             },
         },

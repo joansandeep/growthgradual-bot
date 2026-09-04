@@ -36,6 +36,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import time
 from dataclasses import dataclass, field
 from datetime import date
@@ -62,6 +63,16 @@ GROQ_URL = "https://api.groq.com/openai/v1/chat/completions"
 # also supports tool/function calling (required for the planner). Override
 # via GROQ_TOOL_MODEL if needed.
 PLANNER_MODEL = os.environ.get("GROQ_TOOL_MODEL", "openai/gpt-oss-120b").strip()
+
+# Gemini models tried, in order, when Groq's tool-calling planner is
+# unavailable (see _gemini_plan). Small/fast/cheap is what a planning round
+# needs — flash-lite first, with the general-purpose flash-preview model as
+# a second try if flash-lite's account access or quota is the problem.
+GEMINI_PLANNER_MODELS = [
+    m.strip() for m in os.environ.get(
+        "GEMINI_PLANNER_MODELS", "gemini-3.5-flash-lite,gemini-3-flash-preview"
+    ).split(",") if m.strip()
+]
 
 # Hard bound on planning rounds. 2 is enough for "search, look, refine once";
 # more rounds mostly buy latency. Configurable but clamped.
@@ -105,7 +116,7 @@ How to decide:
 - **Call no tools at all** when the answer is timeless, conceptual or self-contained and you are confident from your own knowledge: definitions, explanations of how something works, mathematics, reasoning about code or an error message, writing/editing help, translation, or plain conversation. Retrieval adds latency and noise for these — skip it.
 - **Call web_search** when the answer depends on information that changes, is recent, or that you cannot verify from memory: news and current events, "latest"/"today"/"this week"/"{date.today().year}" questions, prices and market levels, who currently holds a position, release versions, statistics, or any claim the user would expect to be up to date. Also call it when you are genuinely unsure whether your knowledge is still current — it is much worse to answer stale than to search.
 - **Call document_search** when the message refers to the user's own uploaded material ("my file", "the PDF", "this document", "the attachment") or asks about content that would only exist in their upload.
-- **Call the data tools** (company_fundamentals, market_data) only when a specific named company's real figures or a live market level actually matter to the answer.
+- **Call the data tools** (company_fundamentals, market_data) only when a specific named company's real figures or a live market level actually matter to the answer. For a request for daily price action / OHLC / open-high-low-close per session over a recent period (e.g. "last week"), call market_data with daily_ohlc=true — web_search will not have real per-session bars.
 - You may call several tools in one go when they cover genuinely different needs.
 - Write short, focused search queries — not the user's whole sentence. Omit `region` unless the question is specifically about one country.
 
@@ -201,6 +212,150 @@ async def _groq_plan(payload_messages: list[dict], schemas: list[dict]) -> dict 
     return None
 
 
+def _openai_schemas_to_gemini(schemas: list[dict]) -> list[dict]:
+    """Convert the OpenAI/Groq-style {"type":"function","function":{...}}
+    tool schemas (see Tool.schema() in utils/tools.py) into Gemini's
+    functionDeclarations shape."""
+    decls = []
+    for s in schemas:
+        fn = s.get("function") or {}
+        if not fn.get("name"):
+            continue
+        decls.append({
+            "name": fn["name"],
+            "description": fn.get("description", ""),
+            "parameters": fn.get("parameters") or {"type": "object", "properties": {}},
+        })
+    return [{"functionDeclarations": decls}] if decls else []
+
+
+def _openai_messages_to_gemini(payload_messages: list[dict]) -> tuple[str, list[dict]]:
+    """Split an OpenAI-style message list (system/user/assistant/tool) into
+    a Gemini system-instruction string plus a `contents` list, translating
+    assistant tool_calls into functionCall parts and tool results into
+    functionResponse parts. This is what lets _gemini_plan step into a
+    conversation that orchestrate()'s round loop already built for the
+    Groq/OpenAI protocol, including on round 2+ after tools have already run.
+    """
+    system_parts: list[str] = []
+    contents: list[dict] = []
+    for m in payload_messages:
+        role = m.get("role")
+        if role == "system":
+            system_parts.append(str(m.get("content") or ""))
+        elif role == "user":
+            contents.append({"role": "user", "parts": [{"text": str(m.get("content") or "")}]})
+        elif role == "assistant":
+            parts = []
+            content = m.get("content") or ""
+            if content:
+                parts.append({"text": content})
+            for call in (m.get("tool_calls") or []):
+                fn = call.get("function") or {}
+                raw_args = fn.get("arguments")
+                if isinstance(raw_args, str):
+                    try:
+                        raw_args = json.loads(raw_args or "{}")
+                    except (TypeError, ValueError):
+                        raw_args = {}
+                parts.append({"functionCall": {"name": fn.get("name", ""), "args": raw_args or {}}})
+            if parts:
+                contents.append({"role": "model", "parts": parts})
+        elif role == "tool":
+            contents.append({
+                "role": "function",
+                "parts": [{
+                    "functionResponse": {
+                        "name": m.get("name", ""),
+                        "response": {"content": str(m.get("content") or "")},
+                    },
+                }],
+            })
+    return "\n\n".join(p for p in system_parts if p), contents
+
+
+def _gemini_tool_calls_to_openai(function_calls: list[dict]) -> list[dict]:
+    """Wrap Gemini functionCall parts as OpenAI-style tool_calls so the rest
+    of the orchestrator (built around _parse_tool_calls) needs no second
+    code path for a Gemini-planned round."""
+    out = []
+    for i, fc in enumerate(function_calls):
+        out.append({
+            "id": f"gemini-call-{i}",
+            "type": "function",
+            "function": {"name": fc.get("name", ""), "arguments": json.dumps(fc.get("args") or {})},
+        })
+    return out
+
+
+async def _gemini_plan(payload_messages: list[dict], schemas: list[dict]) -> dict | None:
+    """
+    Gemini function-calling fallback for the planner — used only when Groq's
+    tool-calling planner is unavailable (no keys, all keys banned/rate-limited,
+    malformed response, network failure). Mirrors _groq_plan's contract:
+    returns an OpenAI-shaped assistant message dict (content + tool_calls) so
+    orchestrate()'s round loop works unchanged regardless of which backend
+    actually planned this round. Never raises; returns None when every
+    key/model is exhausted (the caller then falls back to the heuristic
+    plan), same as _groq_plan.
+    """
+    from utils.keys import get_gemini_keys
+
+    keys = [k for k in get_gemini_keys() if k.startswith("AIzaSy") or k.startswith("AQ.")]
+    if not keys:
+        log.info("Planner: no Gemini keys configured — cannot use as Groq fallback")
+        return None
+
+    tools = _openai_schemas_to_gemini(schemas)
+    system_text, contents = _openai_messages_to_gemini(payload_messages)
+    if not contents:
+        return None
+
+    candidates = [k for k in round_robin(keys) if not is_rate_limited(k)] or keys[:1]
+    for key in candidates[:3]:
+        for model in GEMINI_PLANNER_MODELS:
+            if is_rate_limited(f"{key}:{model}"):
+                continue
+            try:
+                payload = {
+                    "contents": contents,
+                    "tools": tools,
+                    "generationConfig": {"temperature": 0.1, "maxOutputTokens": 512},
+                }
+                if system_text:
+                    payload["system_instruction"] = {"parts": [{"text": system_text}]}
+                async with httpx.AsyncClient(timeout=PLANNER_TIMEOUT) as client:
+                    res = await client.post(
+                        f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={key}",
+                        json=payload,
+                    )
+                if res.status_code == 429:
+                    log.warning("Planner: Gemini 429 on model=%s key=...%s", model, key[-4:])
+                    mark_rate_limited(f"{key}:{model}", 60_000)
+                    continue
+                if res.status_code in (401, 403):
+                    log.warning("Planner: Gemini auth error on key ...%s — banning 24h", key[-4:])
+                    mark_rate_limited(key, 24 * 60 * 60_000)
+                    break
+                if not res.is_success:
+                    log.warning("Planner: Gemini HTTP %d on model=%s key=...%s", res.status_code, model, key[-4:])
+                    continue
+                cand = (res.json().get("candidates") or [{}])[0]
+                parts = cand.get("content", {}).get("parts", []) or []
+                function_calls = [p["functionCall"] for p in parts if "functionCall" in p]
+                text = "".join(p.get("text", "") for p in parts if "text" in p)
+                log.info(
+                    "Planner: Gemini plan succeeded model=%s key=...%s (%d tool call(s))",
+                    model, key[-4:], len(function_calls),
+                )
+                return {"content": text, "tool_calls": _gemini_tool_calls_to_openai(function_calls)}
+            except Exception as exc:
+                log.warning("Planner: Gemini call failed on model=%s key=...%s: %s: %s",
+                            model, key[-4:], type(exc).__name__, exc)
+                continue
+    return None
+
+
 def _heuristic_plan(ctx: ToolContext, toolset_names: list[str], search_queries: list[str]) -> list[tuple[str, dict]]:
     """
     Deterministic fallback used only when the planner LLM is unreachable.
@@ -223,6 +378,11 @@ def _heuristic_plan(ctx: ToolContext, toolset_names: list[str], search_queries: 
         calls.append(("web_search", {"queries": search_queries[:3] or [ctx.user_message]}))
     if "company_fundamentals" in toolset_names:
         calls.append(("company_fundamentals", {"companies": []}))
+    if "market_data" in toolset_names and re.search(
+        r"\b(ohlc|open[,\s]+high[,\s]+low|daily price action|price action)\b",
+        ctx.user_message, re.IGNORECASE,
+    ):
+        calls.append(("market_data", {"daily_ohlc": True}))
     return calls
 
 
@@ -282,22 +442,38 @@ async def orchestrate(
     t_plan = time.perf_counter()
     used_names: set[str] = set()
     planner_failed = False
+    # Which backend actually planned this request — starts on Groq every
+    # time; if Groq is down (no keys / all banned / network failure) round 1
+    # falls back to Gemini and every subsequent round sticks with Gemini too,
+    # rather than re-probing Groq each round: if it was down, it's very
+    # unlikely to have recovered a few hundred ms later, so retrying it per
+    # round only adds latency without changing the outcome.
+    active_backend = "groq"
 
     for round_no in range(1, rounds + 1):
-        assistant_msg = await _groq_plan(convo, schemas)
+        if active_backend == "groq":
+            assistant_msg = await _groq_plan(convo, schemas)
+            if assistant_msg is None:
+                log.warning("Planner: Groq unavailable — falling back to Gemini as planner")
+                active_backend = "gemini"
+                assistant_msg = await _gemini_plan(convo, schemas)
+        else:
+            assistant_msg = await _gemini_plan(convo, schemas)
 
         if assistant_msg is None:
             planner_failed = True
             break
 
+        planner_label = "groq-tool-calling" if active_backend == "groq" else "gemini-tool-calling"
+
         calls = _parse_tool_calls(assistant_msg)
         if not calls:
             note = (assistant_msg.get("content") or "").strip()[:200]
             log.info(
-                "Orchestrator round %d: planner chose no tools (%s) — answering from model knowledge",
-                round_no, note or "no note",
+                "Orchestrator round %d: planner (%s) chose no tools (%s) — answering from model knowledge",
+                round_no, planner_label, note or "no note",
             )
-            out.planner = "groq-tool-calling"
+            out.planner = planner_label
             out.rounds = round_no
             if round_no == 1:
                 out.planner_note = "planner decided no external retrieval was needed"
@@ -307,9 +483,9 @@ async def orchestrate(
         # occasionally re-requests an identical call after seeing its output.
         fresh_calls = [c for c in calls if c[0] not in used_names]
         if not fresh_calls:
-            log.info("Orchestrator round %d: planner only re-requested already-run tools — stopping",
-                     round_no)
-            out.planner = "groq-tool-calling"
+            log.info("Orchestrator round %d: planner (%s) only re-requested already-run tools — stopping",
+                     round_no, planner_label)
+            out.planner = planner_label
             out.rounds = round_no
             break
 
@@ -347,7 +523,7 @@ async def orchestrate(
                 "content": answered.get(call_id, "Skipped — this tool already ran for this request."),
             })
 
-        out.planner = "groq-tool-calling"
+        out.planner = planner_label
         out.rounds = round_no
 
         # Nothing usable came back and we still have a round left — let the
@@ -357,9 +533,9 @@ async def orchestrate(
 
     if planner_failed:
         out.planner = "heuristic"
-        out.planner_note = "planner LLM unavailable — used deterministic fallback plan"
+        out.planner_note = "Groq and Gemini planners both unavailable — used deterministic fallback plan"
         out.limitations.append(
-            "Tool selection fell back to a heuristic plan because the planning model was unavailable."
+            "Tool selection fell back to a heuristic plan because no planning model was available."
         )
         calls = _heuristic_plan(ctx, toolset_names, queries)
         log.warning(
