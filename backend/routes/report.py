@@ -1484,7 +1484,7 @@ def _extract_inline_chart_jsons(report_text: str, existing_charts: list) -> tupl
             candidate = report_text[i:j]
             if depth == 0 and '"type"' in candidate and '"series"' in candidate:
                 try:
-                    spec = json.loads(candidate)
+                    spec = json.loads(candidate, strict=False)
                 except Exception:
                     spec = None
                 if isinstance(spec, dict) and spec.get("series") is not None:
@@ -2740,7 +2740,7 @@ async def _llm_build_multi_angle_queries(question: str) -> list[str] | None:
                 continue
             data = res.json()
             text = data.get("choices", [{}])[0].get("message", {}).get("content", "")
-            parsed = json.loads(text)
+            parsed = json.loads(text, strict=False)
             queries = [q.strip() for q in parsed.get("queries", []) if isinstance(q, str) and q.strip()]
             if not queries:
                 return None
@@ -3086,7 +3086,7 @@ def _extract_json_object(text: str) -> dict | None:
     if start == -1 or end == -1 or end <= start:
         return None
     try:
-        parsed = json.loads(text[start:end + 1])
+        parsed = json.loads(text[start:end + 1], strict=False)
         return parsed if isinstance(parsed, dict) else None
     except Exception:
         return None
@@ -4655,7 +4655,7 @@ async def generate_report(request: Request):
         return ch
 
     try:
-        parsed = json.loads(clean)
+        parsed = json.loads(clean, strict=False)
 
         original_charts_list = [
             _recover_pseudo_trend_line_as_bar(_recover_thin_bar_as_pie(c))
@@ -4714,7 +4714,7 @@ async def generate_report(request: Request):
             if not stripped.startswith("{"):
                 break
             try:
-                inner = json.loads(stripped)
+                inner = json.loads(stripped, strict=False)
                 if not isinstance(inner, dict) or "report" not in inner:
                     break
                 inner_report = (inner.get("report") or "").replace("\\n", "\n").strip()
@@ -4800,20 +4800,20 @@ async def generate_report(request: Request):
             arr_text = _extract_balanced_array(text, "keyStats")
             if arr_text:
                 try:
-                    result["keyStats"] = json.loads(arr_text)
+                    result["keyStats"] = json.loads(arr_text, strict=False)
                 except Exception as e:
                     log.debug("Report salvage: keyStats array failed to parse (%s)", e)
             arr_text = _extract_balanced_array(text, "charts")
             if arr_text:
                 try:
-                    result["charts"] = json.loads(arr_text)
+                    result["charts"] = json.loads(arr_text, strict=False)
                 except Exception as e:
                     log.debug("Report salvage: charts array failed to parse (%s)", e)
             # Also try to salvage images array from truncated JSON
             arr_text = _extract_balanced_array(text, "images")
             if arr_text:
                 try:
-                    raw_imgs = json.loads(arr_text)
+                    raw_imgs = json.loads(arr_text, strict=False)
                     if image_candidates and raw_imgs:
                         validated, _ = _validate_image_selections(raw_imgs, image_candidates)
                         result["images"] = validated
@@ -4867,7 +4867,7 @@ async def generate_report(request: Request):
             repaired += "}" * max(opens, 0)
             opens_arr = repaired.count("[") - repaired.count("]")
             repaired += "]" * max(opens_arr, 0)
-            repaired_parsed = json.loads(repaired)
+            repaired_parsed = json.loads(repaired, strict=False)
             log.info("Report: repaired truncated JSON successfully")
             repaired_report = (repaired_parsed.get("report", "") or "").replace("\\n", "\n")
             repaired_report = _strip_leaked_prompt_tail(repaired_report)

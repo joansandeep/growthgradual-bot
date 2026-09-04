@@ -1349,7 +1349,7 @@ async def load_headlines(limit: int = 30) -> str:
         log.debug("No headline cache found — skipping headlines injection")
         return ""
     try:
-        data = json.loads(raw)
+        data = json.loads(raw, strict=False)
         articles = (data.get("articles") or [])[:limit]
         if not articles:
             return ""
@@ -1828,7 +1828,7 @@ async def _sanitize_and_forward(raw_gen, assistant_chunks: list[str]) -> AsyncGe
             if payload in ("[DONE]", ""):
                 continue
             try:
-                obj = json.loads(payload)
+                obj = json.loads(payload, strict=False)
             except Exception:
                 continue
             if obj.get("type") == "meta":
@@ -1995,7 +1995,7 @@ async def generate_inline_charts(request: Request):
 
     # Parse — LLM returns {"charts": [...]} due to json_object + our prompt shape
     try:
-        parsed = json.loads(raw_json)
+        parsed = json.loads(raw_json, strict=False)
         if isinstance(parsed, dict):
             # Primary: {"charts": [...]}
             charts = parsed.get("charts") or parsed.get("data") or []

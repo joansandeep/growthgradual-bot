@@ -840,7 +840,7 @@ async def generate_html_report(request: Request):
     stripped = report.strip()
     if stripped.startswith("{") and '"report"' in stripped:
         try:
-            inner = json.loads(stripped)
+            inner = json.loads(stripped, strict=False)
             if isinstance(inner.get("report"), str) and len(inner["report"]) > 100:
                 report = inner["report"]
                 title = title or inner.get("title", "")

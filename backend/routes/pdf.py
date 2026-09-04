@@ -1687,7 +1687,7 @@ def build_pdf(report: str, title: str, question: str, summary: str,
     _s = (report or "").strip()
     if _s.startswith("{") and '"report"' in _s:
         try:
-            _inner = _json.loads(_s)
+            _inner = _json.loads(_s, strict=False)
             if isinstance(_inner, dict) and "report" in _inner:
                 report = (_inner["report"] or "").replace("\\n", "\n").strip()
                 title   = title   or _inner.get("title", "")
@@ -2717,7 +2717,7 @@ async def generate_pdf(request: Request):
     if stripped.startswith("{") and '"report"' in stripped:
         try:
             import json as _json
-            inner = _json.loads(stripped)
+            inner = _json.loads(stripped, strict=False)
             if isinstance(inner.get("report"), str) and len(inner["report"]) > 100:
                 log.warning("PDF: unwrapping double-encoded report field")
                 report  = inner["report"]
