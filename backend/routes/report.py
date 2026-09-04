@@ -3794,9 +3794,24 @@ async def generate_report(request: Request):
     # company names appear in the question to real tickers and pulling
     # live fundamentals fixes both problems for ANY company, not just a
     # hard-coded list.
-    if _STOCK_COMPANY_INTENT_RE.search(question):
+    # Bug fix: this used to gate ONLY on _STOCK_COMPANY_INTENT_RE — a keyword
+    # regex requiring words like "stock", "valuation", "p/e ratio", "vs", etc.
+    # A plain "Give me a report on Tata Motors" / "Analyze Reliance
+    # Industries" / "Infosys overview" question names a company (and is
+    # exactly the case where the Supabase screener KB has real, chartable
+    # multi-period data) but contains NONE of those keywords, so it never
+    # matched and the whole fundamentals-fetch block below was skipped
+    # entirely — the model then had no verified numbers to chart and either
+    # produced zero charts or fabricated a single thin one that failed
+    # chart validation downstream (the "one blank chart" symptom). Fix: also
+    # trigger whenever _extract_company_candidates finds at least one
+    # capitalized company-like phrase, regardless of keyword match. This is
+    # safe — a candidate that isn't a real company simply fails to resolve
+    # in screener_kb / Yahoo lookup and is silently dropped, same as today.
+    _early_company_candidates = _extract_company_candidates(question)
+    if _STOCK_COMPANY_INTENT_RE.search(question) or _early_company_candidates:
         try:
-            company_candidates = _extract_company_candidates(question)
+            company_candidates = _early_company_candidates or _extract_company_candidates(question)
             if company_candidates:
                 # Screener.in knowledge base first: unlike the live Yahoo
                 # snapshot below, this returns real multi-period series
