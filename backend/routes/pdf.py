@@ -1968,12 +1968,18 @@ def build_pdf(report: str, title: str, question: str, summary: str,
         card_y = 34
         for i in range(n_cards):
             st = key_stats[i]
-            val = _safe_text(fmt_inr(str(st.get("value", ""))))[:14]
+            val_full = _safe_text(fmt_inr(str(st.get("value", ""))))
             lbl = _safe_text(st.get("label", ""))
             chg = _safe_text(st.get("change", ""))
-            col_c = GREEN if chg.startswith("+") or val.startswith("+") else (RED if chg.startswith("-") or val.startswith("-") else WHITE)
+            col_c = GREEN if chg.startswith("+") or val_full.startswith("+") else (RED if chg.startswith("-") or val_full.startswith("-") else WHITE)
             cx = MARGIN + i * (card_w + card_gap)
             c.setFillColorRGB(*col_c); c.setFont("Helvetica-Bold", 17)
+            # Fit to the card's actual pixel width (like the label below and
+            # the TOC/table cells elsewhere in this file) instead of a fixed
+            # 14-char cutoff — a hard char count truncated e.g. "Rs.49.07
+            # Lac Cr" (15 chars) into "Rs.49.07 Lac C", silently dropping the
+            # unit letter and reading as a rendering glitch/typo.
+            val = _fit_cell(c, val_full, "Helvetica-Bold", 17, card_w)
             c.drawString(cx, card_y + 26, val)
             c.setFillColorRGB(0.7, 0.74, 0.9); c.setFont("Helvetica-Bold", 7.5)
             lbl_lines = _wrap(c, lbl.upper(), "Helvetica-Bold", 7.5, card_w)[:2]
@@ -2046,11 +2052,15 @@ def build_pdf(report: str, title: str, question: str, summary: str,
             c.roundRect(cx, bottom, card_w, STRIP_H, 4, fill=1, stroke=0)
             c.setStrokeColorRGB(*card_border); c.setLineWidth(0.6)
             c.roundRect(cx, bottom, card_w, STRIP_H, 4, fill=0, stroke=1)
-            val = _safe_text(fmt_inr(str(st.get("value", ""))))[:14]
+            val_full = _safe_text(fmt_inr(str(st.get("value", ""))))
             lbl_raw = _safe_text(st.get("label", "")).upper()
             chg = _safe_text(st.get("change", ""))
-            col_c = GREEN if chg.startswith("+") or val.startswith("+") else (RED if chg.startswith("-") or val.startswith("-") else NAVY)
+            col_c = GREEN if chg.startswith("+") or val_full.startswith("+") else (RED if chg.startswith("-") or val_full.startswith("-") else NAVY)
             c.setFillColorRGB(*col_c); c.setFont("Helvetica-Bold", 13)
+            # Pixel-width-aware fit (was a blind [:14] char slice — see the
+            # matching fix on the cover-page stat cards above for why that
+            # silently mangled longer values like "Rs.49.07 Lac Cr").
+            val = _fit_cell(c, val_full, "Helvetica-Bold", 13, card_w - 16)
             c.drawString(cx + 8, bottom + STRIP_H - 22, val)
             c.setFillColorRGB(*GREY); c.setFont("Helvetica-Bold", 6.5)
             # Pixel-width-aware wrap (was a blind [:28] char slice, which cut

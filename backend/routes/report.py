@@ -2622,6 +2622,18 @@ _HISTORICAL_INTENT_RE = re.compile(
     re.IGNORECASE,
 )
 
+# A bare ask for a headline digest ("market news today", "latest market
+# news", "today's stock market news") wants real news + real photos, not the
+# usual chart/table-only financial report — see the fast-path check near the
+# top of generate_report() below.
+_MARKET_NEWS_DIGEST_RE = re.compile(
+    r"\b(stock\s+market|share\s+market|financial|market)\s+news\b"
+    r"|\bnews\s+(?:on|about)\s+the\s+(?:stock\s+)?market\b"
+    r"|\btoday'?s\s+(?:stock\s+)?market\s+news\b"
+    r"|\blatest\s+(?:stock\s+)?market\s+news\b",
+    re.IGNORECASE,
+)
+
 
 def _augment_query_for_historical_data(query: str) -> str:
     """When the question implies a time-series/quarter-over-quarter ask
@@ -2984,6 +2996,85 @@ def _best_matching_section(instruction: str, sections: list[dict]) -> tuple[int,
     return best_idx, best_score
 
 
+async def _extend_report_to_floor(report_text: str, question: str, target_chars: int) -> str:
+    """One continuation pass for when the main call_gemini() attempt finished
+    cleanly (finish_reason == STOP, not MAX_TOKENS — see the check in
+    call_gemini) but still landed under MIN_REPORT_CHARS. Raising
+    maxOutputTokens further does nothing for this case: the model already
+    had 65,536 tokens of headroom (see _GEMINI_MAX_OUTPUT) and chose to stop
+    on its own well short of using it, so the fix is asking it to keep
+    going, not giving it more room it wasn't using.
+
+    Deliberately plain markdown text, no JSON wrapper and no new charts —
+    this only appends more analytical prose/sections, so it can't collide
+    with the JSON-repair pipeline the main response already went through.
+    Best-effort and fails safe: any error just returns report_text
+    unchanged, it never raises and never makes the report worse.
+    """
+    gap = target_chars - len(report_text)
+    if gap <= 0:
+        return report_text
+
+    keys = [k for k in get_gemini_keys() if _is_rest_api_key(k)]
+    if not keys:
+        return report_text
+
+    system = (
+        "You are continuing a financial/market report that was cut short of "
+        "its required length. Write ONLY the additional sections that come "
+        "next — do not repeat, restate, or summarize anything already "
+        "written, and do not reintroduce the topic. Plain markdown text "
+        "only: no JSON, no code fences, no preamble like 'Continuing the "
+        "report' — go straight into the next heading."
+    )
+    user = (
+        f"Original question/topic: {question}\n\n"
+        f"End of the report so far (context only — do not repeat this):\n"
+        f"...{report_text[-1500:]}\n\n"
+        f"Continue with additional genuinely-supported sections — more "
+        f"analysis, comparisons, historical context, risk factors, or "
+        f"sourcing detail a thorough analyst would add — until you've added "
+        f"roughly {gap} more characters of real content. Never pad with "
+        f"filler, restated points, or invented figures; if you run out of "
+        f"genuinely new material, stop early rather than pad."
+    )
+    for key in round_robin(keys)[:3]:
+        if is_rate_limited(key):
+            continue
+        try:
+            async with httpx.AsyncClient(
+                timeout=httpx.Timeout(connect=5, read=35, write=10, pool=5)
+            ) as client:
+                res = await client.post(
+                    "https://generativelanguage.googleapis.com/v1beta/models/"
+                    f"gemini-3-flash-preview:generateContent?key={key}",
+                    json={
+                        "system_instruction": {"parts": [{"text": system}]},
+                        "contents": [{"role": "user", "parts": [{"text": user}]}],
+                        "generationConfig": {
+                            "maxOutputTokens": 32_768,
+                            "thinkingConfig": {"thinkingLevel": "minimal"},
+                        },
+                    },
+                )
+            if res.status_code == 429:
+                mark_rate_limited(key, 60_000)
+                continue
+            if not res.is_success:
+                continue
+            data = res.json()
+            parts = (data.get("candidates") or [{}])[0].get("content", {}).get("parts", [])
+            continuation = "".join(p.get("text", "") for p in parts).strip()
+            if continuation:
+                log.info("Report: continuation pass added %d chars (was %d, target %d)",
+                          len(continuation), len(report_text), target_chars)
+                return report_text.rstrip() + "\n\n" + continuation
+        except Exception as exc:
+            log.warning("Report: continuation pass failed: %s: %s", type(exc).__name__, exc)
+            continue
+    return report_text
+
+
 async def _call_llm_plain(system_prompt: str, user_prompt: str) -> str:
     """Lightweight Groq-then-Gemini text completion for short, non-report
     edits — intentionally separate from call_groq/call_gemini above, which
@@ -3239,9 +3330,18 @@ HOW TO DECIDE — DATA FIRST, NEVER A TEMPLATE:
    says no sources were found, plan FEWER sections and lean toward "prose"/"bullets" — do not plan
    chart/table sections the writer will have no real data to fill, since an invented chart is worse
    than no chart.
-6. Number of sections should fit the requested depth: "brief" typically wants 2-4 sections, "standard"
-   3-6, "detailed" 5-8, "comprehensive" 6-10+ — these are guides, not hard limits; let the request and
-   the data settle the exact count.
+6. Number of sections should fit the requested depth — but the report writer this plan feeds has a
+   HARD MINIMUM LENGTH floor of at least 8 rendered PDF pages (~4,500-6,000+ words / ~30,000+
+   characters) that applies BY DEFAULT to every report, with no explicit depth cue needed to trigger
+   it. A thin plan directly causes an under-length report no matter how well the writer executes it —
+   the writer paces itself against YOUR section list, so if you hand it 4 sections it will write 4
+   sections' worth of content and stop, floor or no floor. Plan fewer than the "standard" counts below
+   ONLY when the user's OWN request explicitly asks for something short ("brief"/"short"/"quick", or a
+   stated page/word/section limit) — that is the ONLY case "brief" depth applies. Absent that explicit
+   cue, default to "standard" or higher: "brief" (explicit ask only) 2-4 sections, "standard" (the
+   default with no explicit depth cue) 7-10 sections, "detailed" 9-12, "comprehensive" 11-14+ — these
+   are guides, not hard limits, but err toward more sections rather than fewer whenever the source
+   preview genuinely supports it, since an under-planned report cannot be fixed by the writer later.
 7. Two different requests — even on similar topics — should usually produce different plans if their
    register, depth cue, or available data differ. A comical request and a serious executive request on
    the same subject should not get the same section list.
@@ -3601,6 +3701,61 @@ async def generate_report(request: Request):
     # query builder below can target prior Q&A specifically — see
     # _build_followup_search_query.
     conversation_context: str = body.get("conversationContext", "")
+
+    # ── Fast path: "market news today" digest ──────────────────────────────
+    # Handled separately, before the LLM report pipeline: this is a request
+    # for real headlines + real article photos, not the usual chart/table
+    # financial report (which deliberately excludes stock photography — see
+    # the "image_candidates" comment further down). Scoped tightly to a
+    # fresh, bare market-news ask — any attachment, RAG session, or
+    # follow-up context sends the question through the normal pipeline
+    # instead, since those all imply the user wants more than a headline
+    # list. If both news sources come back empty this falls through to the
+    # normal pipeline below rather than hard-failing.
+    if (
+        _MARKET_NEWS_DIGEST_RE.search(question)
+        and not sources and not file_context.strip() and not file_images
+        and not embedded_file_images and not has_rag
+        and not conversation_context.strip()
+    ):
+        from utils.market_news import get_todays_market_news
+        digest = await get_todays_market_news(question or "Indian stock market news today")
+        articles = digest["articles"]
+        if articles:
+            from datetime import date as _date
+            today_label = _date.today().strftime("%A, %B %d, %Y")
+            images: list[dict] = []
+            lines = [f"## Market News — {today_label}\n"]
+            for a in articles:
+                lines.append(f"### {a['title']}")
+                meta = " · ".join(m for m in (a.get("source"), a.get("published")) if m)
+                if meta:
+                    lines.append(f"*{meta}*")
+                if a.get("image_url"):
+                    images.append({"url": a["image_url"], "caption": a["title"][:140]})
+                    lines.append(f"[WEB_IMG_{len(images)}]")
+                if a.get("summary"):
+                    lines.append(a["summary"])
+                lines.append(f"[Read more]({a['url']})")
+                lines.append("")
+            report_text = "\n\n".join(lines)
+            source_label = "live search" if digest["provider"] == "tavily" else "direct source scraping"
+            log.info(
+                "Report: market-news digest — %d articles (%d with images) via %s in %.0fms",
+                len(articles), len(images), digest["provider"],
+                (time.perf_counter() - t0) * 1000,
+            )
+            return JSONResponse({
+                "title": f"Market News — {today_label}",
+                "report": report_text,
+                "charts": [],
+                "images": images,
+                "keyStats": [],
+                "summary": f"{len(articles)} market headlines gathered via {source_label} as of {today_label}.",
+                "fileImages": [],
+                "recommendedFormat": "html",
+            })
+        log.info("Report: market-news digest — no articles from either source, falling through to normal pipeline")
 
     # Detect an explicit ask for MORE data points / charts / graphs / infographics
     # — either in the question itself ("give me more data points and graphs on
@@ -4754,6 +4909,9 @@ async def generate_report(request: Request):
         report_text = _inject_fallback_image_placeholders(report_text, images)
         if report_text != _report_text_before_inject:
             log.info("Report: injected fallback [WEB_IMG_n] placeholder(s) — %d image(s) total now placed", len(images))
+        if len(report_text) < MIN_REPORT_CHARS:
+            report_text = await _extend_report_to_floor(report_text, question, MIN_REPORT_CHARS)
+
         clean_title = _sanitize_title(parsed.get("title", ""), question)
         elapsed = (time.perf_counter() - t0) * 1000
         log.info("Report complete in %.0fms — title=%r  charts=%d  images=%d  keyStats=%d",
