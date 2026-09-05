@@ -31,6 +31,7 @@ from utils.screener_kb import (
     fetch_screener_fundamentals as _fetch_screener_fundamentals,
     format_screener_snapshots_as_source as _format_screener_snapshots_as_source,
 )
+from utils.intent import resolve_request_intent, RequestIntent
 
 router = APIRouter()
 log = logging.getLogger("report")
@@ -240,7 +241,7 @@ Respond with EXACTLY this shape:
   "images": [{ "prompt": "<AI image-generation prompt — see AI IMAGE RULES>", "caption": "<short caption>" }, ...] (0-2 items — see AI IMAGE RULES; optional, include only where a genuine visual opportunity exists),
   "keyStats": [{ "label": "<short label>", "value": "<value string>", "change": "<+/- % or empty string>" }],
   "summary": "<2-3 sentence executive summary>",
-  "theme": { "primaryColor": "<hex>", "accentColor": "<hex>", "toneNote": "<short label, e.g. 'comical', 'minimal', 'dark mode', 'playful', 'corporate'>" } | null
+  "theme": { "primaryColor": "<hex>", "accentColor": "<hex>", "toneNote": "<short label, e.g. 'comical', 'minimal', 'dark mode', 'playful', 'corporate'>", "fontFamily": "<OPTIONAL real Google Fonts family name that fits the requested style, e.g. 'Fredoka', 'Comic Neue', 'Space Grotesk', 'Playfair Display', 'JetBrains Mono' — omit for the default typography>", "customCss": "<OPTIONAL extra CSS rules the HTML renderer should layer on top of its base stylesheet to achieve effects flat color-swapping can't — dashed hand-drawn-style borders, playful rotation on headings, bouncy rounded shadows, sticker-like badges, confetti/dot background patterns, gradient text, etc. Plain CSS rule blocks only (selectors + declarations), no <style> tag, no @import, no url(), no javascript: — omit unless the requested style genuinely calls for it>", "richStyleNeeded": <true only when the requested style needs visual treatment (fonts, decorative shapes, illustration-like flourishes, layered color, playful motion) that a flat two-color PDF re-theme structurally cannot deliver and the HTML version should be the one offered — false or omit otherwise, including for ordinary corporate/professional requests> } | null
 }
 
 THEME — ONLY when the user's question explicitly asks for a visual style, mood, color scheme, or
@@ -256,6 +257,17 @@ request is present:
     self-aware humor in the prose) WITHOUT ever softening, omitting, or joking about the actual
     numbers, facts, or risk disclosures — the humor/style lives in the phrasing and framing, the data
     stays exactly as accurate and complete as a normal report.
+  - Design "fontFamily" and "customCss" freshly for THIS request's specific style — never reuse a
+    fixed "comical" or "dark mode" recipe verbatim across different reports. A "comical/cartoonish"
+    ask might call for a rounded playful display font, thick dashed borders on stat cards, slightly
+    tilted headings, and sticker-style badges; a "dark neon" ask calls for a completely different set
+    (monospace/geometric font, glowing text-shadow accents, sharp thin borders); a "minimal" ask should
+    mean LESS customCss, not more — often none at all. Let the specific words in the user's request
+    (colors named, mood described, comparisons made) drive which decorative techniques you reach for.
+  - Set "richStyleNeeded": true only when those flourishes are genuinely part of what makes the
+    requested style work and a static PDF with just two swapped colors would clearly fall short of
+    what was asked — not for every theme request. Ordinary "corporate blue" or a single named accent
+    color is still fine as a PDF; leave "richStyleNeeded" false/omitted for those.
   - When the user asks for NO particular style, omit "theme" (or set it to null) and write in the
     normal formal analyst register — never invent a theme unprompted.
 
@@ -405,6 +417,100 @@ STEP 1 — AGGRESSIVELY SCAN sources for ANY chartable numbers:
     only categories with a real total. Don't skip this just because bar charts
     were already used elsewhere in the report — composition data gets a pie
     chart on its own merits, for chart-type variety.
+  • A single KPI measured against a target/threshold/benchmark (AUM vs. target AUM,
+    actual sales vs. plan, a fund's return vs. its benchmark, an SLA vs. its
+    threshold) → BULLET chart, not a 2-bar comparison — a bullet is purpose-built
+    for "how far is the actual number from the goal" and reads clearer than two
+    same-color bars sitting side by side. Works for one KPI or several stacked
+    together (e.g. several funds each vs. their own benchmark).
+    → {"type":"bullet","unit":"₹ Cr","series":[{"name":"AUM","data":[
+        {"label":"Q4 AUM","value":8200,"target":10000}]}]}
+    → Needs ≥1 KPI, each with both "value" and "target" present. For 2+ KPIs in
+      one chart, add more points to the same series (one bullet bar per label).
+  • The sources give enough individual data points on ONE metric to show its
+    SPREAD/DISTRIBUTION (e.g. daily returns for a month, P/E ratios across 15+
+    stocks in a sector, SIP amounts across investors) rather than a ranked list
+    of named items → HISTOGRAM, not a bar chart of named items. Bucket the raw
+    values into ~5-8 ranges yourself (e.g. "-2% to -1%", "-1% to 0%", "0% to 1%")
+    and chart the COUNT in each bucket — the buckets are the labels, the value is
+    how many observations fall in that bucket.
+    → {"type":"histogram","xLabel":"Daily Return","yLabel":"No. of Sessions","series":[{"name":"Return Distribution","data":[
+        {"label":"-2% to -1%","value":3},{"label":"-1% to 0%","value":9},
+        {"label":"0% to 1%","value":11},{"label":"1% to 2%","value":4}]}]}
+    → Needs ≥4 buckets covering the full observed range, in ascending order, and
+      only makes sense with enough raw observations behind it (≥10) to bucket
+      meaningfully — with fewer, individual data points as a bar/line chart
+      (or a table) is more honest than fabricating a distribution shape.
+  • The sources give (or let you derive) a five-number spread — min, 25th
+    percentile, median, 75th percentile, max — for a metric across one or more
+    named entities/periods (e.g. return ranges by fund category over 5 years,
+    valuation-multiple ranges across a sector's constituent stocks) → BOX PLOT,
+    not a bar chart of a single average figure — a bar chart of just the median
+    or mean throws away the spread, which is the actual story a "range" figure
+    is telling.
+    → {"type":"boxplot","unit":"%","series":[{"name":"5-Yr Return Range","data":[
+        {"label":"Large Cap","min":8.2,"q1":11.5,"median":13.8,"q3":16.2,"max":21.4},
+        {"label":"Small Cap","min":-4.5,"q1":9.0,"median":18.6,"q3":27.3,"max":41.0}]}]}
+    → Needs ≥1 entity, each with all five values present and in non-decreasing
+      order (min ≤ q1 ≤ median ≤ q3 ≤ max). Don't invent a spread the sources
+      don't support — if only a single average/return figure exists per entity,
+      that's a bar chart, not a box plot.
+  • Portfolio/sector/category composition where there are MANY constituents (6+)
+    and their RELATIVE SIZE (not just share of 100%) is the point — e.g. a
+    portfolio's full holding-by-holding weightage, a sector's market-cap makeup
+    across many stocks → TREEMAP, not a pie — a pie with 6+ slices gets
+    unreadable (too many thin slivers), while a treemap's proportional
+    rectangles stay legible at any slice count and can also show one level of
+    grouping (e.g. holdings nested under sector). Optional "group" field per
+    point clusters items under a shared parent for exactly this nesting; omit
+    it for a flat treemap.
+    → {"type":"treemap","unit":"%","series":[{"name":"Portfolio Weight","data":[
+        {"label":"HDFC Bank","value":9.2,"group":"BFSI"},
+        {"label":"ICICI Bank","value":7.8,"group":"BFSI"},
+        {"label":"Infosys","value":8.1,"group":"IT"},
+        {"label":"TCS","value":6.4,"group":"IT"},
+        {"label":"Reliance","value":10.5,"group":"Energy"}]}]}
+    → Needs ≥3 items, all non-negative. Fewer than 6 items and a pie/bar usually
+      reads just as well — reach for treemap once slice count would clutter a pie.
+  • A grid of one metric measured across two dimensions at once — e.g. sector
+    returns across several time periods, correlation between several stocks/
+    indices, monthly performance across several years → HEATMAP, not a table or
+    a multi-series bar chart — a table of the same numbers makes the reader hunt
+    for the pattern; a heatmap's color intensity makes the best/worst cells jump
+    out immediately.
+    → {"type":"heatmap","unit":"%","rows":["IT","BFSI","Energy","Pharma"],
+        "columns":["Q1FY26","Q2FY26","Q3FY26","Q4FY26"],
+        "values":[[4.2,-1.1,6.8,2.0],[3.5,5.2,-0.4,4.1],[-2.1,8.0,3.3,1.5],[1.0,2.2,0.9,3.8]]}
+    → Needs ≥2 rows and ≥2 columns, and "values" must be a complete rows×columns
+      numeric matrix (every row the same length as "columns"). Don't use this for
+      a single row or column of numbers — that's a bar chart instead.
+  • THREE independent numeric metrics given for the same set of named entities,
+    where all three matter together (e.g. market cap vs. revenue growth vs. P/E,
+    sized by trading volume) → BUBBLE chart, not a scatter — a bubble adds the
+    third metric as marker size instead of dropping it, which is the whole
+    reason to reach for this over a plain 2-metric scatter.
+    → {"type":"bubble","series":[
+        {"name":"Market Cap (₹ Cr)","data":[{"label":"Astera Labs","value":45000}]},
+        {"name":"Revenue Growth %","data":[{"label":"Astera Labs","value":86.3}]},
+        {"name":"Trading Volume (size)","data":[{"label":"Astera Labs","value":1.2}]}]}
+    → Series order is fixed: series[0]=x-metric, series[1]=y-metric, series[2]=
+      size-metric — all three sharing the same labels. Needs ≥4 named entities
+      with all three metrics present, same minimum as a scatter plot.
+  • Several qualitative/financial metrics (P/E, ROE, D/E, margins, growth rate)
+    compared across a SMALL set of companies/funds at once, where the shape of
+    strengths/weaknesses across metrics is the point (not any single metric's
+    ranking) → RADAR chart, not a grouped bar — a radar makes each entity's
+    overall profile-shape comparable at a glance, which a grouped bar with 4+
+    metrics per entity doesn't do nearly as clearly.
+    → {"type":"radar","series":[
+        {"name":"Company A","data":[{"label":"P/E","value":18.2},{"label":"ROE %","value":22.5},
+                                     {"label":"D/E","value":0.4},{"label":"Op. Margin %","value":19.0}]},
+        {"name":"Company B","data":[{"label":"P/E","value":24.1},{"label":"ROE %","value":15.0},
+                                     {"label":"D/E","value":0.9},{"label":"Op. Margin %","value":12.5}]}]}
+    → Needs ≥3 metrics (labels), each series sharing the SAME metric labels in
+      the same order — 1-2 companies works fine (radar reads well solo too), but
+      cap it at ~4-5 companies before the overlapping shapes get unreadable —
+      beyond that, a table is clearer.
 
   SINGLE-ASSET TREND OVER TIME — DON'T SKIP THIS ONE:
   Whenever the sources give the level of ONE index/stock/rate at several dates or
@@ -585,13 +691,17 @@ STEP 4 — Generate charts/tables where the source material and the user's reque
   non-grouped) bar charts, go back through STEP 1's per-scenario rules above and actively look for
   data you may have force-fit into a bar chart that actually belongs as an arrow chart (any before/
   after or revised-guidance number), a scatter chart (any two-metrics-per-entity relationship), a
-  line/area chart (any single trend across 4+ points), or a pie/donut (any composition-of-a-whole).
+  line/area chart (any single trend across 4+ points), a pie/donut (any composition-of-a-whole), a
+  bullet chart (any KPI-vs-target number), a box plot (any min/max/median spread across entities),
+  a treemap (any 6+-way composition), a heatmap (any metric-by-two-dimensions grid), a bubble chart
+  (any three-metrics-per-entity relationship), or a radar chart (any multi-metric entity profile).
   A report is not required to use every type, but repeating the exact same bar-chart shape for most
   of the report's visuals is a sign the data was matched to the easiest chart, not the right one.
 
 Chart spec shape:
 {
-  "type": "bar" | "line" | "pie" | "arrow" | "scatter" | "waterfall" | "candlestick" | "sparkline",
+  "type": "bar" | "line" | "pie" | "arrow" | "scatter" | "waterfall" | "candlestick" | "sparkline"
+        | "bullet" | "histogram" | "boxplot" | "treemap" | "heatmap" | "bubble" | "radar",
   "title": "<specific title e.g. 'Top 5 SIP Funds — 3-Year Returns' not 'Chart 1'>",
   "unit": "%" | "₹" | "Cr" | "B" | "$" | "x" | "",
   "xLabel": "<what the x-axis categories are, e.g. 'Fund' or 'Sector' or 'Session Date'>",
@@ -607,16 +717,34 @@ Chart spec shape:
 multi-series chart (see COMPARISON TOPICS above) — no extra fields needed:
   → arrow: series = [{"name":"Previous","data":[...]}, {"name":"Revised"/"Current","data":[...]}]
   → scatter: series = [{"name":"<x-metric>","data":[...]}, {"name":"<y-metric>","data":[...]}]
-AXIS LABELS ARE MANDATORY for every bar/line/arrow/scatter/waterfall/candlestick chart — always
-fill in "xLabel" and "yLabel" with a short (1-4 word) description of what each axis represents.
-A chart with numeric tick marks but no axis title leaves the reader guessing what the numbers
-mean — never omit these two fields. (Sparklines are the one exception — they're deliberately
-axis-less, so skip xLabel/yLabel for those.)
+AXIS LABELS ARE MANDATORY for every bar/line/arrow/scatter/waterfall/candlestick/histogram/
+boxplot/bubble chart — always fill in "xLabel" and "yLabel" with a short (1-4 word) description
+of what each axis represents. A chart with numeric tick marks but no axis title leaves the reader
+guessing what the numbers mean — never omit these two fields. (Sparklines, pies, treemaps, radar,
+and heatmaps are the exceptions — they're deliberately axis-less, so skip xLabel/yLabel for those.)
 
 "waterfall" uses ONE series of {"label", "value", "isTotal"} points — see the WATERFALL example
 above. "candlestick" uses ONE series of {"label", "open", "high", "low", "close"} points instead
 of {"label", "value"} — see the CANDLESTICK example above. "sparkline" uses the same {"label",
 "value"} shape as "line" but renders without axes/gridlines.
+
+Shapes for the 7 newer chart types (see the STEP 1 list above for when to pick each one):
+  • "bullet" — ONE series of {"label", "value", "target"} points, one point per KPI.
+  • "histogram" — ONE series of {"label", "value"} points, same shape as "bar", where each
+    "label" is a bucket RANGE (e.g. "0% to 1%") in ascending order and "value" is the count of
+    observations in that bucket.
+  • "boxplot" — ONE series of {"label", "min", "q1", "median", "q3", "max"} points, one point per
+    entity — no "value" key on these points.
+  • "treemap" — ONE series of {"label", "value"} points, same shape as "pie", plus an optional
+    "group" string per point to nest items under a shared parent category.
+  • "heatmap" — NO "series" array at all. Top-level fields instead: "rows" (list of row names),
+    "columns" (list of column names), "values" (a rows × columns 2D array of numbers, values[i][j]
+    is the number for rows[i] at columns[j]).
+  • "bubble" — exactly THREE series sharing the same labels, in fixed order: series[0]="<x-metric
+    name>", series[1]="<y-metric name>", series[2]="<size-metric name>" — each a normal
+    {"label","value"} array like scatter.
+  • "radar" — two or more series, each with a {"label","value"} array using the SAME metric names
+    (as "label") in the SAME order across every series — one series per entity being compared.
 
 CHART TITLE MUST NOT REPEAT THE SECTION HEADING IT SITS UNDER: a chart's title bakes directly into
 its rendered image and appears immediately below the section heading it's placed in — repeating
@@ -1349,18 +1477,35 @@ _TITLE_SENTENCE_RE = re.compile(
 )
 
 _HEX_RE = re.compile(r"^#[0-9a-fA-F]{6}$")
+_FONT_NAME_RE = re.compile(r"^[A-Za-z0-9 ]{1,40}$")
+# Blocks anything that could break out of a plain CSS rule block and reach
+# script execution, remote fetches, or the page <head> — customCss is only
+# ever concatenated as a raw text block into a <style> tag (see html_report.py
+# _build_css), so these are the only escape hatches worth blocking; ordinary
+# CSS declarations (colors, borders, transforms, gradients, animations,
+# pseudo-elements, media queries) all pass through untouched.
+_CSS_DANGER_RE = re.compile(
+    r"</style|<script|@import|expression\s*\(|url\s*\(|javascript:|behaviour\s*:|-moz-binding",
+    re.IGNORECASE,
+)
+_CUSTOM_CSS_MAX_CHARS = 4000
 
 
 def _sanitize_theme(theme) -> dict | None:
     """Validate the model's optional theme object. Only accepts well-formed
-    6-digit hex colors and a short tone label — anything else (missing,
-    malformed hex, wrong types) falls back to None so the PDF/HTML renderers
-    just use their existing navy/gold default instead of a broken theme."""
+    6-digit hex colors, a short tone label, an optional plain Google-Fonts
+    family name, an optional bounded/escape-free CSS snippet, and a bool
+    richStyleNeeded flag — anything else (missing, malformed, wrong types)
+    is dropped field-by-field so the PDF/HTML renderers just fall back to
+    their existing navy/gold default instead of a broken theme."""
     if not isinstance(theme, dict):
         return None
     primary = str(theme.get("primaryColor") or "").strip()
     accent = str(theme.get("accentColor") or "").strip()
     tone = str(theme.get("toneNote") or "").strip()[:40]
+    font = str(theme.get("fontFamily") or "").strip()
+    custom_css = theme.get("customCss")
+    rich = theme.get("richStyleNeeded")
     out: dict = {}
     if _HEX_RE.match(primary):
         out["primaryColor"] = primary
@@ -1368,7 +1513,27 @@ def _sanitize_theme(theme) -> dict | None:
         out["accentColor"] = accent
     if tone:
         out["toneNote"] = tone
+    if font and _FONT_NAME_RE.match(font):
+        out["fontFamily"] = font
+    if isinstance(custom_css, str):
+        custom_css = custom_css.strip()[:_CUSTOM_CSS_MAX_CHARS]
+        if custom_css and not _CSS_DANGER_RE.search(custom_css):
+            out["customCss"] = custom_css
+    if isinstance(rich, bool):
+        out["richStyleNeeded"] = rich
     return out or None
+
+
+def _resolve_recommended_format(base_format: str, theme: dict | None) -> str:
+    """Upgrade the keyword-based "html" recommendation (see
+    _WANTS_INTERACTIVE_RE) with the model's own per-request theme decision:
+    when it set richStyleNeeded (the requested visual style needs fonts/
+    decorative CSS a flat two-color PDF re-theme structurally can't give),
+    the HTML renderer should be the one offered regardless of what keywords
+    the question itself used. Never downgrades an existing "html" call."""
+    if theme and theme.get("richStyleNeeded"):
+        return "html"
+    return base_format
 
 
 def _sanitize_title(title: str, question: str) -> str:
@@ -2704,7 +2869,19 @@ _QUERY_BUILDER_MODEL = "openai/gpt-oss-20b"
 
 _QUERY_BUILDER_SYSTEM_PROMPT = """You turn a finance research question into short, clean web-search queries.
 
-Given the user's question, produce up to 4 short search-engine queries (each under 12 words, plain keyword/phrase style, no question marks, no "show me"/"what is"/other conversational framing) that together cover these angles:
+A RECENT CONVERSATION may be provided above the QUESTION for grounding only.
+If QUESTION is a short follow-up that has no real subject of its own — it
+leans on a pronoun ("it", "that", "this"), or is just an instruction to
+turn the prior answer into a report/summary/breakdown ("give it as a
+report", "make that a report", "turn this into a report") — first resolve
+what QUESTION is actually asking about from the conversation (the company,
+person, sector, event, or topic the prior turns were discussing). Build
+every query below about that resolved subject, never about the literal
+follow-up phrase itself. If QUESTION already names its own subject, ignore
+the conversation and use QUESTION as-is — do not go looking for a different
+topic in it.
+
+Given the (resolved) question, produce up to 4 short search-engine queries (each under 12 words, plain keyword/phrase style, no question marks, no "show me"/"what is"/other conversational framing) that together cover these angles:
 1. The core question itself
 2. Key financial metrics / hard numbers for the same topic
 3. Sector or peer comparison for the same topic (skip if the question is already a direct comparison)
@@ -2713,16 +2890,34 @@ Given the user's question, produce up to 4 short search-engine queries (each und
 Respond ONLY with a JSON object, no other text: {"queries": ["...", "...", ...]}"""
 
 
-async def _llm_build_multi_angle_queries(question: str) -> list[str] | None:
+async def _llm_build_multi_angle_queries(question: str, conversation_context: str = "") -> list[str] | None:
     """Best-effort Groq call that rewrites `question` into up to 4 clean
     Tavily-ready search queries. Returns None (never []) on any failure —
     missing keys, HTTP/parse errors, empty/malformed output — so the caller
     can fall back to the regex-based _build_multi_angle_search_queries
     instead of silently searching with nothing.
+
+    `conversation_context` grounds short, subject-less follow-ups (see
+    _build_followup_search_query, which does the same grounding for the
+    regex-based fallback path below) — without it, a follow-up like "give
+    it as a report" has no company/topic in it at all, and every angle
+    query the model builds ends up being about the word "report" instead
+    of whatever the prior turn was actually discussing. Passing the last
+    turns of the conversation lets the model resolve the real subject
+    itself, generically, with no per-topic special-casing here.
     """
     keys = get_groq_keys()
     if not keys:
         return None
+
+    user_content = question[:500]
+    if conversation_context.strip():
+        user_content = (
+            f"RECENT CONVERSATION (context only, for resolving a pronoun or "
+            f"subject-less follow-up — do not build queries about this text "
+            f"itself):\n{conversation_context[-1200:]}\n\n"
+            f"QUESTION: {question[:500]}"
+        )
 
     for key in round_robin(keys):
         if is_rate_limited(f"{key}:{_QUERY_BUILDER_MODEL}"):
@@ -2736,7 +2931,7 @@ async def _llm_build_multi_angle_queries(question: str) -> list[str] | None:
                         "model": _QUERY_BUILDER_MODEL,
                         "messages": [
                             {"role": "system", "content": _QUERY_BUILDER_SYSTEM_PROMPT},
-                            {"role": "user", "content": question[:500]},
+                            {"role": "user", "content": user_content},
                         ],
                         "max_tokens": 300,
                         "temperature": 0.2,
@@ -2789,8 +2984,27 @@ async def _llm_build_multi_angle_queries(question: str) -> list[str] | None:
 # uncapped growth here multiplies total Tavily calls by (queries × keys), and
 # angle-splitting a non-finance question (e.g. "give me a business idea")
 # just injects irrelevant search noise rather than more usable data.
+# Maps a generic evidence kind (see utils.intent.EVIDENCE_TYPES) to the
+# search-angle suffix that covers it. This is the ONE place new evidence
+# kinds get a query shape — there is no per-topic branch anywhere else.
+# "documents" and "general_knowledge" don't map to a web search angle (the
+# former is served from the user's own upload, the latter needs no search).
+_EVIDENCE_ANGLE_SUFFIX = {
+    "news": "latest news updates",
+    "expert_opinion": "expert analyst opinion commentary",
+    "financials": "key financial metrics data numbers",
+    "market_data": "key financial metrics data numbers",
+    "regulatory": "regulatory policy compliance",
+    "historical": "historical trend performance data",
+    "comparison": "sector peer comparison",
+}
+
+
 async def _build_multi_angle_search_queries(
-    question: str, conversation_context: str, qtype: str,
+    question: str,
+    conversation_context: str,
+    qtype: str,
+    intent: "RequestIntent | None" = None,
 ) -> list[str]:
     # Bug fix: the base/angle-1 query used to be built straight from the raw
     # `question` — conversational framing ("Give me a research report on...")
@@ -2806,6 +3020,38 @@ async def _build_multi_angle_search_queries(
         "", _LEADING_INSTRUCTION_RE.sub("", question)
     ).strip() or question
 
+    # If a separate intent-resolution pass already ran (see utils.intent),
+    # it resolved follow-ups and picked evidence kinds generically for THIS
+    # request in THIS domain — prefer it over the finance-only heuristics
+    # below whenever it produced something usable. This is what lets a
+    # brand-new kind of question ("what are regulators saying about X") get
+    # a sensible multi-angle search without a new branch being added here.
+    if intent is not None and intent.resolved_topic.strip():
+        topic = intent.resolved_topic.strip()
+        # Truncate on a word boundary, not mid-word — a hard slice can chop
+        # a search-bound phrase in half (e.g. "...its c" instead of "...its
+        # clinical trials"), which hurts every angle query built from it.
+        if len(topic) > 100:
+            topic = topic[:100].rsplit(" ", 1)[0]
+        base = _augment_query_for_historical_data(topic if intent.is_followup else cleaned_question)
+        queries = [base]
+        for kind in intent.evidence_needed:
+            suffix = _EVIDENCE_ANGLE_SUFFIX.get(kind)
+            if not suffix:
+                continue  # "documents" / "general_knowledge" — no search angle
+            candidate = f"{topic} {suffix}"
+            # Skip a suffix that would just repeat what the base query
+            # already reads as (e.g. don't add "...sector peer comparison"
+            # on top of a question that's already phrased as a comparison).
+            if kind == "comparison" and re.search(r"\bvs\.?\b|\bversus\b|compar", base, re.IGNORECASE):
+                continue
+            if kind == "historical" and _HISTORICAL_INTENT_RE.search(base):
+                continue
+            if candidate.strip().lower() not in [q.strip().lower() for q in queries]:
+                queries.append(candidate)
+        log.info("Intent-driven search angles (%s): %r", intent.source, [q[:60] for q in queries[:5]])
+        return queries[:5]
+
     base = _augment_query_for_historical_data(
         _build_followup_search_query(cleaned_question, conversation_context)
     )
@@ -2818,7 +3064,7 @@ async def _build_multi_angle_search_queries(
     # the one that used to send 3 of 4 angle searches to Tavily as a single
     # garbled sentence). Falls through to the regex builder if Groq has no
     # keys configured, is rate-limited, or returns anything unusable.
-    llm_queries = await _llm_build_multi_angle_queries(question)
+    llm_queries = await _llm_build_multi_angle_queries(question, conversation_context)
     if llm_queries:
         return llm_queries
 
@@ -2847,6 +3093,12 @@ async def _build_multi_angle_search_queries(
     topic = _LEADING_INSTRUCTION_RE.sub("", raw_clause).strip()
     topic = _TRAILING_TIME_PHRASE_RE.sub("", topic).strip()
     topic = (topic or raw_clause)[:80] or base
+    # Same follow-up grounding the base query already got above — a short,
+    # subject-less follow-up ("give it as a report") leaves `topic` with
+    # nothing real for the angle suffixes below to attach to, so fold in the
+    # same conversational-topic hint here too (no-op when there's no context
+    # or the prior exchange was smalltalk — see _build_followup_search_query).
+    topic = _build_followup_search_query(topic, conversation_context)[:80]
 
     queries = [base]
 
@@ -3193,7 +3445,14 @@ def _validate_chart_spec(chart: dict) -> bool:
     ctype = chart.get("type")
     if ctype == "table":
         return isinstance(chart.get("columns"), list) and bool(chart.get("rows"))
-    if ctype not in ("bar", "line", "pie", "donut", "sparkline", "arrow", "scatter", "waterfall", "candlestick"):
+    if ctype == "heatmap":
+        rows, cols, values = chart.get("rows"), chart.get("columns"), chart.get("values")
+        if not (isinstance(rows, list) and isinstance(cols, list) and isinstance(values, list)):
+            return False
+        return (len(rows) >= 2 and len(cols) >= 2 and len(values) == len(rows)
+                and all(isinstance(r, list) and len(r) == len(cols) for r in values))
+    if ctype not in ("bar", "line", "pie", "donut", "sparkline", "arrow", "scatter", "waterfall",
+                      "candlestick", "bullet", "histogram", "boxplot", "treemap", "bubble", "radar"):
         return False
     series = chart.get("series")
     if not isinstance(series, list) or not series or not isinstance(series[0], dict):
@@ -3202,10 +3461,19 @@ def _validate_chart_spec(chart: dict) -> bool:
     if not isinstance(pts, list):
         return False
     labels = [p.get("label") for p in pts if isinstance(p, dict)]
-    values = [p.get("value") for p in pts if isinstance(p, dict)]
-    if len(labels) != len(set(labels)) or len(values) != len(pts):
+    if len(labels) != len(set(labels)):
         return False
-    min_pts = {"pie": 2, "donut": 2, "line": 2, "sparkline": 4, "scatter": 4, "waterfall": 3}.get(ctype, 3)
+    if ctype == "boxplot":
+        keys = ("min", "q1", "median", "q3", "max")
+        return len(pts) >= 1 and all(all(p.get(k) is not None for k in keys) for p in pts if isinstance(p, dict))
+    if ctype == "bullet":
+        return len(pts) >= 1 and all(p.get("value") is not None and p.get("target") is not None
+                                       for p in pts if isinstance(p, dict))
+    values = [p.get("value") for p in pts if isinstance(p, dict)]
+    if len(values) != len(pts):
+        return False
+    min_pts = {"pie": 2, "donut": 2, "line": 2, "sparkline": 4, "scatter": 4, "waterfall": 3,
+               "histogram": 4, "treemap": 3, "bubble": 4, "radar": 3}.get(ctype, 3)
     return len(pts) >= min_pts
 
 
@@ -3429,6 +3697,7 @@ async def _plan_report_structure(
     no_web_sources: bool,
     conversation_context: str,
     wants_more_data_viz: bool,
+    intent: "RequestIntent | None" = None,
 ) -> dict | None:
     """Explicit planning pass: decide the section list and per-section
     presentation format from the request + a preview of the actual source
@@ -3443,9 +3712,24 @@ async def _plan_report_structure(
         depth_cue = "\n\nThe user explicitly asked for MORE data points/charts/graphs than usual — bias toward more, chart/table-heavy sections where the data preview supports it."
     convo_note = f"\n\nPrior conversation (context only, not a data source): {conversation_context[:800]}" if conversation_context.strip() else ""
 
+    intent_note = ""
+    if intent is not None:
+        evidence_str = ", ".join(intent.evidence_needed)
+        intent_note = (
+            f"\n\nRESOLVED INTENT (from a separate intent-detection pass — use this to decide WHICH "
+            f"sections belong, not to override the topic/subject above): the user's intent reads as "
+            f"\"{intent.intent_label or 'unspecified'}\"; evidence kinds identified as relevant to this "
+            f"request: [{evidence_str}]. Only plan a section for an evidence kind if the source preview "
+            f"below actually contains that kind of material — e.g. only plan an \"Expert/Analyst Views\" "
+            f"style section if 'expert_opinion' is listed AND the preview shows real analyst/commentary "
+            f"content; never invent one because the topic sounds like it should have opinions. Likewise, "
+            f"do not plan a section for a kind of evidence NOT listed here just because it's common for "
+            f"this general topic area."
+        )
+
     planning_user_prompt = (
         f"REQUEST: {question}\n"
-        f"{convo_note}{depth_cue}\n\n"
+        f"{convo_note}{depth_cue}{intent_note}\n\n"
         f"{source_preview}\n\n"
         "Plan this report's section list and per-section presentation format now, per the rules above."
     )
@@ -3757,6 +4041,28 @@ async def generate_report(request: Request):
             })
         log.info("Report: market-news digest — no articles from either source, falling through to normal pipeline")
 
+    # ── Generic intent resolution ───────────────────────────────────────────
+    # One model call decides, for THIS request regardless of domain: what
+    # topic it actually refers to (resolving a follow-up like "give it as a
+    # report" against conversation_context), whether it's a follow-up, and
+    # which KINDS of evidence (news, expert/analyst opinion, financials,
+    # market data, regulatory, historical, comparison, documents) would
+    # actually help — see utils/intent.py. This replaces per-topic branches
+    # with one dynamic decision that also covers question types nobody wrote
+    # a branch for. Failure degrades to a deterministic heuristic inside
+    # resolve_request_intent — this call never raises and never blocks the
+    # rest of the pipeline from running with a sane default.
+    intent = await resolve_request_intent(
+        question=question,
+        conversation_context=conversation_context,
+        has_rag=has_rag,
+        has_files=bool(file_context.strip()) or bool(file_images) or bool(embedded_file_images),
+    )
+    log.info(
+        "Report intent: topic=%r followup=%s evidence=%s (%s)",
+        intent.resolved_topic[:80], intent.is_followup, intent.evidence_needed, intent.source,
+    )
+
     # Detect an explicit ask for MORE data points / charts / graphs / infographics
     # — either in the question itself ("give me more data points and graphs on
     # this") or in the prior turn the report follows on from. Previously this
@@ -3862,7 +4168,7 @@ async def generate_report(request: Request):
             # market context, comparisons, recent news) — supplement with web data.
             log.info("Report: file-first mode — supplementing with web search")
             search_queries = await _build_multi_angle_search_queries(
-                question, conversation_context, _classify_query(question),
+                question, conversation_context, _classify_query(question), intent=intent,
             )
             if len(search_queries) > 1:
                 log.info("Report: file-first mode — %d-angle search: %r",
@@ -3888,7 +4194,7 @@ async def generate_report(request: Request):
             _looks_like_ai_overview, classify_query as _classify_query,
         )
         search_queries = await _build_multi_angle_search_queries(
-            question, conversation_context, _classify_query(question),
+            question, conversation_context, _classify_query(question), intent=intent,
         )
         if search_queries != [question]:
             log.info("Report: search enriched into %d angle(s): %r",
@@ -3948,7 +4254,10 @@ async def generate_report(request: Request):
         r"indian stock market|indian equity|indian share market|"
         r"sector rotation|stock markets? in india)\b",
         question, re.IGNORECASE,
-    ))
+    )) or bool(
+        "market_data" in intent.evidence_needed
+        and re.search(r"\bindex|indices|market\b", question, re.IGNORECASE)
+    )
     if _is_index_question:
         try:
             quotes = await fetch_index_quotes()
@@ -4245,6 +4554,7 @@ async def generate_report(request: Request):
         no_web_sources=no_web_sources,
         conversation_context=conversation_context,
         wants_more_data_viz=wants_more_data_viz,
+        intent=intent,
     )
     plan_block = f"\n\n{_format_plan_for_prompt(report_plan)}\n" if report_plan else ""
 
@@ -4557,6 +4867,70 @@ async def generate_report(request: Request):
                     return False
             return True
 
+        # Heatmap carries no "series" at all — a rows×columns numeric matrix
+        # instead. Validate and return early; none of the value/label checks
+        # further down (which all assume a "series" array) apply to this shape.
+        if chart_type == "heatmap":
+            rows, cols, values = ch.get("rows"), ch.get("columns"), ch.get("values")
+            if not (isinstance(rows, list) and isinstance(cols, list) and isinstance(values, list)):
+                log.warning("Chart rejected — heatmap missing rows/columns/values: %s", ch.get("title", "?"))
+                return False
+            if len(rows) < 2 or len(cols) < 2:
+                log.warning("Chart rejected — heatmap needs ≥2 rows and ≥2 columns: %s", ch.get("title", "?"))
+                return False
+            if len(values) != len(rows) or any(not isinstance(r, list) or len(r) != len(cols) for r in values):
+                log.warning("Chart rejected — heatmap 'values' isn't a complete rows×columns matrix: %s",
+                            ch.get("title", "?"))
+                return False
+            flat = [_num({"value": v}) for r in values for v in r]
+            if len(flat) > 1 and len(set(flat)) <= 1:
+                log.warning("Chart rejected — heatmap has identical values throughout: %s", ch.get("title", "?"))
+                return False
+            return True
+
+        # Box plot points carry a five-number spread (min/q1/median/q3/max)
+        # instead of "value" — validate and return early, same reasoning as
+        # candlestick above.
+        if chart_type == "boxplot":
+            pts = series[0].get("data") or []
+            if len(pts) < 1:
+                log.warning("Chart rejected — boxplot needs ≥1 entity: %s", ch.get("title", "?"))
+                return False
+            labels = [str(p.get("label", "")) for p in pts]
+            if len(set(labels)) < len(labels):
+                log.warning("Chart rejected — duplicate entity labels in boxplot: %s", ch.get("title", "?"))
+                return False
+            for p in pts:
+                keys = ("min", "q1", "median", "q3", "max")
+                if any(p.get(k) is None for k in keys):
+                    log.warning("Chart rejected — boxplot entity missing min/q1/median/q3/max: %s",
+                                ch.get("title", "?"))
+                    return False
+                mn, q1, med, q3, mx = (_num({"value": p.get(k)}) for k in keys)
+                if not (mn <= q1 <= med <= q3 <= mx):
+                    log.warning("Chart rejected — boxplot entity values not in ascending order: %s",
+                                ch.get("title", "?"))
+                    return False
+            return True
+
+        # Bullet points carry "value" + "target" — the generic identical-
+        # values/mixed-scale checks below are about the WRONG two numbers for
+        # this shape (they'd compare unrelated KPIs' values against each
+        # other), so validate directly and return early.
+        if chart_type == "bullet":
+            pts = series[0].get("data") or []
+            if len(pts) < 1:
+                log.warning("Chart rejected — bullet chart needs ≥1 KPI: %s", ch.get("title", "?"))
+                return False
+            labels = [str(p.get("label", "")) for p in pts]
+            if len(set(labels)) < len(labels):
+                log.warning("Chart rejected — duplicate KPI labels in bullet chart: %s", ch.get("title", "?"))
+                return False
+            if any(p.get("value") is None or p.get("target") is None for p in pts):
+                log.warning("Chart rejected — bullet KPI missing value/target: %s", ch.get("title", "?"))
+                return False
+            return True
+
         # For multi-series (comparison charts): validate each series individually
         for s in series:
             pts = s.get("data") or []
@@ -4568,8 +4942,10 @@ async def generate_report(request: Request):
                 min_pts = 2
             elif chart_type == "waterfall":
                 min_pts = 3
-            elif chart_type == "sparkline":
+            elif chart_type in ("sparkline", "histogram"):
                 min_pts = 4
+            elif chart_type == "radar":
+                min_pts = 3
             else:
                 min_pts = 1
             if len(pts) < min_pts:
@@ -4586,6 +4962,16 @@ async def generate_report(request: Request):
         # "green vs red IPO listings") since a 2-way split is still a
         # legitimate, common pie — unlike a 2-bar chart it isn't thin, it's
         # just binary.
+        if chart_type == "treemap" and n_series == 1:
+            n_labels = len(series[0].get("data") or [])
+            if n_labels < 3:
+                log.warning("Chart rejected — treemap needs ≥3 items, got %d: %s",
+                            n_labels, ch.get("title", "?"))
+                return False
+            if any(_num(pt) < 0 for pt in series[0].get("data") or []):
+                log.warning("Chart rejected — treemap can't represent negative values: %s", ch.get("title", "?"))
+                return False
+
         if chart_type in ("bar", "pie") and n_series == 1:
             n_labels = len(series[0].get("data") or [])
             min_labels = 2 if chart_type == "pie" else 3
@@ -4608,12 +4994,29 @@ async def generate_report(request: Request):
         # prompt): an arrow chart with 1 item is just "before/after" prose
         # wearing a chart, and a scatter plot with under 4 points is a
         # handful of dots with no visible relationship to show.
-        if chart_type in ("arrow", "scatter"):
+        if chart_type in ("arrow", "scatter", "bubble"):
             n_labels = len(series[0].get("data") or []) if series else 0
             min_labels = 2 if chart_type == "arrow" else 4
             if n_labels < min_labels:
                 log.warning("Chart rejected — only %d distinct items (need ≥%d for %s chart): %s",
                             n_labels, min_labels, chart_type, ch.get("title", "?"))
+                return False
+            if chart_type == "bubble":
+                if n_series != 3:
+                    log.warning("Chart rejected — bubble chart needs exactly 3 series (x/y/size), got %d: %s",
+                                n_series, ch.get("title", "?"))
+                    return False
+                label_sets = [{str(p.get("label", "")) for p in (s.get("data") or [])} for s in series]
+                if label_sets[0] != label_sets[1] or label_sets[0] != label_sets[2]:
+                    log.warning("Chart rejected — bubble chart's x/y/size series don't share the same labels: %s",
+                                ch.get("title", "?"))
+                    return False
+
+        if chart_type == "radar":
+            label_lists = [[str(p.get("label", "")) for p in (s.get("data") or [])] for s in series]
+            if any(len(ll) != len(label_lists[0]) or ll != label_lists[0] for ll in label_lists):
+                log.warning("Chart rejected — radar series don't share the same metric labels/order: %s",
+                            ch.get("title", "?"))
                 return False
 
         all_pts = [pt for s in series for pt in (s.get("data") or [])]
@@ -4690,6 +5093,10 @@ async def generate_report(request: Request):
         `_table_duplicates_existing_chart` / `_seen_table_sigs`)."""
         if ch.get("type") == "table":
             return ()
+        if ch.get("type") == "heatmap":
+            return ("heatmap", (ch.get("title") or "").strip().lower(),
+                    tuple(ch.get("rows") or []), tuple(ch.get("columns") or []),
+                    tuple(tuple(r) for r in (ch.get("values") or [])))
         # Shape-agnostic point fingerprint: most types only carry "value",
         # but candlestick carries open/high/low/close instead and waterfall
         # carries an extra "isTotal" flag — hashing every non-label key
@@ -4922,9 +5329,11 @@ async def generate_report(request: Request):
             report_text = await _extend_report_to_floor(report_text, question, MIN_REPORT_CHARS)
 
         clean_title = _sanitize_title(parsed.get("title", ""), question)
+        clean_theme = _sanitize_theme(parsed.get("theme"))
+        final_format = _resolve_recommended_format(recommended_format, clean_theme)
         elapsed = (time.perf_counter() - t0) * 1000
-        log.info("Report complete in %.0fms — title=%r  charts=%d  images=%d  keyStats=%d",
-                 elapsed, clean_title[:60], len(charts), len(images), len(parsed.get("keyStats", [])))
+        log.info("Report complete in %.0fms — title=%r  charts=%d  images=%d  keyStats=%d  format=%s",
+                 elapsed, clean_title[:60], len(charts), len(images), len(parsed.get("keyStats", [])), final_format)
         return JSONResponse(_decode_leaked_unicode_escapes({
             "title":      clean_title,
             "report":     report_text,
@@ -4933,8 +5342,8 @@ async def generate_report(request: Request):
             "keyStats":   parsed.get("keyStats", []),
             "summary":    parsed.get("summary", ""),
             "fileImages": embedded_file_images,  # extracted charts/images only — never full pages
-            "recommendedFormat": recommended_format,
-            "theme":      _sanitize_theme(parsed.get("theme")),
+            "recommendedFormat": final_format,
+            "theme":      clean_theme,
         }))
     except Exception as exc:
         log.error("Report: JSON parse failed: %s  (raw length: %d)", exc, len(raw))
@@ -5015,6 +5424,7 @@ async def generate_report(request: Request):
             salvaged["report"], _salv_charts = _extract_markdown_tables(salvaged["report"], _salv_charts)
             _salv_charts = _strip_url_columns(_salv_charts)
             salvaged["charts"] = await attach_datawrapper_charts(_salv_charts)
+            _salv_theme = _sanitize_theme(salvaged.get("theme"))
             return JSONResponse(_decode_leaked_unicode_escapes({
                 "title":      _sanitize_title(salvaged.get("title", ""), question),
                 "report":     _strip_citation_markers(salvaged.get("report", "")),
@@ -5023,8 +5433,8 @@ async def generate_report(request: Request):
                 "keyStats":   salvaged.get("keyStats", []),
                 "summary":    salvaged.get("summary", ""),
                 "fileImages": embedded_file_images,
-                "recommendedFormat": recommended_format,
-                "theme":      _sanitize_theme(salvaged.get("theme")),
+                "recommendedFormat": _resolve_recommended_format(recommended_format, _salv_theme),
+                "theme":      _salv_theme,
             }))
 
         try:
@@ -5063,6 +5473,7 @@ async def generate_report(request: Request):
             repaired_charts = await attach_datawrapper_charts(_rep_charts)
             repaired_report = _inject_fallback_image_placeholders(repaired_report, repaired_imgs)
             repaired_report = _strip_citation_markers(repaired_report)
+            _rep_theme = _sanitize_theme(repaired_parsed.get("theme"))
             return JSONResponse(_decode_leaked_unicode_escapes({
                 "title":      _sanitize_title(repaired_parsed.get("title", ""), question),
                 "report":     repaired_report,
@@ -5071,8 +5482,8 @@ async def generate_report(request: Request):
                 "keyStats":   repaired_parsed.get("keyStats", []),
                 "summary":    repaired_parsed.get("summary", ""),
                 "fileImages": embedded_file_images,
-                "recommendedFormat": recommended_format,
-                "theme":      _sanitize_theme(repaired_parsed.get("theme")),
+                "recommendedFormat": _resolve_recommended_format(recommended_format, _rep_theme),
+                "theme":      _rep_theme,
             }))
         except Exception as e:
             log.warning("Report: JSON repair attempt failed (%s)", e)

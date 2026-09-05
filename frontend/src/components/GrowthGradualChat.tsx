@@ -18,7 +18,13 @@ function proxyImg(url: string): string {
 interface DatawrapperInfo { id: string; embedUrl: string; publicUrl: string; }
 interface ChartSpec { type: 'bar' | 'line' | 'pie' | 'table'; title: string; series?: ChartSeries[]; unit?: string; columns?: string[]; rows?: string[][]; datawrapper?: DatawrapperInfo; }
 interface WebImage { url: string; caption?: string; }
-interface ReportData { report: string; title?: string; charts: ChartSpec[]; images?: WebImage[]; keyStats: {label:string;value:string;change?:string}[]; summary: string; fileImages?: {name:string;mimeType:string;data:string}[]; sourceDocuments?: {name:string;text:string;file_type?:string}[]; recommendedFormat?: 'pdf' | 'html'; }
+// Mirrors backend/routes/report.py's _sanitize_theme output shape — only
+// ever set when the user's request explicitly asked for a visual style
+// (see report.py SYSTEM_PROMPT's THEME section). fontFamily/customCss are
+// the parts a flat PDF re-theme can't express, so they only ever actually
+// change anything when the report is downloaded as HTML.
+interface ReportTheme { primaryColor?: string; accentColor?: string; toneNote?: string; fontFamily?: string; customCss?: string; richStyleNeeded?: boolean; }
+interface ReportData { report: string; title?: string; charts: ChartSpec[]; images?: WebImage[]; keyStats: {label:string;value:string;change?:string}[]; summary: string; fileImages?: {name:string;mimeType:string;data:string}[]; sourceDocuments?: {name:string;text:string;file_type?:string}[]; recommendedFormat?: 'pdf' | 'html'; theme?: ReportTheme; }
 interface KbCompany { id: number; ticker: string; name: string; downloadUrl: string; }
 interface Message {
   id: string; role: 'user' | 'assistant'; text: string; ts: number;
@@ -742,7 +748,7 @@ function ReportPanel({ msg, question, hasPriorContext, onGenerate }: { msg: Mess
       const res = await fetch('/api/chat/report/pdf', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ report: rd.report, title: rd.title, charts: rd.charts, images: rd.images ?? [], question, keyStats: rd.keyStats, summary: rd.summary, fileImages: rd.fileImages ?? [] }),
+        body: JSON.stringify({ report: rd.report, title: rd.title, charts: rd.charts, images: rd.images ?? [], question, keyStats: rd.keyStats, summary: rd.summary, fileImages: rd.fileImages ?? [], theme: rd.theme ?? null }),
       });
       const contentType = res.headers.get('Content-Type') ?? '';
       if (contentType.includes('application/pdf')) {
@@ -768,7 +774,7 @@ function ReportPanel({ msg, question, hasPriorContext, onGenerate }: { msg: Mess
       const res = await fetch('/api/chat/report/html', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ report: rd.report, title: rd.title, charts: rd.charts, images: rd.images ?? [], question, keyStats: rd.keyStats, summary: rd.summary, fileImages: rd.fileImages ?? [] }),
+        body: JSON.stringify({ report: rd.report, title: rd.title, charts: rd.charts, images: rd.images ?? [], question, keyStats: rd.keyStats, summary: rd.summary, fileImages: rd.fileImages ?? [], theme: rd.theme ?? null }),
       });
       if (!res.ok) {
         const errBody = await res.json().catch(() => null);
@@ -2214,11 +2220,17 @@ export default function GrowthGradualChat() {
             summary:    data.summary    ?? '',
             fileImages: data.fileImages ?? [],
             sourceDocuments,
-            // "html" only when the backend's own [WANTS_INTERACTIVE] regex
-            // matched the question (animation/interactive/motion/etc.) —
-            // defaults to "pdf" server-side, so an absent field here still
-            // falls back to "pdf" via the ?? below wherever it's read.
+            // "html" when the question itself asked for something a static
+            // PDF can't do (animation/interactive/motion/etc.), OR when the
+            // model's own theme decision (see data.theme.richStyleNeeded)
+            // says the requested visual style needs treatment a flat PDF
+            // re-theme can't deliver — computed server-side either way, so
+            // an absent field here still falls back to "pdf".
             recommendedFormat: data.recommendedFormat ?? 'pdf',
+            // Carried through unchanged to /report/pdf and /report/html on
+            // every later download, and preserved across section edits —
+            // this is what actually makes fontFamily/customCss apply.
+            theme: data.theme ?? undefined,
           },
         } : m));
 

@@ -185,10 +185,33 @@ def _is_valid_chart(spec: dict) -> bool:
         rows = spec.get("rows") or []
         return len(cols) >= 2 and len(rows) >= 1
 
+    chart_type = spec.get("type", "bar")
+
+    # Heatmap carries no "series" at all — a rows×columns matrix instead.
+    if chart_type == "heatmap":
+        rows, cols, values = spec.get("rows") or [], spec.get("columns") or [], spec.get("values") or []
+        return (len(rows) >= 2 and len(cols) >= 2 and len(values) == len(rows)
+                and all(isinstance(r, list) and len(r) == len(cols) for r in values))
+
     series = spec.get("series") or []
     if not series:
         return False
-    chart_type = spec.get("type", "bar")
+
+    # Box plot points carry min/q1/median/q3/max instead of "value" — the
+    # generic value-based checks below don't apply to that shape.
+    if chart_type == "boxplot":
+        pts = series[0].get("data") or []
+        if not pts:
+            return False
+        keys = ("min", "q1", "median", "q3", "max")
+        return all(d.get(k) is not None for d in pts for k in keys)
+
+    # Bullet points carry "value" + "target" — a single KPI is a perfectly
+    # valid bullet chart, so skip the "identical values across points" check
+    # below (which is about ranked/comparison charts, not a KPI-vs-target one).
+    if chart_type == "bullet":
+        pts = series[0].get("data") or []
+        return bool(pts) and all(d.get("value") is not None and d.get("target") is not None for d in pts)
 
     # Candlestick points carry open/high/low/close instead of "value" — the
     # generic value-based checks below (identical values, unique labels)
@@ -1394,6 +1417,377 @@ def _sparkline(c, spec, x0, y0, w, h):
     c.drawRightString(coords[-1][0], coords[-1][1] + 6, _fmt(vals[-1]))
 
 
+def _bullet(c, spec, x0, y0, w, h):
+    """Bullet chart: one horizontal bar per KPI, a light 'target range' track
+    behind it, and a vertical tick marking the target value — the classic
+    Few-style bullet, simplified to value + single target (no qualitative
+    good/satisfactory/poor bands, which the chart spec doesn't carry)."""
+    data = (spec.get("series") or [{}])[0].get("data") or []
+    if not data:
+        return
+    unit = _safe_text(spec.get("unit", ""))
+    n = len(data)
+    PL = 90
+    row_h = min(34.0, (h - 20) / max(n, 1))
+    pw = w - PL - 16
+    max_v = max((max(_coerce_value(d.get("value", 0)), _coerce_value(d.get("target", 0))) for d in data), default=1) or 1
+    max_v *= 1.08  # headroom so the target tick near the max isn't clipped at the edge
+
+    top = y0 + h - 10
+    for i, d in enumerate(data):
+        ry = top - i * row_h - row_h / 2
+        v = _coerce_value(d.get("value", 0))
+        target = _coerce_value(d.get("target", 0))
+        # Track (light background showing the full scale)
+        c.setFillColorRGB(0.90, 0.92, 0.97)
+        c.rect(x0 + PL, ry - 7, pw, 14, fill=1, stroke=0)
+        # Value bar
+        bw = max(1, (v / max_v) * pw)
+        c.setFillColorRGB(*(RED if v < target else NAVY))
+        c.rect(x0 + PL, ry - 4, bw, 8, fill=1, stroke=0)
+        # Target tick
+        tx = x0 + PL + (target / max_v) * pw
+        c.setStrokeColorRGB(*BODY_TXT); c.setLineWidth(2)
+        c.line(tx, ry - 9, tx, ry + 9)
+        # Label + value/target readout
+        c.setFillColorRGB(*BODY_TXT); c.setFont("Helvetica", 7.5)
+        c.drawRightString(x0 + PL - 6, ry - 2, _safe_text(str(d.get("label", "")))[:20])
+        c.setFont("Helvetica-Bold", 6.5)
+        vs = f"{v:,.1f}{unit}" if not float(v).is_integer() else f"{v:,.0f}{unit}"
+        ts = f"{target:,.1f}{unit}" if not float(target).is_integer() else f"{target:,.0f}{unit}"
+        c.drawString(x0 + PL + pw + 6, ry - 2, f"{vs} / {ts} tgt")
+    _axis_titles(c, spec, x0, y0, PL, 12, pw, h - 22)
+
+
+def _histogram(c, spec, x0, y0, w, h):
+    """Distribution of a single metric across buckets — visually identical to
+    a single-series bar chart except the bars touch (no inter-bar gap), which
+    is what reads as 'histogram' rather than 'ranked bar chart' to the eye."""
+    data = (spec.get("series") or [{}])[0].get("data") or []
+    if not data:
+        return
+    unit = _safe_text(spec.get("unit", ""))
+    n = len(data)
+    max_v = max((abs(_coerce_value(d.get("value", 0))) for d in data), default=1) or 1
+    PL, PB = 40, 40
+    pw, ph = w - PL - 12, h - PB - 20
+    sp = pw / n
+
+    for f in (0.25, 0.5, 0.75, 1.0):
+        gy = y0 + PB + f * ph
+        c.setStrokeColorRGB(0.88, 0.9, 0.94); c.setLineWidth(0.4)
+        c.line(x0 + PL, gy, x0 + PL + pw, gy)
+        c.setFillColorRGB(*GREY); c.setFont("Helvetica", 6.5)
+        c.drawRightString(x0 + PL - 3, gy - 2.5, f"{f * max_v:.0f}{unit}")
+
+    c.setStrokeColorRGB(0.78, 0.82, 0.88); c.setLineWidth(0.8)
+    c.line(x0 + PL, y0 + PB, x0 + PL + pw, y0 + PB)
+
+    for i, d in enumerate(data):
+        v = abs(_coerce_value(d.get("value", 0)))
+        bh = max(1.5, (v / max_v) * ph)
+        bx = x0 + PL + i * sp
+        c.setFillColorRGB(*NAVY); c.setStrokeColorRGB(1, 1, 1); c.setLineWidth(0.6)
+        c.rect(bx, y0 + PB, sp - 0.5, bh, fill=1, stroke=1)
+        if sp > 18:
+            c.setFillColorRGB(*BODY_TXT); c.setFont("Helvetica-Bold", 6)
+            c.drawCentredString(bx + sp / 2, y0 + PB + bh + 2, f"{v:.0f}")
+        lbl = str(d.get("label", ""))
+        c.setFillColorRGB(*GREY); c.setFont("Helvetica", 5.5 if sp < 30 else 6.5)
+        c.saveState()
+        c.translate(bx + sp / 2, y0 + PB - 4)
+        c.rotate(35 if sp < 35 else 0)
+        if sp < 35:
+            c.drawString(0, 0, lbl[:10])
+        else:
+            c.drawCentredString(0, -8, lbl[:14])
+        c.restoreState()
+
+    _axis_titles(c, spec, x0, y0, PL, PB, pw, ph)
+
+
+def _boxplot(c, spec, x0, y0, w, h):
+    """Box-and-whisker plot: one vertical box per entity showing min/q1/
+    median/q3/max."""
+    data = (spec.get("series") or [{}])[0].get("data") or []
+    if not data:
+        return
+    unit = _safe_text(spec.get("unit", ""))
+    n = len(data)
+    all_v = [_coerce_value(d.get(k, 0)) for d in data for k in ("min", "max")]
+    lo, hi = min(all_v, default=0), max(all_v, default=1)
+    span = (hi - lo) or 1
+    PL, PB = 46, 40
+    pw, ph = w - PL - 12, h - PB - 20
+    sp = pw / n
+    box_w = min(sp * 0.4, 38)
+
+    def yy(v):
+        return y0 + PB + ((v - lo) / span) * ph
+
+    for f in (0, 0.25, 0.5, 0.75, 1.0):
+        gy = y0 + PB + f * ph
+        c.setStrokeColorRGB(0.88, 0.9, 0.94); c.setLineWidth(0.4)
+        c.line(x0 + PL, gy, x0 + PL + pw, gy)
+        c.setFillColorRGB(*GREY); c.setFont("Helvetica", 6.5)
+        c.drawRightString(x0 + PL - 3, gy - 2.5, f"{lo + f * span:.1f}{unit}")
+
+    for i, d in enumerate(data):
+        cx2 = x0 + PL + i * sp + sp / 2
+        mn, q1, med, q3, mx = (_coerce_value(d.get(k, 0)) for k in ("min", "q1", "median", "q3", "max"))
+        color = CHART_COLORS[i % len(CHART_COLORS)]
+        c.setStrokeColorRGB(*color); c.setLineWidth(1.2)
+        c.line(cx2, yy(mn), cx2, yy(q1))       # lower whisker
+        c.line(cx2, yy(q3), cx2, yy(mx))       # upper whisker
+        c.line(cx2 - box_w / 4, yy(mn), cx2 + box_w / 4, yy(mn))  # min cap
+        c.line(cx2 - box_w / 4, yy(mx), cx2 + box_w / 4, yy(mx))  # max cap
+        c.setFillColorRGB(*color)
+        c.rect(cx2 - box_w / 2, yy(q1), box_w, max(1, yy(q3) - yy(q1)), fill=1, stroke=0)
+        c.setStrokeColorRGB(*WHITE); c.setLineWidth(1.4)
+        c.line(cx2 - box_w / 2, yy(med), cx2 + box_w / 2, yy(med))  # median line
+        lbl = str(d.get("label", ""))[:14]
+        c.setFillColorRGB(*BODY_TXT); c.setFont("Helvetica", 6.5)
+        c.drawCentredString(cx2, y0 + PB - 11, lbl)
+
+    _axis_titles(c, spec, x0, y0, PL, PB, pw, ph)
+
+
+def _treemap(c, spec, x0, y0, w, h):
+    """Proportional-area composition chart, laid out with a simple
+    alternating horizontal/vertical slice-and-dice algorithm (not a full
+    squarified treemap, but legible and cheap to compute for the 3-20 item
+    counts these reports actually chart)."""
+    data = (spec.get("series") or [{}])[0].get("data") or []
+    if not data:
+        return
+    items = sorted(data, key=lambda d: abs(_coerce_value(d.get("value", 0))), reverse=True)
+    total = sum(abs(_coerce_value(d.get("value", 0))) for d in items) or 1
+    unit = _safe_text(spec.get("unit", ""))
+
+    def layout(items, bx, by, bw, bh, horizontal):
+        if not items:
+            return
+        sub_total = sum(abs(_coerce_value(d.get("value", 0))) for d in items) or 1
+        pos = 0.0
+        for i, d in enumerate(items):
+            frac = abs(_coerce_value(d.get("value", 0))) / sub_total
+            if horizontal:
+                seg_w = frac * bw
+                cell = (bx + pos, by, seg_w, bh)
+                pos += seg_w
+            else:
+                seg_h = frac * bh
+                cell = (bx, by + pos, bw, seg_h)
+                pos += seg_h
+            cx, cy, cw, ch_ = cell
+            color = CHART_COLORS[i % len(CHART_COLORS)]
+            c.setFillColorRGB(*color); c.setStrokeColorRGB(1, 1, 1); c.setLineWidth(1)
+            c.rect(cx, cy, max(0.5, cw - 1), max(0.5, ch_ - 1), fill=1, stroke=1)
+            pct = abs(_coerce_value(d.get("value", 0))) / total * 100
+            lbl = str(d.get("label", ""))
+            if cw > 34 and ch_ > 16:
+                c.setFillColorRGB(*WHITE)
+                c.setFont("Helvetica-Bold", 7 if cw > 60 else 6)
+                c.drawString(cx + 4, cy + ch_ - 11, lbl[:int(cw / 4.2)])
+                c.setFont("Helvetica", 6)
+                vs = f"{pct:.1f}%" if unit == "%" or not unit else f"{_coerce_value(d.get('value', 0)):,.0f}{unit}"
+                c.drawString(cx + 4, cy + 4, vs)
+
+    groups = {}
+    order = []
+    for d in items:
+        g = d.get("group") or "__flat__"
+        if g not in groups:
+            groups[g] = []
+            order.append(g)
+        groups[g].append(d)
+
+    if len(groups) > 1:
+        # One row per group, sized by the group's total value; items inside
+        # each row laid out left-to-right by their own value.
+        group_totals = [(g, sum(abs(_coerce_value(d.get("value", 0))) for d in groups[g])) for g in order]
+        pos_y = 0.0
+        for g, gtot in group_totals:
+            row_h = (gtot / total) * h
+            layout(groups[g], x0, y0 + h - pos_y - row_h, w, row_h, horizontal=True)
+            pos_y += row_h
+    else:
+        layout(items, x0, y0, w, h, horizontal=True)
+
+
+def _heatmap(c, spec, x0, y0, w, h):
+    """Rows × columns matrix, one colored cell per value — color intensity
+    (not position/height) carries the number, so the eye can scan for the
+    best/worst cells at a glance."""
+    rows = spec.get("rows") or []
+    cols = spec.get("columns") or []
+    values = spec.get("values") or []
+    if not rows or not cols or not values:
+        return
+    unit = _safe_text(spec.get("unit", ""))
+    flat = [_coerce_value(v) for r in values for v in r]
+    lo, hi = min(flat, default=0), max(flat, default=1)
+    span = (hi - lo) or 1
+
+    PL, PB = 70, 26
+    pw, ph = w - PL - 8, h - PB - 16
+    cell_w = pw / len(cols)
+    cell_h = ph / len(rows)
+
+    def color_for(v):
+        t = (v - lo) / span
+        # Diverging-ish scale: red (low) -> cream -> teal/green (high)
+        if t < 0.5:
+            return _mix(RED, LIGHT, t / 0.5)
+        return _mix(LIGHT, GREEN, (t - 0.5) / 0.5)
+
+    for ri, row in enumerate(rows):
+        ry = y0 + PB + ph - (ri + 1) * cell_h
+        c.setFillColorRGB(*BODY_TXT); c.setFont("Helvetica", 6.5)
+        c.drawRightString(x0 + PL - 5, ry + cell_h / 2 - 2, str(row)[:16])
+        for ci in range(len(cols)):
+            v = _coerce_value(values[ri][ci]) if ri < len(values) and ci < len(values[ri]) else 0
+            cx2 = x0 + PL + ci * cell_w
+            c.setFillColorRGB(*color_for(v))
+            c.setStrokeColorRGB(1, 1, 1); c.setLineWidth(1)
+            c.rect(cx2, ry, cell_w - 1, cell_h - 1, fill=1, stroke=1)
+            if cell_w > 22 and cell_h > 10:
+                c.setFillColorRGB(*BODY_TXT); c.setFont("Helvetica-Bold", 6)
+                vs = f"{v:.0f}{unit}" if abs(v) >= 10 else f"{v:.1f}{unit}"
+                c.drawCentredString(cx2 + cell_w / 2, ry + cell_h / 2 - 2, vs)
+
+    for ci, col in enumerate(cols):
+        cx2 = x0 + PL + ci * cell_w + cell_w / 2
+        c.setFillColorRGB(*GREY); c.setFont("Helvetica", 6.5)
+        c.drawCentredString(cx2, y0 + PB + ph + 4, str(col)[:12])
+
+
+def _bubble(c, spec, x0, y0, w, h):
+    """Three metrics per entity: x, y, and marker size — series order is
+    fixed (x, y, size) per the chart-spec contract."""
+    series_list = spec.get("series") or []
+    if len(series_list) < 3:
+        return
+    x_by = {str(p.get("label", "")): _coerce_value(p.get("value", 0)) for p in (series_list[0].get("data") or [])}
+    y_by = {str(p.get("label", "")): _coerce_value(p.get("value", 0)) for p in (series_list[1].get("data") or [])}
+    s_by = {str(p.get("label", "")): abs(_coerce_value(p.get("value", 0))) for p in (series_list[2].get("data") or [])}
+    labels = [l for l in x_by if l in y_by and l in s_by]
+    if not labels:
+        return
+
+    xs, ys, ss = [x_by[l] for l in labels], [y_by[l] for l in labels], [s_by[l] for l in labels]
+    x_lo, x_hi = min(xs), max(xs)
+    y_lo, y_hi = min(ys), max(ys)
+    x_pad = (x_hi - x_lo) * 0.12 or 1
+    y_pad = (y_hi - y_lo) * 0.12 or 1
+    x_lo, x_hi = x_lo - x_pad, x_hi + x_pad
+    y_lo, y_hi = y_lo - y_pad, y_hi + y_pad
+    s_max = max(ss) or 1
+
+    PL, PB = 46, 34
+    pw, ph = w - PL - 16, h - PB - 20
+
+    for f in (0, 0.25, 0.5, 0.75, 1.0):
+        gy = y0 + PB + f * ph
+        gx = x0 + PL + f * pw
+        c.setStrokeColorRGB(0.88, 0.9, 0.94); c.setLineWidth(0.4)
+        c.line(x0 + PL, gy, x0 + PL + pw, gy)
+        c.line(gx, y0 + PB, gx, y0 + PB + ph)
+        c.setFillColorRGB(*GREY); c.setFont("Helvetica", 6)
+        c.drawRightString(x0 + PL - 3, gy - 2, f"{y_lo + f * (y_hi - y_lo):.1f}")
+        c.drawCentredString(gx, y0 + PB - 9, f"{x_lo + f * (x_hi - x_lo):.1f}")
+
+    for i, lbl in enumerate(labels):
+        px = x0 + PL + ((xs[i] - x_lo) / (x_hi - x_lo)) * pw
+        py = y0 + PB + ((ys[i] - y_lo) / (y_hi - y_lo)) * ph
+        r = 3 + (ss[i] / s_max) * 16
+        color = CHART_COLORS[i % len(CHART_COLORS)]
+        try:
+            c.setFillAlpha(0.65)
+        except Exception:
+            pass
+        c.setFillColorRGB(*color)
+        c.circle(px, py, r, fill=1, stroke=0)
+        try:
+            c.setFillAlpha(1.0)
+        except Exception:
+            pass
+        if r > 10:
+            c.setFillColorRGB(*WHITE); c.setFont("Helvetica-Bold", 5.5)
+            c.drawCentredString(px, py - 2, lbl[:10])
+
+    _axis_titles(c, spec, x0, y0, PL, PB, pw, ph)
+
+
+def _radar(c, spec, x0, y0, w, h):
+    """Spider/radar chart: one axis per metric, one polygon per entity/series."""
+    series_list = spec.get("series") or []
+    if not series_list:
+        return
+    metrics = [str(p.get("label", "")) for p in (series_list[0].get("data") or [])]
+    n_axes = len(metrics)
+    if n_axes < 3:
+        return
+
+    cx2 = x0 + w / 2
+    cy2 = y0 + h / 2 - 6
+    R = min(w, h) * 0.32
+    # Independent per-axis scale (each metric normalised 0-1 across all
+    # series) so metrics with very different units/ranges (P/E vs. D/E vs.
+    # ROE%) all still fill the chart rather than one axis dwarfing the rest.
+    axis_max = []
+    for mi in range(n_axes):
+        vals = [_coerce_value((s.get("data") or [{}])[mi].get("value", 0)) if mi < len(s.get("data") or []) else 0
+                for s in series_list]
+        axis_max.append(max(vals) or 1)
+
+    def point(mi, frac):
+        angle = math.pi / 2 + mi * (2 * math.pi / n_axes)
+        r = frac * R
+        return cx2 + r * math.cos(angle), cy2 + r * math.sin(angle)
+
+    # Axis lines + metric labels + a light ring at 50%/100%
+    for ring in (0.5, 1.0):
+        c.setStrokeColorRGB(0.85, 0.87, 0.93); c.setLineWidth(0.5)
+        p0 = point(0, ring)
+        path = c.beginPath(); path.moveTo(*p0)
+        for mi in range(1, n_axes):
+            path.lineTo(*point(mi, ring))
+        path.close(); c.drawPath(path, fill=0, stroke=1)
+    for mi in range(n_axes):
+        ax, ay = point(mi, 1.0)
+        c.setStrokeColorRGB(0.85, 0.87, 0.93); c.setLineWidth(0.5)
+        c.line(cx2, cy2, ax, ay)
+        lx, ly = point(mi, 1.14)
+        c.setFillColorRGB(*BODY_TXT); c.setFont("Helvetica", 6.5)
+        c.drawCentredString(lx, ly - 2, metrics[mi][:16])
+
+    for si, s in enumerate(series_list):
+        pts = s.get("data") or []
+        color = CHART_COLORS[si % len(CHART_COLORS)]
+        c.setStrokeColorRGB(*color); c.setFillColorRGB(*color); c.setLineWidth(1.4)
+        path = c.beginPath()
+        for mi in range(n_axes):
+            v = _coerce_value(pts[mi].get("value", 0)) if mi < len(pts) else 0
+            frac = v / axis_max[mi] if axis_max[mi] else 0
+            xx, yy = point(mi, max(0.02, frac))
+            (path.moveTo if mi == 0 else path.lineTo)(xx, yy)
+        path.close()
+        c.drawPath(path, fill=0, stroke=1)
+
+    # Legend
+    if len(series_list) > 1:
+        lx = x0 + 4
+        ly = y0 + h - 6
+        for si, s in enumerate(series_list):
+            color = CHART_COLORS[si % len(CHART_COLORS)]
+            c.setFillColorRGB(*color); c.rect(lx, ly - 4, 10, 6, fill=1, stroke=0)
+            name = str(s.get("name", f"Series {si+1}"))[:20]
+            c.setFillColorRGB(*BODY_TXT); c.setFont("Helvetica", 6.5)
+            c.drawString(lx + 13, ly - 2, name)
+            lx += 14 + c.stringWidth(name, "Helvetica", 6.5) + 10
+
+
 def _datawrapper_image(c, spec, x0, y0, w, h):
     """Draw a fetched Datawrapper PNG export, scaled to fit the card, centred.
 
@@ -1651,13 +2045,16 @@ def _table(c, spec, x0, y0, w, h):
         c.drawString(x0, ry_top - 10, f"+ {n_more} more row{'s' if n_more != 1 else ''} — see full table on Datawrapper")
 
 
+_NO_DATAWRAPPER_TYPES = ("waterfall", "candlestick", "sparkline", "boxplot", "treemap", "heatmap", "bubble", "radar")
+
+
 def _draw_chart(c, spec, x0, y0, w, h):
     t = spec.get("type", "bar")
-    # waterfall/candlestick/sparkline have no Datawrapper equivalent (see
-    # the early return in utils/datawrapper.py's publish_chart) — skip the
+    # Types in _NO_DATAWRAPPER_TYPES have no Datawrapper equivalent (see the
+    # early return in utils/datawrapper.py's publish_chart) — skip the
     # Datawrapper-image lookup entirely for them rather than wasting a
     # lookup that will never find anything under chart["datawrapper"].
-    if t not in ("waterfall", "candlestick", "sparkline") and _datawrapper_image(c, spec, x0, y0, w, h):
+    if t not in _NO_DATAWRAPPER_TYPES and _datawrapper_image(c, spec, x0, y0, w, h):
         return
     if t == "table":
         _table(c, spec, x0, y0, w, h)
@@ -1671,6 +2068,20 @@ def _draw_chart(c, spec, x0, y0, w, h):
         _candlestick(c, spec, x0, y0, w, h)
     elif t == "sparkline":
         _sparkline(c, spec, x0, y0, w, h)
+    elif t == "bullet":
+        _bullet(c, spec, x0, y0, w, h)
+    elif t == "histogram":
+        _histogram(c, spec, x0, y0, w, h)
+    elif t == "boxplot":
+        _boxplot(c, spec, x0, y0, w, h)
+    elif t == "treemap":
+        _treemap(c, spec, x0, y0, w, h)
+    elif t == "heatmap":
+        _heatmap(c, spec, x0, y0, w, h)
+    elif t == "bubble":
+        _bubble(c, spec, x0, y0, w, h)
+    elif t == "radar":
+        _radar(c, spec, x0, y0, w, h)
     else:
         _bar(c, spec, x0, y0, w, h)
 
@@ -2185,7 +2596,7 @@ def build_pdf(report: str, title: str, question: str, summary: str,
                 # the original fixed allocation.
                 if has_dw_png:
                     dw_type = str(ch.get("type", "")).lower()
-                    if dw_type in ("arrow", "table"):
+                    if dw_type in ("arrow", "table", "bullet"):
                         try:
                             png_bytes = (ch.get("datawrapper") or {}).get("pngBytes")
                             if isinstance(png_bytes, str):

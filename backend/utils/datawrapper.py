@@ -93,6 +93,12 @@ def _dw_type(spec: dict) -> str:
     if chart_type == "table":
         return "tables"
 
+    if chart_type == "bullet":
+        # A single KPI (or several) plotted against its own target — this is
+        # Datawrapper's native "Bullet Bars" type, built for exactly this
+        # value-vs-target shape.
+        return "d3-bars-bullet"
+
     if chart_type == "scatter":
         # Two independent numeric metrics per entity (e.g. valuation score
         # vs. 1-yr return) — our 2-series-sharing-labels shape maps directly
@@ -261,6 +267,13 @@ def _spec_to_csv(spec: dict) -> str:
 
     series = spec.get("series") or []
 
+    if chart_type == "bullet":
+        s = series[0] if series else {"data": []}
+        writer.writerow(["Label", "Value", "Target"])
+        for pt in (s.get("data") or []):
+            writer.writerow([_clean_label(pt.get("label", "")), pt.get("value", ""), pt.get("target", "")])
+        return buf.getvalue()
+
     if chart_type == "pie" or len(series) == 1:
         s = series[0] if series else {"data": []}
         name = _clean_label(s.get("name") or spec.get("unit") or "Value")
@@ -325,7 +338,7 @@ def _export_dims(dw_type: str) -> tuple[str, str]:
     - Column/bar/line/area charts already work well at 900x500 (the shape
       this constant was originally tuned for) — leave them as-is.
     """
-    if dw_type in ("tables", "d3-arrow-plot"):
+    if dw_type in ("tables", "d3-arrow-plot", "d3-bars-bullet"):
         # Tables grow with row count — see the tables case above.
         # Arrow/range-plots draw one horizontal row per category the same
         # way tables draw one row per record — a 2-3 row arrow-plot in a
@@ -389,6 +402,18 @@ async def publish_chart(client: httpx.AsyncClient, spec: dict) -> dict | None:
     # API call entirely and always use the purpose-built ReportLab renderer
     # in routes/pdf.py (_waterfall / _candlestick / _sparkline) instead.
     if spec.get("type") in ("waterfall", "candlestick", "sparkline"):
+        return None
+
+    # Same reasoning for the newer chart types that have no clean Datawrapper
+    # equivalent: box plot (five-number spread per entity), treemap
+    # (proportional-area composition, optionally nested by "group"), heatmap
+    # (a rows×columns matrix — not even a "series" array), bubble (three
+    # metrics per entity — Datawrapper's scatter plot only takes two), and
+    # radar (multi-metric entity profile). Forcing any of these through the
+    # bar/scatter CSV shape below would silently mangle the data (e.g. a
+    # boxplot's min/q1/median/q3/max points have no "value" key at all) —
+    # skip straight to the purpose-built ReportLab/Chart.js renderers instead.
+    if spec.get("type") in ("boxplot", "treemap", "heatmap", "bubble", "radar"):
         return None
 
     try:
