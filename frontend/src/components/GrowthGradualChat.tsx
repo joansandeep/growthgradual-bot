@@ -1585,7 +1585,11 @@ export default function GrowthGradualChat() {
    *  left exactly as it was. */
   const editReportSection = useCallback((reportMsgId: string, instruction: string, reportData: ReportData) => {
     const userMsg: Message = { id: uid(), role: 'user', text: instruction, ts: Date.now() };
-    const botMsg:  Message = { id: uid(), role: 'assistant', text: '', ts: Date.now() };
+    // reportQuestion carries the edit instruction through as ReportPanel's
+    // `question` fallback (used for the email subject / default heading
+    // when the report itself has no H1/H2) — without it, that fallback
+    // would show this status message's own text instead.
+    const botMsg:  Message = { id: uid(), role: 'assistant', text: '', ts: Date.now(), reportQuestion: instruction };
     setMessages(prev => [...prev, userMsg, botMsg]);
     setStreaming(true);
     setStatusMsg('Updating that section of the report…');
@@ -1616,27 +1620,38 @@ export default function GrowthGradualChat() {
           return;
         }
 
-        // Splice the updated section (and, if applicable, the updated/added
-        // chart) into the ORIGINAL report message — reportData.report and
-        // reportData.charts already come back from the backend with only
-        // the matched section/chart changed, so this is a straight
-        // replacement, not a merge.
+        // Build the merged ReportData once — used both to keep the
+        // ORIGINAL report message in sync (unchanged back-compat behaviour)
+        // AND to attach a fresh copy to THIS edit response's own message,
+        // so a report artifact (Show Report / Download PDF / Email Report)
+        // renders directly under the response that performed the edit,
+        // rather than only being visible by scrolling back to the original
+        // report. reportData.report/.charts already come back from the
+        // backend with only the matched section/chart changed — everything
+        // else (images, keyStats, summary, sources, theme, etc.) is carried
+        // over untouched, so unrelated sections/tables/charts/images/
+        // sources are preserved exactly as they were.
         const updatedCharts = Array.isArray(data.charts) ? data.charts : undefined;
-        setMessages(prev => prev.map(m => (m.id === reportMsgId && m.reportData)
-          ? {
+        const mergedReportData: ReportData = {
+          ...reportData,
+          report: updatedReport,
+          title: data.title || reportData.title,
+          charts: updatedCharts || reportData.charts,
+        };
+        setMessages(prev => prev.map(m => {
+          if (m.id === reportMsgId && m.reportData) {
+            return { ...m, reportData: mergedReportData };
+          }
+          if (m.id === botMsg.id) {
+            const chartNote = data.chartUpdated ? ' The chart was updated too.' : '';
+            return {
               ...m,
-              reportData: {
-                ...m.reportData,
-                report: updatedReport,
-                title: data.title || m.reportData.title,
-                charts: updatedCharts || m.reportData.charts,
-              },
-            }
-          : m));
-        const chartNote = data.chartUpdated ? ' The chart was updated too.' : '';
-        setMessages(prev => prev.map(m => m.id === botMsg.id
-          ? { ...m, text: `Updated the "${data.editedSection || 'requested'}" section — the rest of the report is unchanged.${chartNote}` }
-          : m));
+              text: `Updated the "${data.editedSection || 'requested'}" section — the rest of the report is unchanged.${chartNote}`,
+              reportData: mergedReportData,
+            };
+          }
+          return m;
+        }));
       })
       .catch((e) => {
         console.error('[editReportSection]', e);

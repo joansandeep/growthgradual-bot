@@ -19,6 +19,7 @@ import os
 import random
 import re
 import time
+import unicodedata
 from datetime import datetime, timezone
 from functools import lru_cache
 from pathlib import Path
@@ -489,20 +490,59 @@ def detect_domain(question: str) -> str:
 
 
 # ─── Safe text — strip chars Helvetica can't render ──────────────────────────
+# Base14 Helvetica in ReportLab is drawn via WinAnsiEncoding (cp1252). Any
+# character outside that codepage silently comes out as a "tofu" ■ block
+# instead of raising — which is exactly what LLM-generated report/edit text
+# tends to sneak in: things like U+2011 NON-BREAKING HYPHEN or U+2010 HYPHEN
+# in compound words ("China‑related", "cyber‑insurance", "break‑even"),
+# U+2212 MINUS SIGN, or stray zero-width/formatting characters. En/em dashes
+# (\u2013 / \u2014) are NOT rewritten — cp1252 already has them.
+_UNICODE_TEXT_REPLACEMENTS = {
+    "₹": "Rs.",
+    "\u20b9": "Rs.",              # ₹ (alternate codepoint form)
+    "\u2018": "'", "\u2019": "'", "\u201a": "'", "\u2032": "'",
+    "\u201c": '"', "\u201d": '"', "\u201e": '"', "\u2033": '"',
+    "\u2026": "...",
+    "\u00a0": " ",                 # non-breaking space -> normal space
+    "\u200b": "", "\u200c": "", "\u200d": "", "\ufeff": "",  # zero-width chars
+    # Hyphen-like characters that LOOK like "-" but aren't in cp1252 — the
+    # actual root cause of the "China■related" style artifacts.
+    "\u2010": "-", "\u2011": "-", "\u2012": "-", "\u2015": "-",
+    "\u2043": "-", "\u2212": "-",
+}
+
+
 def _safe_text(text: str) -> str:
-    """Replace characters that Helvetica can't render (shows as ■ tofu).
-    En/em dashes are NOT replaced — reportlab's base14 Helvetica renders them
-    fine via WinAnsiEncoding, and replacing \u2014 with a literal "--" was
-    producing an ugly double-hyphen artifact in generated titles/headings."""
-    return (text
-        .replace("₹", "Rs.")
-        .replace("\u20b9", "Rs.")
-        .replace("\u2019", "'")
-        .replace("\u2018", "'")
-        .replace("\u201c", '"')
-        .replace("\u201d", '"')
-        .replace("\u2026", "...")
-    )
+    """Rewrite characters ReportLab's base14 Helvetica can't render so they
+    never reach the PDF as a ■ tofu block. First applies known 1:1
+    replacements (smart quotes, non-ASCII hyphens, the rupee sign, etc.),
+    then — as a safety net for anything not explicitly listed above — folds
+    any character still outside cp1252 to its closest ASCII form (e.g. "é"
+    -> "e") via Unicode decomposition, dropping it only if that also fails,
+    rather than letting it silently render as a black square."""
+    if not text:
+        return text
+    for bad, good in _UNICODE_TEXT_REPLACEMENTS.items():
+        if bad in text:
+            text = text.replace(bad, good)
+    try:
+        text.encode("cp1252")
+        return text
+    except UnicodeEncodeError:
+        pass
+    out = []
+    for ch in text:
+        try:
+            ch.encode("cp1252")
+            out.append(ch)
+            continue
+        except UnicodeEncodeError:
+            pass
+        # Fold accented/typographic variants to plain ASCII where possible
+        # (e.g. "é" -> "e", "ﬁ" -> "fi" via compatibility decomposition).
+        ascii_ch = unicodedata.normalize("NFKD", ch).encode("ascii", "ignore").decode("ascii")
+        out.append(ascii_ch)  # empty string if nothing sensible survives — dropped, not tofu
+    return "".join(out)
 
 
 def _truncate_words(text: str, limit: int) -> str:
