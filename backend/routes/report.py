@@ -235,7 +235,7 @@ You MUST respond with valid JSON only — no markdown fences, no preamble, no te
 Respond with EXACTLY this shape:
 {
   "title": "<concise NOUN-PHRASE report title, max 12 words. Examples: 'Top Banking Stocks India 2026', 'Indian Mutual Fund SIP Returns Analysis', 'HDFC vs ICICI Bank Comparison', 'Nifty 50 Market Outlook — June 2026'. STRICT RULES: NEVER start with 'So', 'You', 'I', 'Let's', 'Here', 'Based', 'Looking', 'Understanding', 'A look at', 'An analysis of', or any verb/pronoun. NEVER start with 'The' followed by a verb — e.g. BAD: 'The Nifty outlook today is mixed, with some analysts predicting...' (full sentence starting with The) → GOOD: 'Nifty 50 Outlook — Mixed Signals Amid Volatility'. NEVER write a full sentence — this includes sentences that don't start with one of those words too, e.g. BAD: 'The Minimum Investment Amounts For These Top-Performing SIPs Are As Follows' → GOOD: 'Top-Performing SIP Funds — Minimum Investment Requirements'. Never end a title with a colon, 'as follows', or '...' — those signal an incomplete sentence, not a heading. ALWAYS write a noun phrase — topic first, qualifiers after.>",
-  "report": "<full markdown report, structured and data-rich. Length and depth follow what the user actually asked for: a 'brief'/'short'/'quick' request should be concise; a 'detailed' request should go substantially deeper; a 'comprehensive'/'deep-dive'/'exhaustive' request should be extensive; when the user gives no explicit depth cue, choose a reasonable length for the topic and the amount of genuine source material available — see REPORT STRUCTURE below for how to plan the section list that fits. Add DEPTH, not invented data: more context, more explanation of mechanisms and causes, more comparison and discussion of what the numbers mean — never pad with filler sentences, restated points, or numbers not in the sources just to reach a length.>",
+  "report": "<full markdown report, structured and data-rich. The MINIMUM LENGTH — HARD FLOOR rule below (>= 8 rendered PDF pages, ~4,500-6,000+ words) applies by default. A 'detailed' request meets or exceeds it; a 'comprehensive'/'deep-dive'/'exhaustive' request goes well beyond it; when the user gives NO explicit depth cue, the floor still applies in full — 'no cue' is not license to shorten, it means write to the floor. The ONLY way to go shorter is an explicit 'brief'/'short'/'quick' request or a stated page/word limit in the user's own words. See REPORT STRUCTURE below for how to plan the section list that fits. Add DEPTH, not invented data: more context, more explanation of mechanisms and causes, more comparison and discussion of what the numbers mean, more genuinely-supported sections — never pad with filler sentences, restated points, or numbers not in the sources just to reach a length.>",
   "charts": [...],
   "images": [{ "prompt": "<AI image-generation prompt — see AI IMAGE RULES>", "caption": "<short caption>" }, ...] (0-2 items — see AI IMAGE RULES; optional, include only where a genuine visual opportunity exists),
   "keyStats": [{ "label": "<short label>", "value": "<value string>", "change": "<+/- % or empty string>" }],
@@ -4279,7 +4279,16 @@ async def generate_report(request: Request):
         "1. The uploaded file content (if provided) is your PRIMARY source — extract ALL numbers, tables, charts, and statistics from it first.\n"
         "2. Use web sources to supplement and validate the file data.\n"
         "3. Follow CHART RULES exactly — reproduce actual data from the file as charts where it exists.\n"
-        "4. Write the report with sections you choose per REPORT STRUCTURE above, at whatever length the user's request calls for (concise for a brief/short request, deeper for a detailed request, extensive for a comprehensive/deep-dive request, or a reasonable length for the topic when no depth is specified) — never pad merely to reach a length. Insert [CHART_n] inline where valid chart data exists.\n"
+        "4. Write the report with sections you choose per REPORT STRUCTURE above. LENGTH: the "
+        "MINIMUM LENGTH — HARD FLOOR rule in your system instructions (>= 8 rendered PDF pages, "
+        "~4,500-6,000+ words) applies by default, including when the user's request states no "
+        "explicit depth at all — 'no depth specified' means 'meet the floor,' never 'write a "
+        "shorter, reasonable-length piece instead.' The ONLY way to go below the floor is an "
+        "EXPLICIT short-form cue in the request itself (\"brief\", \"short\", \"quick\", or a stated "
+        "page/word limit) — absent that, treat this report the same as a 'detailed' one. "
+        "'Comprehensive'/'deep-dive'/'exhaustive' calls for well beyond the floor. Reach length "
+        "through more real sections and chartable angles, never through padding, filler, or "
+        "repeated stats. Insert [CHART_n] inline where valid chart data exists.\n"
         "5. Data → [CHART_n] or a table, always. Only if a section is genuinely non-numeric/thematic and would "
         "otherwise be plain text, you MAY add up to 2 AI-generated illustrative images total — see AI IMAGE RULES. "
         "Default to zero images; most reports should return \"images\": [].\n"
