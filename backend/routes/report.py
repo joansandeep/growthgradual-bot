@@ -35,6 +35,7 @@ from utils.screener_kb import (
 )
 from utils.intent import resolve_request_intent, RequestIntent
 from routes.source_manifest import normalise_source_manifest
+from utils.presentation_schema import ReportPresentationSpec
 
 router = APIRouter()
 log = logging.getLogger("report")
@@ -3643,75 +3644,100 @@ async def _call_llm_json(system_prompt: str, user_prompt: str) -> dict | None:
 # shape, etc.), which stay exactly as they were. If planning fails, is
 # malformed, or times out, generation falls back to today's behavior
 # unchanged: the writer plans implicitly, same as before this change.
-PLANNING_SYSTEM_PROMPT = """You are the planning layer for a research-report generator. Your ONLY job is to decide the SHAPE of the report — its section list and how each section should be presented — before anyone writes a word of it. You do not write report prose yourself.
+PLANNING_SYSTEM_PROMPT = """You are the planning layer for a research-report generator. Your ONLY job is to decide the SHAPE and PRESENTATION of the report before anyone writes a word of it. You do not write report prose yourself.
 
 You MUST respond with valid JSON only — no markdown fences, no preamble, no text outside JSON.
 
-Respond with EXACTLY this shape:
+Respond with this shape:
 {
   "depth": "brief" | "standard" | "detailed" | "comprehensive",
-  "depth_reason": "<one short phrase: what in the request or source material drove this depth choice>",
+  "depth_reason": "<one short phrase explaining why this depth fits THIS request and source material>",
   "sections": [
     {
-      "heading": "<the actual section heading — specific to this request's subject, never a generic placeholder like 'Section 1'>",
-      "purpose": "<one sentence: what this section covers and why THIS request needs it>",
+      "heading": "<actual section heading specific to this request>",
+      "purpose": "<one sentence explaining what this section covers and why it is needed>",
       "format": "prose" | "table" | "chart" | "bullets" | "mixed",
-      "format_reason": "<one short phrase: what about the available data or the request's register justifies this format>"
+      "format_reason": "<one short phrase explaining why this format fits the available evidence>"
     }
   ],
-  "notes": "<optional: one or two sentences of cross-cutting guidance for the writer — e.g. 'sources are thin, keep this short and prose-heavy' or 'strong ranked-return data across 6 funds, lead with that as a chart'. Empty string if nothing to add.>"
+  "notes": "<optional cross-cutting guidance for the writer>",
+  "presentation": {
+    "domain": "financial" | "regulatory" | "scientific" | "company_analysis" | "market_news" | "comparison" | "generic",
+    "cover": {
+      "enabled": true | false,
+      "title": "<plain-text title treatment guidance>",
+      "subtitle": "<plain-text subtitle treatment guidance>",
+      "treatment": "minimal" | "bold_banner" | "classic" | "data_driven",
+      "show_date": true | false,
+      "show_author": true | false
+    },
+    "executive_summary": {
+      "placement": "none" | "after_cover" | "top_of_body" | "sidebar" | "end_summary",
+      "heading": "<plain-text heading if a summary is used>",
+      "key_metrics": []
+    },
+    "sections": [
+      {
+        "id": "<stable short identifier>",
+        "title": "<must correspond to one planned section>",
+        "section_type": "executive_summary" | "overview" | "metrics_dashboard" | "narrative" | "financials" | "compliance" | "methodology" | "findings" | "timeline" | "comparison" | "risk_assessment" | "market_context" | "news_digest" | "recommendations" | "appendix" | "sources" | "custom",
+        "layout": "single_column" | "two_column" | "grid" | "full_bleed" | "sidebar_main",
+        "density": "sparse" | "standard" | "dense",
+        "emphasis": "low" | "normal" | "high" | "critical",
+        "order": 0,
+        "blocks": [
+          {"kind": "metrics" | "prose" | "table" | "chart" | "timeline" | "comparison" | "risk_matrix" | "evidence"}
+        ]
+      }
+    ],
+    "source_appendix": {
+      "placement": "inline_footnotes" | "end_of_section" | "end_of_report" | "appendix" | "none",
+      "group_by_section": true | false,
+      "include_appendix": true | false
+    },
+    "default_layout": "single_column" | "two_column" | "grid" | "full_bleed" | "sidebar_main",
+    "default_density": "sparse" | "standard" | "dense"
+  }
 }
 
-HOW TO DECIDE — DATA FIRST, NEVER A TEMPLATE:
-1. Read the request itself first: its subject, its audience/register (technical, beginner-friendly,
-   comical, executive, narrative...), and any explicit depth or format cue ("brief", "deep-dive",
-   "as a table", "no charts", etc.). This sets the boundaries of what the report should even attempt.
-2. Then read the SOURCE PREVIEW you're given (titles, snippets, short excerpts — NOT the full source
-   text, so treat this as a sample of what KINDS of data exist, not an exhaustive list of every number).
-   Ask: what data shapes are actually present — rankings across named items, time series, multi-column
-   comparisons, single before/after deltas, or mostly thematic/qualitative material with few or no
-   hard numbers? Plan sections and formats around what's genuinely there, not around what a typical
-   report on this general topic usually contains.
-3. There is NO default section list and NO required section. An "Executive Summary", "Key Takeaways",
-   "Risks & Considerations", a numbered 1-2-3 run, or a closing "Conclusion" are shapes that fit SOME
-   requests, never a checklist to reproduce out of habit — include one only when this request's
-   register or the data genuinely calls for it. A thin section that exists only to fill a familiar slot
-   is worse than leaving it out.
-4. Match format to data shape, not habit: a single ranked metric across several named items (e.g.
-   "1-year return by fund") suits a chart; data with 4+ mixed-type columns suits a table only; a
-   short qualitative point or two suits prose or a bullet list; a section with almost no numeric
-   grounding in the preview should be planned as "prose", not forced into a chart/table the writer
-   will have nothing real to fill it with. Vary formats across sections deliberately — a plan where
-   every section is the same format is usually wrong unless the material genuinely is uniform.
-5. If the source preview is empty, or reads as thin/mostly irrelevant, or the request explicitly
-   says no sources were found, plan FEWER sections and lean toward "prose"/"bullets" — do not plan
-   chart/table sections the writer will have no real data to fill, since an invented chart is worse
-   than no chart.
-6. Number of sections should fit the requested depth — but the report writer this plan feeds has a
-   HARD MINIMUM LENGTH floor of at least 8 rendered PDF pages (~4,500-6,000+ words / ~30,000+
-   characters) that applies BY DEFAULT to every report, with no explicit depth cue needed to trigger
-   it. A thin plan directly causes an under-length report no matter how well the writer executes it —
-   the writer paces itself against YOUR section list, so if you hand it 4 sections it will write 4
-   sections' worth of content and stop, floor or no floor. Plan fewer than the "standard" counts below
-   ONLY when the user's OWN request explicitly asks for something short ("brief"/"short"/"quick", or a
-   stated page/word/section limit) — that is the ONLY case "brief" depth applies. Absent that explicit
-   cue, default to "standard" or higher: "brief" (explicit ask only) 2-4 sections, "standard" (the
-   default with no explicit depth cue) 7-10 sections, "detailed" 9-12, "comprehensive" 11-14+ — these
-   are guides, not hard limits, but err toward more sections rather than fewer whenever the source
-   preview genuinely supports it, since an under-planned report cannot be fixed by the writer later.
-7. Two different requests — even on similar topics — should usually produce different plans if their
-   register, depth cue, or available data differ. A comical request and a serious executive request on
-   the same subject should not get the same section list.
+PRESENTATION RESPONSIBILITY:
+The "presentation" object is not decorative metadata. It is the planner's renderer-independent composition decision for THIS report. Choose it from the actual research context. Do not omit it merely because a familiar default would be easier. The schema is structured data only: never place HTML, CSS, JavaScript, markdown markup, or arbitrary renderer instructions inside it.
 
-Never invent facts, numbers, or data you didn't see in the preview — you are planning STRUCTURE, not
-content. "purpose" and "format_reason" should stay one short line each; you are not writing the report."""
+HOW TO DECIDE — DATA FIRST, NEVER A TEMPLATE:
+1. Read the resolved report topic and request first: subject, audience/register, explicit depth or format cues, follow-up context, and intent. The resolved topic is the report subject; do not let a generic user phrase such as "give it as a report" become the subject.
+2. Read the SOURCE PREVIEW and the resolved evidence kinds. Use the actual material and the available charts/images information supplied at this planning stage to determine what data shapes exist: metrics, rankings, time series, multi-column comparisons, timelines, regulatory chronology, scientific methodology/findings, expert commentary, or mostly qualitative evidence.
+3. There is NO universal report layout. Financial, regulatory, scientific, company-analysis, market-news, and comparison reports may need different covers, opening treatments, section orders, layouts, densities, and component mixes. These are examples of possible reasoning patterns, NOT hard-coded templates.
+4. Choose whether a cover is useful. It may be omitted entirely. If used, choose the treatment that fits the report rather than defaulting to a classic cover.
+5. Choose executive-summary placement deliberately. It may be prominent, compact, in a sidebar, at the end, or omitted when the request and evidence do not benefit from it.
+6. Make the presentation sections correspond to the actual planned sections. Do not invent extra report sections inside presentation and do not force a familiar ordering such as summary → overview → risks → conclusion when the research calls for something else.
+7. Choose section_type, layout, density, emphasis, and blocks based on the content each section actually needs. Use metrics where metrics exist, tables where multi-field comparisons exist, charts where real numeric series exist, timelines where dated events matter, comparison blocks where multiple entities are evaluated, risk matrices where likelihood/impact evidence supports them, and evidence callouts where a source-backed finding deserves emphasis. These components are optional, not quotas.
+8. Available charts/images must be treated as evidence-dependent opportunities, not mandatory decoration. Prefer source-backed charts when the data supports them. Image candidates may be resolved later in the pipeline, so do not force an image or create a presentation choice that requires an image merely because the topic sounds visual. Never invent data to populate a chart or component.
+9. Choose section order deliberately. In the presentation schema, use each section's numeric "order" to encode the desired composition and keep the presentation section titles aligned with the plan's headings.
+10. Choose density and emphasis based on information value and evidence strength. Dense layouts are appropriate for rich structured data; sparse layouts are better for thin or narrative evidence. Do not use visual emphasis to disguise uncertainty.
+11. If sources are thin or unavailable, simplify the composition and avoid unsupported chart/table/timeline/comparison blocks. A simpler valid report is better than a visually busy but evidence-poor report.
+12. Use the requested depth to control breadth, but do not turn depth into a fixed visual template. Keep the existing section-count guidance below as a planning aid only.
+13. Two requests on similar subjects should still be allowed to produce different presentation plans when their register, depth, intent, evidence, or available data differs.
+
+SECTION PLANNING GUIDANCE:
+14. There is NO default section list and NO required section. An executive summary, overview, risks, recommendations, or conclusion belongs only when this request and evidence justify it.
+15. Match the per-section "format" to the data shape, not habit. A ranked metric series may fit a chart; four or more mixed-type fields may fit a table; a short qualitative finding may fit prose/bullets; a data-poor section should not be forced into a chart.
+16. If the source preview is empty or mostly irrelevant, plan fewer sections and favor prose/bullets rather than invented visuals.
+17. Number of sections should fit the requested depth — but the existing writer has a hard minimum-length floor. Unless the user explicitly asks for something short, avoid under-planning a substantive report; use the existing guidance of brief 2-4 sections, standard 7-10, detailed 9-12, comprehensive 11-14+ as flexible ranges, not rigid templates.
+
+Never invent facts, numbers, sources, or data. Your job is to decide the structure and presentation from the evidence available to you."""
 
 
 def _validate_report_plan(plan) -> bool:
     """Structural sanity check on the planner's output before it's trusted
     enough to steer the writer prompt. Mirrors the cheap-validation pattern
     used for chart specs (_validate_chart_spec) — reject anything malformed
-    rather than risk feeding garbage into the writer call."""
+    rather than risk feeding garbage into the writer call.
+
+    Note: the optional "presentation" field is intentionally NOT checked
+    here — it has its own dedicated validation path through
+    ReportPresentationSpec.from_llm_output (see _plan_report_structure),
+    which sanitizes/falls back instead of rejecting the whole plan over a
+    malformed presentation field."""
     if not isinstance(plan, dict):
         return False
     if plan.get("depth") not in ("brief", "standard", "detailed", "comprehensive"):
@@ -3736,6 +3762,38 @@ def _validate_report_plan(plan) -> bool:
         if not isinstance(sec.get("purpose", ""), str):
             return False
     return True
+
+
+def _attach_presentation_to_plan(plan: dict) -> dict:
+    """Given an already structurally-validated plan dict, sanitize/validate
+    its optional "presentation" field (if any) through the existing
+    ReportPresentationSpec schema module and replace it in-place with a
+    plain, JSON-safe dict. Never raises, never trusts raw LLM JSON as-is,
+    and never invents a presentation field that wasn't there.
+
+    - plan has no "presentation" key -> returned unchanged (fully
+      backward-compatible with plans generated before this field existed).
+    - plan["presentation"] is malformed/invalid -> sanitized to a safe,
+      schema-valid default (with warnings logged), never rejected outright.
+    - plan["presentation"] is valid -> normalized/validated dict form.
+    """
+    raw_presentation = plan.get("presentation")
+    if raw_presentation is None:
+        plan.pop("presentation", None)
+        return plan
+
+    try:
+        presentation_spec, presentation_warnings = ReportPresentationSpec.from_llm_output(raw_presentation)
+        if presentation_warnings:
+            log.info("Report: presentation spec sanitized during planning: %s", presentation_warnings)
+        plan["presentation"] = presentation_spec.to_dict()
+    except Exception as e:
+        # from_llm_output is designed never to raise, but guard anyway — a
+        # bad presentation field must never take down the whole plan.
+        log.warning("Report: presentation spec validation failed unexpectedly, dropping it: %s", e)
+        plan.pop("presentation", None)
+
+    return plan
 
 
 def _build_plan_source_preview(
@@ -3836,6 +3894,11 @@ async def _plan_report_structure(
 
     log.info("Report: plan ready — depth=%s, %d section(s): %s",
               plan.get("depth"), len(plan["sections"]), [s["heading"] for s in plan["sections"]])
+
+    # Optional presentation spec: never trust the planner's raw JSON for it —
+    # always validate/sanitize through the existing schema module first. See
+    # _attach_presentation_to_plan for the (independently testable) logic.
+    plan = _attach_presentation_to_plan(plan)
     return plan
 
 
@@ -4771,7 +4834,7 @@ async def generate_report(request: Request):
     # follows is unambiguous JSON structure: end-of-object, end-of-text, or
     # a comma that leads directly into one of this schema's known next keys
     # — not just "any comma".
-    _NEXT_FIELD_RE = re.compile(r'^\s*,\s*"(title|report|charts|images|keyStats|summary)"\s*:')
+    _NEXT_FIELD_RE = re.compile(r'^\s*,\s*"(title|report|charts|images|keyStats|summary|theme)"\s*:')
     _OBJ_CLOSE_RE = re.compile(r'^\s*\}')
     # Handles the case where Gemini drops BOTH the closing quote of the
     # current field AND the comma before the next key, so a single quote
@@ -4783,7 +4846,7 @@ async def generate_report(request: Request):
     # as internal and kept escaping/consuming everything after it —
     # swallowing charts/images/keyStats into the title string and leaving
     # the JSON unterminated.
-    _NEXT_FIELD_SHARED_QUOTE_RE = re.compile(r'^(title|report|charts|images|keyStats|summary)"\s*:')
+    _NEXT_FIELD_SHARED_QUOTE_RE = re.compile(r'^(title|report|charts|images|keyStats|summary|theme)"\s*:')
 
     def _repair_string_value(text: str, field: str) -> str:
         """Find "field": "<value>" and escape any bare internal double-quotes."""

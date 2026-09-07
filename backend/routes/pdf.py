@@ -2139,7 +2139,7 @@ def _draw_chart(c, spec, x0, y0, w, h):
 
 
 # ─── PDF builder ──────────────────────────────────────────────────────────────
-def build_pdf(report: str, title: str, question: str, summary: str,
+def _legacy_build_pdf(report: str, title: str, question: str, summary: str,
               key_stats: list, charts: list, logo_b64: str = "",
               file_images: list | None = None, web_images: list | None = None,
               theme: dict | None = None, sources: object = None) -> bytes:
@@ -3202,6 +3202,361 @@ def build_pdf(report: str, title: str, question: str, summary: str,
     return buf.getvalue()
 
 
+
+# ─── Dynamic PDF builder ──────────────────────────────────────────────────────
+def _pdf_data_uri_from_base64(data: str, mime: str = "image/jpeg") -> str:
+    payload = str(data or "").strip()
+    if payload.startswith("data:image/"):
+        return payload
+    return f"data:{mime};base64,{payload}" if payload else ""
+
+
+def _image_mime_from_base64(payload: str) -> str:
+    try:
+        raw = base64.b64decode(payload, validate=False)[:16]
+    except Exception:
+        return "image/jpeg"
+    if raw.startswith(b"\x89PNG"):
+        return "image/png"
+    if raw.startswith(b"\xff\xd8\xff"):
+        return "image/jpeg"
+    if raw.startswith((b"GIF87a", b"GIF89a")):
+        return "image/gif"
+    if raw.startswith(b"RIFF") and raw[8:12] == b"WEBP":
+        return "image/webp"
+    return "image/jpeg"
+
+
+def _prepare_pdf_images(images: list, web_images: list | None, file_images: list | None) -> list:
+    """Prefer already-fetched bytes over remote URLs for deterministic PDF printing."""
+    out = list(images or [])
+    if not out:
+        out = list(web_images or [])
+    for i, info in enumerate(web_images or []):
+        if i >= len(out) or not isinstance(info, dict):
+            continue
+        payload = str(info.get("data") or "").strip()
+        if payload:
+            out[i] = {
+                "url": _pdf_data_uri_from_base64(payload, _image_mime_from_base64(payload)),
+                "caption": info.get("caption", ""),
+            }
+    if not out and file_images:
+        for item in file_images:
+            if not isinstance(item, dict):
+                continue
+            payload = str(item.get("data") or "").strip()
+            if not payload:
+                continue
+            out.append({
+                "url": _pdf_data_uri_from_base64(payload, item.get("mimeType") or _image_mime_from_base64(payload)),
+                "caption": item.get("name", ""),
+            })
+    return out
+
+
+def _svg_escape(value: object) -> str:
+    import html as _html
+    return _html.escape(str(value or ""), quote=True)
+
+
+def _svg_chart_from_config(config: dict, width: int = 720, height: int = 320) -> str:
+    """Render the chart config emitted by html_report as static SVG.
+
+    This covers the chart forms most commonly emitted by the application and
+    gives WeasyPrint a JS-free representation. Unsupported chart types degrade
+    to a labelled block instead of silently producing an empty canvas.
+    """
+    if not isinstance(config, dict):
+        return ""
+    ctype = str(config.get("type") or "bar").lower()
+    data = config.get("data") or {}
+    labels = [str(x) for x in (data.get("labels") or [])]
+    datasets = data.get("datasets") or []
+    margin_l, margin_r, margin_t, margin_b = 58, 24, 24, 54
+    plot_w = width - margin_l - margin_r
+    plot_h = height - margin_t - margin_b
+    grid = []
+    text = []
+    marks = []
+
+    def add_grid():
+        for i in range(6):
+            y = margin_t + plot_h * i / 5
+            grid.append(f'<line x1="{margin_l}" y1="{y:.1f}" x2="{width-margin_r}" y2="{y:.1f}" stroke="#d9dde7" stroke-width="1"/>')
+            val = ""
+            text.append(f'<text x="{margin_l-8}" y="{y+4:.1f}" text-anchor="end" font-size="9" fill="#6b7280">{val}</text>')
+
+    all_values = []
+    for ds in datasets:
+        vals = ds.get("data") or []
+        for v in vals:
+            if isinstance(v, dict):
+                if "y" in v: v = v.get("y")
+                elif "value" in v: v = v.get("value")
+            if isinstance(v, (int, float)):
+                all_values.append(float(v))
+            else:
+                try: all_values.append(float(v))
+                except Exception: pass
+    vmax = max(all_values) if all_values else 1.0
+    vmin = min(all_values) if all_values else 0.0
+    if vmax == vmin:
+        pad = abs(vmax) * 0.1 or 1.0
+        vmax += pad; vmin -= pad
+    if vmin > 0: vmin = 0
+    span = vmax - vmin or 1.0
+    add_grid()
+
+    def y_of(v):
+        return margin_t + (vmax - float(v)) / span * plot_h
+
+    colors = ["#1a1f4e", "#c8860a", "#21767a", "#b93c37", "#4a5c8a", "#806e28", "#6e2f3a", "#168058"]
+    for i, lbl in enumerate(labels[:40]):
+        x = margin_l + (i + 0.5) * plot_w / max(1, len(labels))
+        text.append(f'<text x="{x:.1f}" y="{height-18}" text-anchor="middle" font-size="9" fill="#5f6675">{_svg_escape(lbl)}</text>')
+
+    if ctype in ("doughnut", "pie"):
+        cx, cy, r = width/2, height/2 - 8, min(plot_h, plot_w) * 0.27
+        vals = []
+        ds = datasets[0] if datasets else {}
+        for v in ds.get("data", []):
+            try: vals.append(max(0.0, float(v)))
+            except Exception: vals.append(0.0)
+        total = sum(vals) or 1.0
+        import math as _m
+        angle = -_m.pi/2
+        for i, val in enumerate(vals):
+            a2 = angle + 2*_m.pi*(val/total)
+            x1,y1 = cx+r*_m.cos(angle), cy+r*_m.sin(angle)
+            x2,y2 = cx+r*_m.cos(a2), cy+r*_m.sin(a2)
+            large = 1 if a2-angle > _m.pi else 0
+            marks.append(f'<path d="M {cx:.1f} {cy:.1f} L {x1:.1f} {y1:.1f} A {r:.1f} {r:.1f} 0 {large} 1 {x2:.1f} {y2:.1f} Z" fill="{colors[i%len(colors)]}"/>')
+            angle = a2
+        marks.append(f'<circle cx="{cx:.1f}" cy="{cy:.1f}" r="{r*0.48:.1f}" fill="#ffffff"/>')
+    elif ctype == "scatter":
+        # Scatter configs contain datasets of {x,y}.
+        pts = []
+        xs=[]; ys=[]
+        for ds in datasets:
+            for p in ds.get("data") or []:
+                if isinstance(p, dict):
+                    try: xs.append(float(p.get("x",0))); ys.append(float(p.get("y",0))); pts.append((float(p.get("x",0)),float(p.get("y",0))))
+                    except Exception: pass
+        if xs and ys:
+            xmin,xmax=min(xs),max(xs); ymin,ymax=min(ys),max(ys)
+            if xmin==xmax: xmin-=1; xmax+=1
+            if ymin==ymax: ymin-=1; ymax+=1
+            for x,y in pts[:500]:
+                px=margin_l+(x-xmin)/(xmax-xmin)*plot_w; py=margin_t+(ymax-y)/(ymax-ymin)*plot_h
+                marks.append(f'<circle cx="{px:.1f}" cy="{py:.1f}" r="4" fill="#c8860a" opacity="0.88"/>')
+    elif ctype in ("line", "radar"):
+        for ds_i, ds in enumerate(datasets[:8]):
+            pts=[]
+            for i,v in enumerate(ds.get("data") or []):
+                try:
+                    if isinstance(v, dict): v=v.get("y", v.get("value",0))
+                    val=float(v)
+                    x=margin_l+(i+0.5)*plot_w/max(1,len(labels)); y=y_of(val)
+                    pts.append((x,y))
+                except Exception: pass
+            if pts:
+                d=" ".join(("M" if j==0 else "L")+f" {x:.1f} {y:.1f}" for j,(x,y) in enumerate(pts))
+                marks.append(f'<path d="{d}" fill="none" stroke="{colors[ds_i%len(colors)]}" stroke-width="2.4"/>')
+                for x,y in pts:
+                    marks.append(f'<circle cx="{x:.1f}" cy="{y:.1f}" r="2.8" fill="{colors[ds_i%len(colors)]}"/>')
+    else:  # bar, including floating/bar-like fallback
+        n = max(1, len(labels)); series_count=max(1, len(datasets)); group_w=plot_w/n; bar_w=max(4, group_w*0.72/series_count)
+        for ds_i, ds in enumerate(datasets[:8]):
+            vals=ds.get("data") or []
+            for i,v in enumerate(vals[:len(labels)]):
+                if isinstance(v, list) and len(v)>=2:
+                    try: a,b=float(v[0]),float(v[1])
+                    except Exception: continue
+                    y1,y2=y_of(a),y_of(b); top=min(y1,y2); bh=abs(y2-y1)
+                else:
+                    try:
+                        if isinstance(v, dict): v=v.get("y", v.get("value",0))
+                        val=float(v)
+                    except Exception: continue
+                    y0=y_of(0); yv=y_of(val); top=min(y0,yv); bh=abs(y0-yv)
+                x=margin_l+i*group_w+(group_w-series_count*bar_w)/2+ds_i*bar_w
+                marks.append(f'<rect x="{x:.1f}" y="{top:.1f}" width="{max(2,bar_w-2):.1f}" height="{max(1,bh):.1f}" rx="2" fill="{colors[ds_i%len(colors)]}"/>')
+
+    title = (config.get("options") or {}).get("plugins", {}).get("title", {}).get("text") or ""
+    return (
+        f'<div class="gg-pdf-chart-fallback" style="break-inside:avoid;max-width:100%;">'
+        f'{f"<div style=\"font-weight:700;font-size:11pt;margin:0 0 5px;color:#1b2447;\">{_svg_escape(title)}</div>" if title else ""}'
+        f'<svg xmlns="http://www.w3.org/2000/svg" width="{width}" height="{height}" viewBox="0 0 {width} {height}" role="img" aria-label="chart">'
+        f'<rect x="0" y="0" width="{width}" height="{height}" fill="#ffffff"/>'
+        + "".join(grid + marks + text) +
+        f'</svg></div>'
+    )
+
+
+def _replace_chart_runtime_with_svg(html_doc: str) -> str:
+    """Replace Chart.js canvas/script pairs with static SVGs for PDF output."""
+    import json as _json
+    import re as _re
+
+    script_re = _re.compile(r'<script>(.*?)</script>', _re.DOTALL)
+    push_re = _re.compile(r'window\.__ggCharts\.push\(\{\s*id:\s*"([^"]+)"\s*,\s*config:\s*', _re.DOTALL)
+    decoder = _json.JSONDecoder()
+    replacements = {}
+
+    for sm in script_re.finditer(html_doc):
+        body = sm.group(1)
+        pm = push_re.search(body)
+        if not pm:
+            continue
+        try:
+            config, _ = decoder.raw_decode(body[pm.end():])
+            replacements[pm.group(1)] = _svg_chart_from_config(config)
+        except Exception as exc:
+            log.warning("PDF: failed to parse chart runtime block %s: %s", pm.group(1), exc)
+            replacements[pm.group(1)] = '<div class="gg-pdf-chart-fallback">Chart data could not be rendered.</div>'
+
+    for chart_id, replacement in replacements.items():
+        pattern = rf'<canvas\s+id="{_re.escape(chart_id)}"\s*>\s*</canvas>'
+        # lambda replacement is intentional: SVG markup can contain backslashes
+        # or replacement-like sequences that re.sub would otherwise interpret.
+        html_doc = _re.sub(pattern, lambda _m, value=replacement: value, html_doc, count=1)
+
+    # Remove only inline chart registration scripts. The main application JS
+    # is left intact; the chart registrations are no longer needed once SVGs
+    # have been inserted.
+    html_doc = _re.sub(
+        r'<script>\s*(?:window\.__ggCharts\s*=\s*window\.__ggCharts\s*\|\|\s*\[\];\s*)?window\.__ggCharts\.push\(.*?\);\s*</script>',
+        '',
+        html_doc,
+        flags=_re.DOTALL,
+    )
+    html_doc = _re.sub(
+        r'<script\s+src="https://cdnjs\.cloudflare\.com/ajax/libs/Chart\.js/4\.4\.1/chart\.umd\.min\.js"></script>\s*',
+        '',
+        html_doc,
+        count=1,
+    )
+    return html_doc
+
+def _strip_non_printing_runtime(html_doc: str) -> str:
+    html_doc = re.sub(r'\sloading=["\']lazy["\']', "", html_doc, flags=re.IGNORECASE)
+    # HTML stat cards normally animate from 0 to their target in the browser.
+    # PDF is static, so write the target value into the markup before printing.
+    def _materialize_count(m):
+        attrs = m.group(1)
+        target = m.group(2)
+        try:
+            value = float(target)
+            rendered = str(int(value)) if value.is_integer() else str(value)
+        except Exception:
+            rendered = target
+        return f'<span class="gg-count"{attrs}>{rendered}</span>'
+
+    html_doc = re.sub(
+        r'<span class="gg-count"([^>]*)data-count-target="([^"]+)"[^>]*>0</span>',
+        _materialize_count,
+        html_doc,
+    )
+    # No browser runtime is needed in a static PDF after charts have become SVG.
+    html_doc = re.sub(r'<script>.*?</script>', '', html_doc, flags=re.DOTALL)
+    print_css = """
+<style id="gg-pdf-print-overrides">
+@page { size: A4; margin: 14mm 12mm 16mm 12mm; }
+html, body { print-color-adjust: exact !important; -webkit-print-color-adjust: exact !important; }
+* { animation: none !important; transition: none !important; caret-color: transparent !important; }
+[data-reveal] { opacity: 1 !important; transform: none !important; visibility: visible !important; }
+.gg-chart-canvas-box { min-height: 280px; }
+.gg-figure img { break-inside: avoid; max-height: 480px; }
+.gg-table-wrap, .gg-callout, .gg-risk, .gg-metric, .gg-pdf-chart-fallback { break-inside: avoid; }
+.gg-section { break-before: auto; }
+</style>
+"""
+    return html_doc.replace("</head>", print_css + "</head>", 1)
+
+
+def _pdf_with_chromium(html_doc: str) -> bytes:
+    import shutil
+    import subprocess
+    import tempfile
+    chrome = shutil.which("chromium") or shutil.which("chromium-browser") or shutil.which("google-chrome")
+    if not chrome:
+        raise RuntimeError("Chromium/Chrome is not available")
+    with tempfile.TemporaryDirectory(prefix="gg_pdf_") as td:
+        html_path=os.path.join(td,"report.html"); pdf_path=os.path.join(td,"report.pdf")
+        Path(html_path).write_text(html_doc, encoding="utf-8")
+        cmd=[chrome,"--headless","--no-sandbox","--disable-gpu","--disable-dev-shm-usage","--allow-file-access-from-files","--print-to-pdf-no-header",f"--print-to-pdf={pdf_path}",f"file://{html_path}"]
+        proc=subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=20)
+        if proc.returncode!=0 or not os.path.exists(pdf_path):
+            raise RuntimeError(proc.stderr.decode("utf-8","replace")[-1500:])
+        data=Path(pdf_path).read_bytes()
+        if not data.startswith(b"%PDF-"): raise RuntimeError("Invalid PDF from Chromium")
+        return data
+
+
+def _pdf_with_weasyprint(html_doc: str) -> bytes:
+    from weasyprint import HTML
+    return HTML(string=html_doc, base_url=str(Path.cwd())).write_pdf()
+
+
+def build_pdf(report: str, title: str, question: str, summary: str,
+              key_stats: list, charts: list, logo_b64: str = "",
+              file_images: list | None = None, web_images: list | None = None,
+              theme: dict | None = None, sources: object = None,
+              presentation: object = None) -> bytes:
+    """Render PDF from the same presentation-driven HTML composition as HTML reports."""
+    from routes.html_report import build_html_report
+    try:
+        from routes.report import _sanitize_theme
+        safe_theme = _sanitize_theme(theme)
+    except Exception:
+        safe_theme = theme if isinstance(theme, dict) else None
+
+    images = _prepare_pdf_images([], web_images, file_images)
+    # HTML understands WEB_IMG_n placeholders. Preserve the existing FILE_IMG_n
+    # / PAGE_IMG_n report references by appending local file images and mapping
+    # their placeholders to the corresponding WEB_IMG slots.
+    file_start = sum(1 for img in images if img)
+    if file_images:
+        local_file_images = []
+        for item in file_images:
+            if not isinstance(item, dict):
+                continue
+            payload = str(item.get("data") or "").strip()
+            if not payload:
+                continue
+            local_file_images.append({
+                "url": _pdf_data_uri_from_base64(payload, item.get("mimeType") or _image_mime_from_base64(payload)),
+                "caption": item.get("name", ""),
+            })
+        if local_file_images:
+            images = [img for img in images if img] + local_file_images
+            offset = file_start
+            report = re.sub(r"\[(?:FILE_IMG|PAGE_IMG)_(\d+)\]", lambda m: f"[WEB_IMG_{offset + int(m.group(1))}]", report or "")
+
+    html_doc = build_html_report(
+        report or "", title or "", question or "Research Report", summary or "",
+        key_stats or [], charts or [], images, safe_theme, sources, presentation,
+    )
+    html_doc = _replace_chart_runtime_with_svg(html_doc)
+    html_doc = _strip_non_printing_runtime(html_doc)
+
+    # WeasyPrint is preferred because it is deterministic and does not require
+    # a browser runtime. Chromium remains a fallback for deployments that have
+    # the browser available, preserving the HTML/CSS composition faithfully.
+    try:
+        return _pdf_with_weasyprint(html_doc)
+    except Exception as exc:
+        log.warning("PDF: WeasyPrint unavailable/failed; trying Chromium fallback: %s", exc)
+        try:
+            return _pdf_with_chromium(html_doc)
+        except Exception as chrome_exc:
+            log.error("PDF: dynamic HTML-to-PDF failed: weasyprint=%s chromium=%s", exc, chrome_exc)
+            # Preserve a usable legacy export as a last resort for older
+            # deployments without either print engine.
+            return _legacy_build_pdf(report, title, question, summary, key_stats, charts, logo_b64, file_images, web_images, safe_theme, sources)
+
+
 # ─── Route ────────────────────────────────────────────────────────────────────
 @router.post("")
 async def generate_pdf(request: Request):
@@ -3248,6 +3603,7 @@ async def generate_pdf(request: Request):
     file_images: list = body.get("fileImages", [])  # [{name, mimeType, data}]
     images: list    = body.get("images", [])  # [{url, caption}] from report generation
     theme: dict | None = body.get("theme") if isinstance(body.get("theme"), dict) else None
+    presentation = body.get("presentation")
     sources = normalise_source_manifest(body.get("sources", []))
 
     # Debug: log images and whether report contains [WEB_IMG_n] placeholders
@@ -3275,6 +3631,8 @@ async def generate_pdf(request: Request):
                     charts = inner.get("charts", [])
                 if not theme and isinstance(inner.get("theme"), dict):
                     theme = inner.get("theme")
+                if not presentation and isinstance(inner.get("presentation"), dict):
+                    presentation = inner.get("presentation")
         except Exception as e:
             log.debug("PDF: report field is not double-encoded JSON, using as-is (%s)", e)
 
@@ -3449,7 +3807,7 @@ async def generate_pdf(request: Request):
         log.info("PDF: injected fallback [WEB_IMG_n] placeholders")
 
     try:
-        pdf_bytes = build_pdf(report, title, question, summary, key_stats, charts, logo_b64, file_images, web_images, theme, sources)
+        pdf_bytes = build_pdf(report, title, question, summary, key_stats, charts, logo_b64, file_images, web_images, theme, sources, presentation)
     except Exception as e:
         log.error("PDF: build_pdf failed: %s", e)
         return JSONResponse({"error": f"Failed to generate PDF: {e}"}, status_code=500)

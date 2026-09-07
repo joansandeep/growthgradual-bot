@@ -7,3 +7,5 @@ python-multipart==0.0.9
 python-dotenv==1.0.1
 openpyxl==3.1.5
 tavily-python>=0.5.0
+
+WeasyPrint==68.0

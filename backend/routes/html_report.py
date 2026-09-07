@@ -41,6 +41,7 @@ from fastapi.responses import JSONResponse, Response
 # when the theme was first produced (routes/report.py) costs nothing and
 # closes off a client that edits the JSON it sends back before re-download.
 from routes.report import _sanitize_theme
+from utils.presentation_schema import ReportPresentationSpec
 from routes.source_manifest import normalise_source_manifest
 
 router = APIRouter()
@@ -965,210 +966,150 @@ def _google_font_link(font_family: str | None) -> str:
 
 
 def _build_css(theme: dict | None) -> str:
-    """Build the report stylesheet, substituting the requested theme's
-    colors for the default navy/gold brand pair when the report asked for
-    one (see report.py's THEME schema field). Falls back to the standard
-    Growth Gradual palette whenever no theme, or an invalid one, was given.
+    """Build a neutral renderer stylesheet.
 
-    Two more theme fields layer on top of the color swap for styles a flat
-    re-theme can't express on its own:
-      - fontFamily: swaps the whole document's typography to a Google Font
-        that actually fits the requested mood (handled via CSS vars here +
-        the <link> tag from _google_font_link in build_html_report).
-      - customCss: a small, pre-sanitized (see report.py _sanitize_theme)
-        block of extra rules the model wrote specifically for THIS request's
-        style — appended last so it can add flourishes (dashed borders,
-        tilted headings, sticker badges, glow effects, background patterns)
-        on top of the base template without the base template needing to
-        hardcode every style anyone might ask for."""
+    Composition is driven by ``ReportPresentationSpec``; this stylesheet only
+    supplies reusable primitives for the supported layouts.  It intentionally
+    does not accept arbitrary CSS from the LLM.
+    """
     theme = theme or {}
-    navy = theme.get("primaryColor") or BRAND_NAVY
-    gold = theme.get("accentColor") or BRAND_GOLD
-    navy_deep = _shade_hex(navy, -0.35)
-    gold_light = _shade_hex(gold, 0.35)
+    navy = theme.get("primaryColor") or "#172033"
+    gold = theme.get("accentColor") or "#3f6ed8"
+    navy_deep = _shade_hex(navy, -0.22)
+    gold_light = _shade_hex(gold, 0.28)
     font = theme.get("fontFamily")
     if font:
-        font_body = f"'{font}', 'Georgia', 'Times New Roman', serif"
-        font_heading = f"'{font}', 'Helvetica Neue', Arial, sans-serif"
+        font_body = f"'{font}', system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif"
+        font_heading = f"'{font}', system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif"
     else:
-        font_body = "'Georgia', 'Times New Roman', serif"
-        font_heading = "'Helvetica Neue', Arial, sans-serif"
-    css = _CSS_TEMPLATE.format(
-        navy=navy, navy_deep=navy_deep, gold=gold, gold_light=gold_light,
-        font_body=font_body, font_heading=font_heading,
-    )
-    custom_css = theme.get("customCss")
-    if custom_css:
-        # Already length-capped and escape-checked by _sanitize_theme before
-        # it ever reaches here — appended raw as its own trailing rule block.
-        css += f"\n/* --- request-specific style additions --- */\n{custom_css}\n"
-    return css
-
-
-_CSS_TEMPLATE = """
+        font_body = "system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif"
+        font_heading = "system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif"
+    return f"""
 :root {{
-  --navy: {navy}; --navy-deep: {navy_deep};
-  --gold: {gold}; --gold-light: {gold_light};
-  --font-body: {font_body}; --font-heading: {font_heading};
+  --accent: {gold}; --accent-soft: {gold_light}; --ink: #172033; --ink-soft: #526077;
+  --paper: #ffffff; --paper-alt: #f5f7fb; --rule: #dce3ef; --muted: #6b7280;
+  --negative: #b42318; --positive: #147a4b; --font-body: {font_body}; --font-heading: {font_heading};
+  --content-max: 1120px;
 }}
 * {{ box-sizing: border-box; }}
-html {{ scroll-behavior: smooth; }}
-body {{
-  margin: 0; font-family: var(--font-body);
-  background: linear-gradient(180deg, var(--navy-deep), var(--navy) 40%, var(--navy-deep));
-  color: #e8e8f0; line-height: 1.7;
-}}
-.gg-hero {{
-  position: relative; padding: 90px 8vw 70px; overflow: hidden;
-  background: radial-gradient(ellipse at top left, rgba(212,162,76,0.18), transparent 60%),
-              radial-gradient(ellipse at bottom right, rgba(127,179,213,0.12), transparent 55%);
-}}
-.gg-hero::before {{
-  content: ""; position: absolute; inset: 0; opacity: .5; pointer-events: none;
-  background-image: repeating-linear-gradient(115deg, rgba(255,255,255,0.02) 0 2px, transparent 2px 40px);
-  animation: gg-drift 30s linear infinite;
-}}
-@keyframes gg-drift {{ from {{ background-position: 0 0; }} to {{ background-position: 400px 200px; }} }}
-.gg-eyebrow {{
-  font-family: var(--font-heading); letter-spacing: .18em; text-transform: uppercase;
-  font-size: 12px; color: var(--gold-light); opacity: 0; animation: gg-fade-up .8s ease forwards;
-}}
-.gg-title {{
-  font-size: clamp(32px, 5vw, 56px); margin: 14px 0 18px; font-weight: 700; color: #fff;
-  opacity: 0; animation: gg-fade-up .9s ease .1s forwards;
-}}
-.gg-summary {{
-  font-size: 18px; max-width: 62ch; color: #cfd3e6; opacity: 0; animation: gg-fade-up .9s ease .22s forwards;
-}}
-.gg-date {{
-  font-family: var(--font-heading); font-size: 13px; color: #8890b0; margin-top: 22px;
-  opacity: 0; animation: gg-fade-up .9s ease .3s forwards;
-}}
-@keyframes gg-fade-up {{ from {{ opacity: 0; transform: translateY(18px); }} to {{ opacity: 1; transform: translateY(0); }} }}
+html {{ scroll-behavior: smooth; background: var(--paper); }}
+body {{ margin: 0; font-family: var(--font-body); color: var(--ink); background: var(--paper); line-height: 1.68; }}
+a {{ color: var(--accent); }}
+h1,h2,h3,h4 {{ font-family: var(--font-heading); color: var(--ink); line-height: 1.18; }}
+p {{ font-size: 16px; color: var(--ink-soft); }}
+main {{ width: min(var(--content-max), calc(100% - 48px)); margin: 0 auto; padding: 34px 0 90px; }}
 
-.gg-stats-grid {{
-  display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
-  gap: 16px; padding: 0 8vw 20px;
-}}
-.gg-stat-card {{
-  background: linear-gradient(160deg, rgba(255,255,255,0.06), rgba(255,255,255,0.02));
-  border: 1px solid rgba(212,162,76,0.25); border-radius: 14px; padding: 18px 20px;
-  backdrop-filter: blur(6px); transition: transform .25s ease, border-color .25s ease;
-}}
-.gg-stat-card:hover {{ transform: translateY(-4px); border-color: var(--gold); }}
-.gg-stat-value {{ font-size: 26px; font-weight: 700; color: var(--gold-light); font-family: var(--font-heading); }}
-.gg-stat-label {{ font-size: 11px; letter-spacing: .06em; text-transform: uppercase; color: #9aa3c0; margin-top: 6px; }}
-.gg-stat-change {{ font-size: 13px; margin-top: 6px; font-weight: 600; }}
-.gg-change-up {{ color: #6fcf97; }} .gg-change-down {{ color: #eb6161; }}
+/* Cover treatments — the renderer chooses one based on presentation.cover.treatment. */
+.gg-cover {{ width: min(var(--content-max), calc(100% - 48px)); margin: 34px auto 0; border-bottom: 1px solid var(--rule); }}
+.gg-cover--minimal {{ padding: 20px 0 28px; }}
+.gg-cover--classic {{ text-align: center; padding: 96px 8% 86px; background: var(--paper-alt); border: 1px solid var(--rule); }}
+.gg-cover--classic .gg-title {{ max-width: 900px; margin-left: auto; margin-right: auto; }}
+.gg-cover--bold_banner {{ padding: 54px 56px; background: linear-gradient(135deg, var(--ink), var(--ink-soft)); color: #fff; border: 0; }}
+.gg-cover--bold_banner .gg-eyebrow, .gg-cover--bold_banner .gg-title, .gg-cover--bold_banner .gg-summary, .gg-cover--bold_banner .gg-date {{ color: #fff; }}
+.gg-cover--data_driven {{ display: grid; grid-template-columns: minmax(0, 1.3fr) minmax(280px, .7fr); gap: 32px; align-items: end; padding: 48px 0; }}
+.gg-cover__aside {{ padding: 20px; border-left: 3px solid var(--accent); background: var(--paper-alt); }}
+.gg-cover__aside-label {{ margin: 0 0 8px; font: 700 11px var(--font-heading); letter-spacing: .08em; text-transform: uppercase; color: var(--accent); }}
+.gg-eyebrow {{ margin: 0 0 12px; font: 700 11px var(--font-heading); letter-spacing: .14em; text-transform: uppercase; color: var(--accent); }}
+.gg-title {{ margin: 0 0 16px; font-size: clamp(34px, 5vw, 62px); letter-spacing: -.025em; }}
+.gg-summary {{ max-width: 72ch; margin: 0; font-size: 18px; }}
+.gg-date {{ margin-top: 18px; color: var(--muted); font-size: 13px; }}
 
-main {{ max-width: 880px; margin: 0 auto; padding: 10px 8vw 100px; }}
-h1, h2, h3 {{ font-family: var(--font-heading); color: #fff; }}
-.gg-section-h2 {{
-  font-size: 26px; margin-top: 54px; padding-top: 18px; border-top: 1px solid rgba(212,162,76,0.2);
-  position: relative;
-}}
-.gg-section-h2::before {{
-  content: ""; position: absolute; top: -1px; left: 0; height: 2px; width: 60px; background: var(--gold);
-}}
-h3 {{ font-size: 19px; color: var(--gold-light); margin-top: 32px; }}
-p {{ font-size: 16.5px; color: #d6d9e8; }}
-.gg-list {{ font-size: 16.5px; color: #d6d9e8; padding-left: 22px; }}
+.gg-summary-wrap {{ margin: 0 0 32px; }}
+.gg-summary-wrap--sidebar {{ display: grid; grid-template-columns: minmax(240px, .34fr) minmax(0, 1fr); gap: 28px; align-items: start; }}
+.gg-summary-wrap--end {{ margin-top: 42px; }}
+.gg-summary-card {{ padding: 26px 28px; border: 1px solid var(--rule); background: var(--paper-alt); }}
+.gg-summary-card--high {{ border-left: 4px solid var(--accent); }}
+.gg-summary-card--critical {{ border-left: 5px solid var(--negative); }}
+.gg-summary-heading {{ margin: 0 0 14px; font-size: 24px; }}
+
+.gg-report-sections {{ display: flex; flex-direction: column; gap: 30px; }}
+.gg-section {{ scroll-margin-top: 24px; }}
+.gg-section--full_bleed {{ width: 100vw; margin-left: calc(50% - 50vw); padding: 42px max(24px, calc((100vw - var(--content-max)) / 2)); background: var(--paper-alt); }}
+.gg-section--sidebar_main {{ display: grid; grid-template-columns: minmax(180px, .26fr) minmax(0, 1fr); gap: 30px; align-items: start; }}
+.gg-section--sidebar_main .gg-section-heading {{ position: sticky; top: 20px; }}
+.gg-section-heading {{ margin-bottom: 18px; }}
+.gg-section-heading h2 {{ margin: 0; font-size: clamp(24px, 3vw, 34px); }}
+.gg-section-heading p {{ margin: 8px 0 0; font-size: 13px; color: var(--muted); }}
+.gg-section--high .gg-section-heading {{ border-top: 3px solid var(--accent); padding-top: 14px; }}
+.gg-section--critical .gg-section-heading {{ border-top: 4px solid var(--negative); padding-top: 14px; }}
+.gg-section-body--two_column {{ columns: 2 320px; column-gap: 38px; }}
+.gg-section-body--grid {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 20px; }}
+.gg-section-body--sidebar_main {{ min-width: 0; }}
+.gg-section[data-density="sparse"] {{ padding-top: 14px; padding-bottom: 14px; }}
+.gg-section[data-density="dense"] {{ font-size: 15px; }}
+.gg-section[data-density="dense"] p {{ font-size: 15px; }}
+.gg-section[data-density="dense"] .gg-block {{ margin-bottom: 14px; }}
+
+.gg-block {{ min-width: 0; break-inside: avoid; }}
+.gg-block--emphasis-high {{ border-left: 3px solid var(--accent); padding-left: 18px; }}
+.gg-block--emphasis-critical {{ border-left: 4px solid var(--negative); padding-left: 18px; }}
+.gg-list {{ font-size: 16px; color: var(--ink-soft); padding-left: 24px; }}
 .gg-list li {{ margin: 6px 0; }}
-.gg-pullquote {{
-  border-left: 3px solid var(--gold); margin: 30px 0; padding: 4px 0 4px 22px;
-  font-style: italic; font-size: 19px; color: #f1e6cc;
-}}
-.gg-divider {{ border: none; border-top: 1px solid rgba(255,255,255,0.1); margin: 42px 0; }}
+.gg-pullquote {{ border-left: 3px solid var(--accent); margin: 26px 0; padding: 6px 0 6px 20px; font-style: italic; font-size: 19px; color: var(--ink); }}
+.gg-divider {{ border: 0; border-top: 1px solid var(--rule); margin: 36px 0; }}
 
-.gg-chart-wrap, .gg-table-wrap {{
-  margin: 28px 0; background: rgba(255,255,255,0.03); border: 1px solid rgba(255,255,255,0.08);
-  border-radius: 16px; padding: 20px 22px;
-}}
-.gg-chart-title {{
-  font-family: var(--font-heading); font-size: 13px; letter-spacing: .04em;
-  color: var(--gold-light); text-transform: uppercase; margin-bottom: 14px;
-}}
+.gg-chart-wrap, .gg-table-wrap {{ margin: 22px 0; padding: 18px 20px; background: var(--paper-alt); border: 1px solid var(--rule); break-inside: avoid; }}
+.gg-chart-title {{ margin-bottom: 12px; font: 700 12px var(--font-heading); letter-spacing: .06em; text-transform: uppercase; color: var(--accent); }}
 .gg-chart-canvas-box {{ position: relative; height: 320px; }}
 .gg-table-scroll {{ overflow-x: auto; }}
 .gg-table {{ width: 100%; border-collapse: collapse; font-family: var(--font-heading); font-size: 14px; }}
-.gg-table th {{
-  text-align: left; padding: 10px 12px; color: var(--gold-light); border-bottom: 2px solid rgba(212,162,76,0.35);
-  font-size: 12px; letter-spacing: .04em; text-transform: uppercase;
-}}
-.gg-table td {{ padding: 10px 12px; border-bottom: 1px solid rgba(255,255,255,0.06); color: #d6d9e8; }}
-.gg-table tr {{ opacity: 0; animation: gg-row-in .5s ease forwards; animation-delay: calc(var(--row-i) * 60ms); }}
+.gg-table th {{ text-align: left; padding: 10px 12px; color: var(--ink); border-bottom: 2px solid var(--accent); }}
+.gg-table td {{ padding: 10px 12px; border-bottom: 1px solid var(--rule); color: var(--ink-soft); vertical-align: top; }}
 
-.gg-tm-wrap {{ display: flex; flex-direction: column; gap: 2px; height: 340px; }}
-.gg-tm-wrap.gg-tm-flat {{ flex-direction: row; flex-wrap: wrap; }}
-.gg-tm-row {{ display: flex; flex-direction: column; min-height: 0; }}
-.gg-tm-group-label {{
-  font-family: var(--font-heading); font-size: 10px; letter-spacing: .05em; text-transform: uppercase;
-  color: #9aa3c0; padding: 2px 4px;
-}}
-.gg-tm-row-cells {{ display: flex; flex: 1; gap: 2px; min-height: 0; }}
-.gg-tm-cell {{
-  position: relative; display: flex; flex-direction: column; justify-content: flex-end;
-  padding: 6px 8px; border-radius: 4px; min-width: 24px; overflow: hidden;
-  transition: transform .25s ease; color: #fff;
-}}
-.gg-tm-cell:hover {{ transform: scale(1.02); z-index: 1; }}
-.gg-tm-label {{ font-family: var(--font-heading); font-size: 12px; font-weight: 700; display: block; }}
-.gg-tm-value {{ font-size: 11px; opacity: .9; display: block; }}
+.gg-metrics {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 12px; margin: 18px 0; }}
+.gg-metric {{ padding: 16px 17px; border: 1px solid var(--rule); background: var(--paper); }}
+.gg-metric-value {{ font: 700 24px var(--font-heading); color: var(--ink); }}
+.gg-metric-label {{ margin-top: 5px; font: 600 11px var(--font-heading); color: var(--muted); text-transform: uppercase; letter-spacing: .05em; }}
+.gg-metric-change {{ margin-top: 5px; font-size: 12px; font-weight: 700; }}
+.gg-change-up {{ color: var(--positive); }} .gg-change-down {{ color: var(--negative); }}
 
-.gg-hm-wrap {{ display: flex; flex-direction: column; gap: 3px; }}
-.gg-hm-row {{ display: flex; align-items: stretch; gap: 6px; }}
-.gg-hm-header {{ padding-bottom: 4px; }}
-.gg-hm-rowhead {{
-  flex: 0 0 90px; display: flex; align-items: center; font-size: 12px; color: #9aa3c0;
-  font-family: var(--font-heading);
-}}
-.gg-hm-cells {{ display: grid; gap: 3px; flex: 1; }}
-.gg-hm-colhead {{
-  text-align: center; font-family: var(--font-heading); font-size: 11px; letter-spacing: .03em;
-  color: var(--gold-light); text-transform: uppercase; padding-bottom: 2px;
-}}
-.gg-hm-cell {{
-  display: flex; align-items: center; justify-content: center; border-radius: 4px;
-  min-height: 34px; font-size: 12px; font-weight: 700; color: #10131f;
-}}
-@keyframes gg-row-in {{ from {{ opacity: 0; transform: translateX(-8px); }} to {{ opacity: 1; transform: translateX(0); }} }}
+.gg-timeline {{ position: relative; display: grid; gap: 14px; margin: 18px 0; }}
+.gg-timeline-item {{ display: grid; grid-template-columns: 120px minmax(0, 1fr); gap: 16px; padding: 14px 0; border-top: 1px solid var(--rule); }}
+.gg-timeline-date {{ font: 700 12px var(--font-heading); color: var(--accent); }}
+.gg-timeline-title {{ margin: 0; font: 700 15px var(--font-heading); }}
+.gg-timeline-desc {{ margin: 5px 0 0; color: var(--ink-soft); font-size: 14px; }}
 
-.gg-figure {{ margin: 32px 0; text-align: center; }}
-.gg-figure img {{
-  max-width: 100%; border-radius: 16px; box-shadow: 0 20px 60px rgba(0,0,0,0.4);
-  transform: scale(0.97); transition: transform .6s ease, box-shadow .6s ease;
-}}
-.gg-figure.gg-visible img {{ transform: scale(1); }}
-.gg-figure figcaption {{ margin-top: 10px; font-size: 13px; color: #9aa3c0; font-style: italic; }}
+.gg-callout {{ margin: 20px 0; padding: 18px 20px; border: 1px solid var(--rule); border-left: 4px solid var(--accent); background: var(--paper-alt); break-inside: avoid; }}
+.gg-callout--warning, .gg-callout--negative {{ border-left-color: var(--negative); }}
+.gg-callout--positive {{ border-left-color: var(--positive); }}
+.gg-callout h4 {{ margin: 0 0 6px; font-size: 14px; }}
+.gg-callout p {{ margin: 0; }}
 
-.gg-reveal {{ opacity: 0; transform: translateY(24px); transition: opacity .7s ease, transform .7s ease; transition-delay: var(--d, 0ms); }}
+.gg-risk-grid {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 10px; margin: 18px 0; }}
+.gg-risk {{ padding: 14px; border: 1px solid var(--rule); background: var(--paper-alt); }}
+.gg-risk__name {{ font-weight: 700; }}
+.gg-risk__meta {{ margin-top: 5px; color: var(--muted); font-size: 12px; }}
+.gg-risk__mitigation {{ margin-top: 8px; font-size: 13px; color: var(--ink-soft); }}
+
+.gg-figure {{ margin: 24px 0; text-align: center; break-inside: avoid; }}
+.gg-figure img {{ max-width: 100%; height: auto; border: 1px solid var(--rule); }}
+.gg-figure figcaption {{ margin-top: 8px; font-size: 13px; color: var(--muted); font-style: italic; }}
+
+.gg-reveal {{ opacity: 0; transform: translateY(12px); transition: opacity .5s ease, transform .5s ease; transition-delay: var(--d, 0ms); }}
 .gg-reveal.gg-visible {{ opacity: 1; transform: translateY(0); }}
-
-.gg-footer {{
-  text-align: center; padding: 40px 8vw 60px; font-family: var(--font-heading);
-  font-size: 12px; color: #6a7295; border-top: 1px solid rgba(255,255,255,0.06);
-}}
-.gg-sources {{
-  margin-top: 64px; padding: 28px; border: 1px solid rgba(255,255,255,0.12);
-  border-radius: 18px; background: rgba(255,255,255,0.035);
-}}
+.gg-sources {{ margin-top: 48px; padding: 26px; border: 1px solid var(--rule); background: var(--paper-alt); }}
 .gg-sources h2 {{ margin-top: 0; }}
-.gg-sources-intro {{ color: #aeb6cf; font-size: 14px; margin: 0 0 20px; }}
-.gg-sources-grid {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); gap: 10px; }}
-.gg-source-card {{
-  display: grid; grid-template-columns: 30px minmax(0, 1fr); gap: 10px; padding: 12px;
-  border: 1px solid rgba(255,255,255,0.09); border-radius: 10px; background: rgba(8,14,35,0.24);
-  break-inside: avoid;
-}}
-.gg-source-number {{
-  width: 25px; height: 25px; display: grid; place-items: center; border-radius: 50%;
-  background: var(--gold); color: var(--navy-deep); font: 700 11px var(--font-heading);
-}}
-.gg-source-title {{ color: #fff; font: 600 14px var(--font-heading); line-height: 1.35; overflow-wrap: anywhere; }}
-.gg-source-meta {{ color: #aeb6cf; font-size: 11px; margin-top: 4px; }}
-.gg-source-link {{ color: var(--gold-light); font-size: 12px; text-decoration: none; overflow-wrap: anywhere; }}
+.gg-sources-intro {{ color: var(--muted); font-size: 13px; }}
+.gg-sources-grid {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 10px; }}
+.gg-source-card {{ display: grid; grid-template-columns: 28px minmax(0, 1fr); gap: 10px; padding: 12px; border: 1px solid var(--rule); background: var(--paper); break-inside: avoid; }}
+.gg-source-number {{ width: 24px; height: 24px; display: grid; place-items: center; border: 1px solid var(--accent); border-radius: 50%; color: var(--accent); font: 700 11px var(--font-heading); }}
+.gg-source-title {{ color: var(--ink); font: 600 13px var(--font-heading); line-height: 1.35; overflow-wrap: anywhere; }}
+.gg-source-meta {{ color: var(--muted); font-size: 11px; margin-top: 4px; }}
+.gg-source-link {{ color: var(--accent); font-size: 12px; text-decoration: none; overflow-wrap: anywhere; }}
 .gg-source-link:hover {{ text-decoration: underline; }}
-@media (max-width: 640px) {{ .gg-hero {{ padding: 60px 6vw 40px; }} main {{ padding: 0 6vw 70px; }} }}
+.gg-footer {{ text-align: center; padding: 34px 24px 48px; color: var(--muted); border-top: 1px solid var(--rule); font-size: 11px; }}
+
+@media (max-width: 760px) {{
+  main, .gg-cover {{ width: min(100% - 28px, var(--content-max)); }}
+  .gg-cover--data_driven, .gg-summary-wrap--sidebar, .gg-section--sidebar_main {{ grid-template-columns: 1fr; }}
+  .gg-section--sidebar_main .gg-section-heading {{ position: static; }}
+  .gg-section-body--two_column {{ columns: 1; }}
+  .gg-timeline-item {{ grid-template-columns: 1fr; gap: 5px; }}
+}}
+@media print {{
+  .gg-reveal {{ opacity: 1 !important; transform: none !important; }}
+  .gg-section--full_bleed {{ width: auto; margin-left: 0; padding-left: 0; padding-right: 0; }}
+}}
 """
 
 _JS = """
@@ -1234,48 +1175,406 @@ document.addEventListener('DOMContentLoaded', function () {
 """
 
 
-def _render_sources_appendix(sources: object) -> str:
-    """Render every source as a compact, readable end-of-report appendix."""
+def _safe_plain_url(value: object) -> str:
+    url = str(value or "").strip()
+    if not re.match(r"^https?://", url, re.IGNORECASE):
+        return ""
+    return url
+
+
+def _slug_text(value: object) -> str:
+    return re.sub(r"[^a-z0-9]+", " ", str(value or "").lower()).strip()
+
+
+def _split_report_into_sections(report: str) -> list[dict]:
+    """Split report markdown at H2 boundaries while preserving all content."""
+    lines = report.replace("\r\n", "\n").split("\n")
+    sections: list[dict] = []
+    current_title = ""
+    current: list[str] = []
+    for line in lines:
+        if re.match(r"^##\s+", line.strip()):
+            if current_title or any(x.strip() for x in current):
+                sections.append({"title": current_title or "Report", "body": "\n".join(current).strip()})
+            current_title = re.sub(r"^##\s+", "", line.strip()).strip()
+            current = []
+        else:
+            current.append(line)
+    if current_title or any(x.strip() for x in current):
+        sections.append({"title": current_title or "Report", "body": "\n".join(current).strip()})
+    return [s for s in sections if s["body"] or s["title"]]
+
+
+def _fallback_presentation(report: str, title: str, summary: str, key_stats: list, charts: list) -> ReportPresentationSpec:
+    """Create a safe composition for legacy payloads that lack a presentation."""
+    actual = _split_report_into_sections(report)
+    planned = []
+    for i, sec in enumerate(actual):
+        kind = "narrative"
+        lower = _slug_text(sec["title"])
+        if any(x in lower for x in ("financial", "revenue", "profit", "valuation")):
+            kind = "financials"
+        elif any(x in lower for x in ("risk", "threat", "downside")):
+            kind = "risk_assessment"
+        elif any(x in lower for x in ("timeline", "chronology", "history")):
+            kind = "timeline"
+        elif any(x in lower for x in ("comparison", "versus", "vs")):
+            kind = "comparison"
+        elif any(x in lower for x in ("methodology", "methods")):
+            kind = "methodology"
+        elif any(x in lower for x in ("findings", "results")):
+            kind = "findings"
+        planned.append({
+            "id": f"section-{i + 1}", "title": sec["title"] or f"Section {i + 1}",
+            "section_type": kind, "layout": "single_column", "density": "standard",
+            "emphasis": "normal", "order": i, "blocks": [],
+        })
+    if not planned:
+        planned = [{"id": "overview", "title": "Report", "section_type": "narrative", "order": 0, "blocks": []}]
+    preset = {
+        "domain": "generic",
+        "cover": {"enabled": True, "title": title or "Research Report", "subtitle": "", "treatment": "minimal", "show_date": True},
+        "executive_summary": {"placement": "after_cover" if summary else "none", "heading": "Executive Summary", "key_metrics": []},
+        "sections": planned,
+        "source_appendix": {"placement": "end_of_report", "group_by_section": False, "include_appendix": True},
+        "default_layout": "single_column", "default_density": "standard",
+    }
+    spec, _ = ReportPresentationSpec.from_llm_output(preset)
+    return spec
+
+
+def _normalise_presentation(presentation: object, report: str, title: str, summary: str, key_stats: list, charts: list) -> tuple[ReportPresentationSpec, list[str]]:
+    if isinstance(presentation, ReportPresentationSpec):
+        try:
+            presentation.validate_strict()
+            return presentation, []
+        except Exception:
+            pass
+    if not isinstance(presentation, dict):
+        return _fallback_presentation(report, title, summary, key_stats, charts), ["No valid presentation supplied; legacy-safe fallback used."]
+    spec, warnings = ReportPresentationSpec.from_llm_output(presentation)
+    if not spec.sections:
+        fallback = _fallback_presentation(report, title, summary, key_stats, charts)
+        warnings.append("Presentation had no valid sections; legacy-safe fallback sections used.")
+        return fallback, warnings
+    return spec, warnings
+
+
+def _render_metrics(items: list[dict]) -> str:
+    if not items:
+        return ""
+    cards = []
+    for item in items[:20]:
+        label = html.escape(str(item.get("label", "")))
+        value = html.escape(str(item.get("value", "")))
+        unit = html.escape(str(item.get("unit", "")))
+        change = item.get("change_pct")
+        trend = str(item.get("trend", "unknown"))
+        change_html = ""
+        if change is not None:
+            cls = "gg-change-down" if trend == "down" else "gg-change-up" if trend == "up" else ""
+            change_html = f'<div class="gg-metric-change {cls}">{html.escape(str(change))}%</div>'
+        cards.append(
+            f'<article class="gg-metric"><div class="gg-metric-value">{value}{(" " + unit) if unit else ""}</div>'
+            f'<div class="gg-metric-label">{label}</div>{change_html}</article>'
+        )
+    return f'<div class="gg-block gg-metrics">{"".join(cards)}</div>'
+
+
+def _render_table_block(block: dict) -> str:
+    columns = block.get("columns") or []
+    rows = block.get("rows") or []
+    if not columns or not rows:
+        return ""
+    head = "".join(f"<th>{html.escape(str(c))}</th>" for c in columns)
+    body = "".join("<tr>" + "".join(f"<td>{html.escape(str(c))}</td>" for c in row) + "</tr>" for row in rows[:500])
+    title = html.escape(str(block.get("title") or ""))
+    return f'<div class="gg-block gg-table-wrap">{f"<div class=\"gg-chart-title\">{title}</div>" if title else ""}<div class="gg-table-scroll"><table class="gg-table"><thead><tr>{head}</tr></thead><tbody>{body}</tbody></table></div></div>'
+
+
+def _render_timeline_block(block: dict) -> str:
+    events = block.get("events") or []
+    if not events:
+        return ""
+    items = []
+    for event in events[:200]:
+        items.append(
+            '<article class="gg-block gg-timeline-item">'
+            f'<div class="gg-timeline-date">{html.escape(str(event.get("date_label", "")))}</div>'
+            f'<div><h3 class="gg-timeline-title">{html.escape(str(event.get("title", "")))}</h3>'
+            f'<p class="gg-timeline-desc">{html.escape(str(event.get("description", "")))}</p></div></article>'
+        )
+    title = html.escape(str(block.get("title") or ""))
+    return f'<div class="gg-block gg-timeline">{f"<h3>{title}</h3>" if title else ""}{"".join(items)}</div>'
+
+
+def _render_comparison_block(block: dict) -> str:
+    items = block.get("items") or []
+    dims = block.get("dimensions") or []
+    if not items:
+        return ""
+    columns = dims or sorted({k for item in items for k in (item.get("values") or {}).keys()})
+    if not columns:
+        return ""
+    rows = []
+    for item in items[:100]:
+        vals = item.get("values") or {}
+        rows.append("<tr>" + html.escape(str(item.get("name", ""))) + "".join(f"<td>{html.escape(str(vals.get(c, "")))}</td>" for c in columns) + "</tr>")
+    header = "".join(f"<th>{html.escape(str(c))}</th>" for c in ["Item"] + columns)
+    fixed_rows = []
+    for item in items[:100]:
+        vals = item.get("values") or {}
+        fixed_rows.append("<tr><td>" + html.escape(str(item.get("name", ""))) + "</td>" + "".join(f"<td>{html.escape(str(vals.get(c, "")))}</td>" for c in columns) + "</tr>")
+    return f'<div class="gg-block gg-table-wrap"><div class="gg-table-scroll"><table class="gg-table"><thead><tr>{header}</tr></thead><tbody>{"".join(fixed_rows)}</tbody></table></div></div>'
+
+
+def _render_risk_block(block: dict) -> str:
+    risks = block.get("risks") or []
+    if not risks:
+        return ""
+    cards = []
+    for risk in risks[:200]:
+        cards.append(
+            '<article class="gg-risk">'
+            f'<div class="gg-risk__name">{html.escape(str(risk.get("name", "")))}</div>'
+            f'<div class="gg-risk__meta">Likelihood: {html.escape(str(risk.get("likelihood", "medium")))} · Impact: {html.escape(str(risk.get("impact", "medium")))}</div>'
+            f'<div class="gg-risk__mitigation">{html.escape(str(risk.get("mitigation", "")))}</div>'
+            '</article>'
+        )
+    return f'<div class="gg-block gg-risk-grid">{"".join(cards)}</div>'
+
+
+def _render_evidence_block(block: dict) -> str:
+    body = html.escape(str(block.get("body", "")))
+    if not body:
+        return ""
+    tone = str(block.get("tone", "info"))
+    heading = html.escape(str(block.get("heading", "")))
+    source = html.escape(str(block.get("source_label", "")))
+    return (
+        f'<aside class="gg-block gg-callout gg-callout--{html.escape(tone, quote=True)}">'
+        f'{f"<h4>{heading}</h4>" if heading else ""}<p>{body}</p>'
+        f'{f"<div class=\"gg-source-meta\">{source}</div>" if source else ""}</aside>'
+    )
+
+
+def _render_chart_spec_block(block: dict, idx: int, theme: dict | None = None) -> str:
+    chart_type = str(block.get("chart_type") or "line")
+    labels = block.get("x_labels") or []
+    series = block.get("series") or []
+    if not labels or not series:
+        return ""
+    chart = {"type": "bar" if chart_type == "area" else chart_type, "title": block.get("title", "")}
+    converted = []
+    for series_item in series[:10]:
+        vals = series_item.get("values") or []
+        converted.append({"name": series_item.get("name", "Series"), "data": [{"label": str(label), "value": vals[i] if i < len(vals) else 0} for i, label in enumerate(labels)]})
+    chart["series"] = converted
+    return _render_chart_block(chart, idx, theme)
+
+
+def _render_structured_blocks(blocks: list, charts: list, key_stats: list, theme: dict | None, chart_cursor: int) -> tuple[str, int, bool]:
+    rendered = []
+    meaningful = False
+    for raw in blocks or []:
+        if not isinstance(raw, dict):
+            continue
+        kind = str(raw.get("kind", "")).lower()
+        html_block = ""
+        if kind == "metrics":
+            items = raw.get("items") or []
+            if items:
+                html_block = _render_metrics(items)
+            elif key_stats:
+                html_block = _render_key_stats(key_stats)
+        elif kind == "prose" and raw.get("body"):
+            html_block = f'<div class="gg-block">{_markdown_to_html(str(raw.get("body")), charts, [], theme)}</div>'
+        elif kind == "table":
+            html_block = _render_table_block(raw)
+        elif kind == "timeline":
+            html_block = _render_timeline_block(raw)
+        elif kind == "comparison":
+            html_block = _render_comparison_block(raw)
+        elif kind == "risk_matrix":
+            html_block = _render_risk_block(raw)
+        elif kind == "evidence":
+            html_block = _render_evidence_block(raw)
+        elif kind == "chart":
+            html_block = _render_chart_spec_block(raw, chart_cursor + 1, theme)
+            if html_block:
+                chart_cursor += 1
+        if html_block:
+            meaningful = True
+            rendered.append(html_block)
+    return "\n".join(rendered), chart_cursor, meaningful
+
+
+def _match_planned_sections(spec: ReportPresentationSpec, actual: list[dict]) -> list[tuple[dict, dict]]:
+    planned = sorted(spec.to_dict().get("sections", []), key=lambda s: int(s.get("order", 0)))
+    remaining = list(range(len(actual)))
+    matches: list[tuple[dict, dict]] = []
+    for plan in planned:
+        title = _slug_text(plan.get("title"))
+        chosen = None
+        if title:
+            for idx in remaining:
+                candidate = _slug_text(actual[idx].get("title"))
+                if candidate == title or (title in candidate or candidate in title):
+                    chosen = idx
+                    break
+        if chosen is None and remaining:
+            chosen = remaining[0]
+        if chosen is not None:
+            remaining.remove(chosen)
+            matches.append((plan, actual[chosen]))
+        else:
+            matches.append((plan, {"title": plan.get("title") or "Section", "body": ""}))
+    # Preserve any unplanned material rather than silently dropping generated research.
+    for idx in remaining:
+        extra = actual[idx]
+        matches.append(({
+            "id": f"overflow-{idx + 1}", "title": extra.get("title") or "Additional Analysis",
+            "section_type": "narrative", "layout": spec.to_dict().get("default_layout", "single_column"),
+            "density": spec.to_dict().get("default_density", "standard"), "emphasis": "normal", "order": 1000 + idx, "blocks": [],
+        }, extra))
+    return matches
+
+
+def _render_sources_appendix(sources: object, placement: str = "end_of_report", include_appendix: bool = False) -> str:
     manifest = normalise_source_manifest(sources)
-    if not manifest:
+    if not manifest or placement == "none":
         return ""
     cards: list[str] = []
     for index, source in enumerate(manifest, start=1):
         title = html.escape(source["title"])
         publisher = html.escape(source.get("publisher") or source.get("kind") or "Source")
         kind = html.escape(source.get("kind") or "Source")
-        url = source.get("url") or ""
+        url = _safe_plain_url(source.get("url"))
         link = (
             f'<a class="gg-source-link" href="{html.escape(url, quote=True)}" target="_blank" rel="noopener noreferrer">Open source ↗</a>'
-            if url else
-            '<span class="gg-source-link">Provided in report data</span>'
+            if url else '<span class="gg-source-link">Provided in report data</span>'
         )
         cards.append(
             f'<article class="gg-source-card"><div class="gg-source-number">{index}</div>'
             f'<div><div class="gg-source-title">{title}</div><div class="gg-source-meta">{publisher} · {kind}</div>{link}</div></article>'
         )
     count = len(manifest)
+    heading = "Appendix — Data Sources" if placement == "appendix" or include_appendix else "Data Sources"
     return (
-        '<section class="gg-sources gg-reveal" data-reveal>'
-        '<h2 class="gg-section-h2">Complete Data Sources</h2>'
-        f'<p class="gg-sources-intro">{count} source{"s" if count != 1 else ""} used or supplied for this report. '
-        'This appendix is complete and is kept separate from the report narrative for easier reading.</p>'
+        f'<section class="gg-sources gg-reveal" data-reveal data-source-placement="{html.escape(placement, quote=True)}">'
+        f'<h2>{heading}</h2>'
+        f'<p class="gg-sources-intro">{count} source{"s" if count != 1 else ""} used or supplied for this report.</p>'
         f'<div class="gg-sources-grid">{"".join(cards)}</div></section>'
+    )
+
+
+def _render_cover(spec_dict: dict, safe_title: str, safe_summary: str, date_str: str, key_stats: list) -> str:
+    cover = spec_dict.get("cover") or {}
+    if not cover.get("enabled", True):
+        return ""
+    treatment = str(cover.get("treatment") or "minimal")
+    title = html.escape(str(cover.get("title") or "")) or safe_title
+    subtitle = html.escape(str(cover.get("subtitle") or ""))
+    show_date = bool(cover.get("show_date", True))
+    aside = ""
+    if treatment == "data_driven" and key_stats:
+        first = key_stats[0] if isinstance(key_stats[0], dict) else {}
+        aside = (
+            '<aside class="gg-cover__aside"><p class="gg-cover__aside-label">Key signal</p>'
+            f'<div class="gg-metric-value">{html.escape(str(first.get("value", "")))}</div>'
+            f'<div class="gg-metric-label">{html.escape(str(first.get("label", "")))}</div></aside>'
+        )
+    return (
+        f'<header class="gg-cover gg-cover--{html.escape(treatment, quote=True)}">'
+        '<div><p class="gg-eyebrow">Growth Gradual · Research Intelligence</p>'
+        f'<h1 class="gg-title">{title}</h1>'
+        f'{f"<p class=\"gg-summary\">{subtitle or safe_summary}</p>" if (subtitle or safe_summary) else ""}'
+        f'{f"<div class=\"gg-date\">Generated {date_str}</div>" if show_date else ""}</div>'
+        f'{aside}</header>'
     )
 
 
 def build_html_report(report: str, title: str, question: str, summary: str,
                        key_stats: list, charts: list, images: list,
-                       theme: dict | None = None, sources: object = None) -> str:
-    body_html = _markdown_to_html(report, charts, images, theme)
-    sources_html = _render_sources_appendix(sources)
-    stats_html = _render_key_stats(key_stats)
+                       theme: dict | None = None, sources: object = None,
+                       presentation: object = None) -> str:
+    spec, warnings = _normalise_presentation(presentation, report, title, summary, key_stats, charts)
+    if warnings:
+        log.info("HTML report: presentation normalization: %s", warnings)
+    spec_dict = spec.to_dict()
     safe_title = html.escape(title or question or "Research Report")
     safe_summary = html.escape(summary or "")
     date_str = datetime.now(timezone.utc).strftime("%d %B %Y")
     css = _build_css(theme)
-    font_link = _google_font_link((theme or {}).get("fontFamily"))
+    # Do not emit arbitrary theme.customCss from the LLM; only validated theme tokens are consumed.
+    font_link = ""
+    actual_sections = _split_report_into_sections(report)
+    matches = _match_planned_sections(spec, actual_sections)
 
+    exec_spec = spec_dict.get("executive_summary") or {}
+    exec_placement = str(exec_spec.get("placement") or "none")
+    exec_body = str(exec_spec.get("body") or summary or "").strip()
+    exec_metrics = exec_spec.get("key_metrics") or []
+    if not exec_metrics and exec_placement != "none" and key_stats:
+        exec_metrics = [{"label": s.get("label", ""), "value": s.get("value", ""), "change_pct": None, "trend": "unknown"} for s in key_stats[:10] if isinstance(s, dict)]
+
+    summary_html = ""
+    if exec_placement != "none" and exec_body:
+        summary_cls = "gg-summary-wrap gg-summary-wrap--sidebar" if exec_placement == "sidebar" else "gg-summary-wrap--end" if exec_placement == "end_summary" else "gg-summary-wrap"
+        body = _markdown_to_html(exec_body, [], [], theme)
+        metrics = _render_metrics(exec_metrics)
+        summary_html = f'<section class="{summary_cls}"><div class="gg-summary-card gg-summary-card--high"><h2 class="gg-summary-heading">{html.escape(str(exec_spec.get("heading") or "Executive Summary"))}</h2>{body}{metrics}</div></section>'
+
+    body_sections = []
+    chart_cursor = 0
+    for idx, (plan, actual) in enumerate(matches):
+        section_title = html.escape(str(plan.get("title") or actual.get("title") or f"Section {idx + 1}"))
+        layout = str(plan.get("layout") or spec_dict.get("default_layout") or "single_column")
+        density = str(plan.get("density") or spec_dict.get("default_density") or "standard")
+        emphasis = str(plan.get("emphasis") or "normal")
+        section_type = str(plan.get("section_type") or "narrative")
+        body_raw = str(actual.get("body") or "").strip()
+        block_html, chart_cursor, blocks_meaningful = _render_structured_blocks(plan.get("blocks") or [], charts, key_stats, theme, chart_cursor)
+        if not blocks_meaningful:
+            body_html = _markdown_to_html(body_raw, charts, images, theme) if body_raw else ""
+        else:
+            body_html = block_html
+            # Keep generated markdown content as the source-of-truth when a structured layout is only metadata.
+            if body_raw and not block_html.strip():
+                body_html = _markdown_to_html(body_raw, charts, images, theme)
+        if section_type == "metrics_dashboard" and key_stats and "gg-metric" not in body_html:
+            body_html = _render_key_stats(key_stats) + body_html
+        if section_type == "timeline" and not blocks_meaningful:
+            # Markdown remains the content source; presentation controls the arrangement.
+            pass
+        if section_type == "risk_assessment" and "gg-risk" not in body_html:
+            body_html = f'<div class="gg-block gg-callout gg-callout--warning"><p>Risk-focused presentation for this section.</p></div>{body_html}'
+        body_sections.append(
+            f'<section id="{html.escape(str(plan.get("id") or f"section-{idx + 1}"), quote=True)}" class="gg-section gg-reveal gg-section--{html.escape(layout, quote=True)} gg-section--{html.escape(emphasis, quote=True)}" data-layout="{html.escape(layout, quote=True)}" data-density="{html.escape(density, quote=True)}" data-emphasis="{html.escape(emphasis, quote=True)}" data-section-type="{html.escape(section_type, quote=True)}" data-reveal>'
+            f'<div class="gg-section-heading"><h2>{section_title}</h2></div>'
+            f'<div class="gg-section-body gg-section-body--{html.escape(layout, quote=True)}">{body_html}</div></section>'
+        )
+
+    source_spec = spec_dict.get("source_appendix") or {}
+    sources_html = _render_sources_appendix(sources, str(source_spec.get("placement") or "end_of_report"), bool(source_spec.get("include_appendix")))
+    placement = str(source_spec.get("placement") or "end_of_report")
+    if placement == "none":
+        sources_html = ""
+
+    if exec_placement in ("after_cover", "top_of_body"):
+        opening_html = summary_html
+        closing_summary = ""
+    elif exec_placement == "end_summary":
+        opening_html = ""
+        closing_summary = summary_html
+    elif exec_placement == "sidebar":
+        opening_html = summary_html
+        closing_summary = ""
+    else:
+        opening_html = ""
+        closing_summary = ""
+
+    cover_html = _render_cover(spec_dict, safe_title, safe_summary, date_str, key_stats)
     return f"""<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -1287,22 +1586,17 @@ def build_html_report(report: str, title: str, question: str, summary: str,
 <style>{css}</style>
 </head>
 <body>
-  <header class="gg-hero">
-    <div class="gg-eyebrow">Growth Gradual · Research Intelligence</div>
-    <h1 class="gg-title">{safe_title}</h1>
-    {f'<p class="gg-summary">{safe_summary}</p>' if safe_summary else ''}
-    <div class="gg-date">Generated {date_str}</div>
-  </header>
-  {stats_html}
-  <main>
-    {body_html}
-    {sources_html}
-  </main>
-  <footer class="gg-footer">Growth Gradual — In The Money · growth-gradual.com</footer>
-  <script>{_JS}</script>
+{cover_html}
+<main>
+  {opening_html}
+  <div class="gg-report-sections">{"".join(body_sections)}</div>
+  {closing_summary}
+  {sources_html}
+</main>
+<footer class="gg-footer">Growth Gradual — Research Intelligence</footer>
+<script>{_JS}</script>
 </body>
 </html>"""
-
 
 @router.post("")
 async def generate_html_report(request: Request):
@@ -1333,6 +1627,7 @@ async def generate_html_report(request: Request):
     images: list = body.get("images", [])
     theme: dict | None = _sanitize_theme(body.get("theme"))
     sources = normalise_source_manifest(body.get("sources", []))
+    presentation = body.get("presentation")
 
     # Same unwrap-double-encoded-JSON safety net as routes/pdf.py.
     stripped = report.strip()
@@ -1346,6 +1641,7 @@ async def generate_html_report(request: Request):
                 key_stats = key_stats or inner.get("keyStats", [])
                 charts = charts or inner.get("charts", [])
                 theme = theme or _sanitize_theme(inner.get("theme"))
+                presentation = presentation or inner.get("presentation")
         except Exception as e:
             log.debug("HTML report: report field is not double-encoded JSON, using as-is (%s)", e)
 
@@ -1355,7 +1651,7 @@ async def generate_html_report(request: Request):
     report = re.sub(r"```\s*$", "", report).strip()
 
     try:
-        html_doc = build_html_report(report, title, question, summary, key_stats, charts, images, theme, sources)
+        html_doc = build_html_report(report, title, question, summary, key_stats, charts, images, theme, sources, presentation)
     except Exception as e:
         log.error("HTML report: build_html_report failed: %s", e)
         return JSONResponse({"error": f"Failed to generate HTML report: {e}"}, status_code=500)
