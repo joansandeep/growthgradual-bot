@@ -6,6 +6,7 @@ import { supabase } from '@/lib/supabaseClient';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 interface Source { title: string; url: string; snippet: string; }
+interface ReportSource { title: string; url?: string; publisher?: string; kind?: string; }
 interface ChartDataPoint { label: string; value: number; }
 interface ChartSeries { name: string; data: ChartDataPoint[]; color?: string; }
 /** Route a Tavily/third-party image URL through our server-side proxy to bypass hotlink protection. */
@@ -24,7 +25,7 @@ interface WebImage { url: string; caption?: string; }
 // the parts a flat PDF re-theme can't express, so they only ever actually
 // change anything when the report is downloaded as HTML.
 interface ReportTheme { primaryColor?: string; accentColor?: string; toneNote?: string; fontFamily?: string; customCss?: string; richStyleNeeded?: boolean; }
-interface ReportData { report: string; title?: string; charts: ChartSpec[]; images?: WebImage[]; keyStats: {label:string;value:string;change?:string}[]; summary: string; fileImages?: {name:string;mimeType:string;data:string}[]; sourceDocuments?: {name:string;text:string;file_type?:string}[]; recommendedFormat?: 'pdf' | 'html'; theme?: ReportTheme; }
+interface ReportData { report: string; title?: string; charts: ChartSpec[]; images?: WebImage[]; keyStats: {label:string;value:string;change?:string}[]; summary: string; fileImages?: {name:string;mimeType:string;data:string}[]; sourceDocuments?: {name:string;text:string;file_type?:string}[]; sources?: ReportSource[]; recommendedFormat?: 'pdf' | 'html'; theme?: ReportTheme; }
 interface KbCompany { id: number; ticker: string; name: string; downloadUrl: string; }
 interface Message {
   id: string; role: 'user' | 'assistant'; text: string; ts: number;
@@ -748,7 +749,7 @@ function ReportPanel({ msg, question, hasPriorContext, onGenerate }: { msg: Mess
       const res = await fetch('/api/chat/report/pdf', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ report: rd.report, title: rd.title, charts: rd.charts, images: rd.images ?? [], question, keyStats: rd.keyStats, summary: rd.summary, fileImages: rd.fileImages ?? [], theme: rd.theme ?? null }),
+        body: JSON.stringify({ report: rd.report, title: rd.title, charts: rd.charts, images: rd.images ?? [], question, keyStats: rd.keyStats, summary: rd.summary, fileImages: rd.fileImages ?? [], sources: rd.sources ?? [], theme: rd.theme ?? null }),
       });
       const contentType = res.headers.get('Content-Type') ?? '';
       if (contentType.includes('application/pdf')) {
@@ -774,7 +775,7 @@ function ReportPanel({ msg, question, hasPriorContext, onGenerate }: { msg: Mess
       const res = await fetch('/api/chat/report/html', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ report: rd.report, title: rd.title, charts: rd.charts, images: rd.images ?? [], question, keyStats: rd.keyStats, summary: rd.summary, fileImages: rd.fileImages ?? [], theme: rd.theme ?? null }),
+        body: JSON.stringify({ report: rd.report, title: rd.title, charts: rd.charts, images: rd.images ?? [], question, keyStats: rd.keyStats, summary: rd.summary, fileImages: rd.fileImages ?? [], sources: rd.sources ?? [], theme: rd.theme ?? null }),
       });
       if (!res.ok) {
         const errBody = await res.json().catch(() => null);
@@ -824,6 +825,7 @@ function ReportPanel({ msg, question, hasPriorContext, onGenerate }: { msg: Mess
       fd.append('title',      reportTitle);
       fd.append('summary',    rd.summary  ?? '');
       fd.append('keyStats',   JSON.stringify(rd.keyStats ?? []));
+      fd.append('sources',    JSON.stringify(rd.sources ?? []));
       if (file) fd.append('file', file);
 
       const res  = await fetch('/api/chat/report/email', { method: 'POST', body: fd });
@@ -981,6 +983,23 @@ function ReportPanel({ msg, question, hasPriorContext, onGenerate }: { msg: Mess
                   })()
                 : <div dangerouslySetInnerHTML={{ __html: renderMd(rd.report) }}/>
               }
+              {(rd.sources?.length ?? 0) > 0 && (
+                <section className="report-sources" aria-label="Complete data sources">
+                  <h2>Complete Data Sources <span>{rd.sources?.length}</span></h2>
+                  <p>Every source used or supplied for this report.</p>
+                  <ol>
+                    {rd.sources?.map((source, index) => (
+                      <li key={`${source.url || source.title}-${index}`}>
+                        <div className="report-source-title">{source.title}</div>
+                        <div className="report-source-meta">{source.publisher || source.kind || 'Source'}{source.kind && source.publisher ? ` · ${source.kind}` : ''}</div>
+                        {source.url
+                          ? <a href={source.url} target="_blank" rel="noopener noreferrer">Open source ↗</a>
+                          : <span className="report-source-provided">Provided in report data</span>}
+                      </li>
+                    ))}
+                  </ol>
+                </section>
+              )}
             </div>
           </div>
         )}
@@ -2166,7 +2185,7 @@ export default function GrowthGradualChat() {
     // at 12000 chars per file for the prompt; the OKF concept can carry more
     // since it's just markdown, capped again server-side at 4000 chars).
     const sourceDocuments = files
-      .filter(f => f.extractedText)
+      .filter(f => f.status === 'attached')
       .map(f => ({ name: f.name, text: f.extractedText || '', file_type: f.type }));
 
     buildFilePayload().then(({ fileImages, embeddedFileImages, fileTextContext }) => {
@@ -2185,6 +2204,7 @@ export default function GrowthGradualChat() {
           conversationContext: conversationContext || '',
           fileImages,             // full pages — vision text-extraction only
           embeddedFileImages,     // actual charts/figures — may be embedded in the report
+          sourceDocuments,        // names feed the complete end-of-report source appendix
           sessionId:   getOrCreateSessionId(),
           hasRag:      ragIndexed,
         }),
@@ -2235,6 +2255,7 @@ export default function GrowthGradualChat() {
             summary:    data.summary    ?? '',
             fileImages: data.fileImages ?? [],
             sourceDocuments,
+            sources: data.sources ?? [],
             // "html" when the question itself asked for something a static
             // PDF can't do (animation/interactive/motion/etc.), OR when the
             // model's own theme decision (see data.theme.richStyleNeeded)
@@ -2592,6 +2613,17 @@ export default function GrowthGradualChat() {
         .report-content .md-th{background:linear-gradient(90deg,#0d4f3c,#1a1f4e);color:#fff;font-weight:600;font-size:clamp(10px,.85vw,11px);text-transform:uppercase;letter-spacing:.04em;border:1px solid #1a3a30;padding:clamp(5px,.7vh,8px) clamp(7px,.9vw,11px);text-align:left;}
         .report-content .md-td{border:1px solid #e2e6f0;padding:clamp(5px,.6vh,7px) clamp(7px,.9vw,11px);}
         .report-content .md-table tbody tr:nth-child(even) td{background:#f8f9fc;}
+        .report-sources{margin-top:24px;padding-top:16px;border-top:1px solid #dce1ed;}
+        .report-sources h2{font:700 clamp(13px,1.3vw,16px) 'Playfair Display',serif;color:#1a1f4e;margin:0 0 4px;}
+        .report-sources h2 span{display:inline-grid;place-items:center;min-width:21px;height:21px;padding:0 6px;border-radius:999px;background:#e8efff;color:#0d4f3c;font:700 11px 'DM Sans',sans-serif;vertical-align:middle;}
+        .report-sources>p{margin:0 0 10px;color:#68708c;font-size:11px;}
+        .report-sources ol{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:7px;margin:0;padding:0;list-style:none;counter-reset:source;}
+        .report-sources li{position:relative;min-width:0;padding:9px 10px 9px 32px;border:1px solid #e2e6f0;border-radius:8px;background:#fff;counter-increment:source;}
+        .report-sources li::before{content:counter(source);position:absolute;left:9px;top:10px;width:16px;height:16px;border-radius:50%;display:grid;place-items:center;background:#0d4f3c;color:#fff;font:700 9px 'DM Sans',sans-serif;}
+        .report-source-title{font-size:11px;font-weight:700;line-height:1.35;color:#1a1f4e;overflow-wrap:anywhere;}
+        .report-source-meta{margin-top:2px;font-size:9.5px;color:#7b849f;overflow-wrap:anywhere;}
+        .report-sources a,.report-source-provided{display:block;margin-top:4px;font-size:10px;color:#0d4f3c;text-decoration:none;overflow-wrap:anywhere;}
+        .report-sources a:hover{text-decoration:underline;}
 
         /* Charts */
         .charts-grid { display:grid;grid-template-columns:repeat(auto-fit,minmax(min(240px,100%),1fr));gap:clamp(8px,1.2vw,16px);margin-bottom:clamp(10px,1.5vh,20px); }
