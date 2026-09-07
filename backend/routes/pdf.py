@@ -29,6 +29,7 @@ from fastapi.requests import Request
 from fastapi.responses import JSONResponse, Response
 
 from utils.datawrapper import attach_datawrapper_charts, fetch_png
+from routes.source_manifest import normalise_source_manifest
 import asyncio
 import httpx
 
@@ -67,6 +68,13 @@ CHART_COLORS = [NAVY, GOLD, TEAL, RED, SLATE, OLIVE, BURGUNDY, GREEN]
 # Section accent colours (one per major section heading) — same restrained set.
 SECTION_ACCENTS = [GOLD, TEAL, GREEN, OLIVE, RED, SLATE]
 
+# These immutable palette values are used to reset each PDF render.  The old
+# implementation mutated module globals for a custom report theme and never
+# restored them, so one themed request could silently force that same theme on
+# a later unrelated report.  A report now has only its own requested theme.
+_DEFAULT_NAVY = NAVY
+_DEFAULT_GOLD = GOLD
+
 
 def _hex_to_rgb01(hex_color: str) -> tuple[float, float, float] | None:
     """'#rrggbb' -> (r, g, b) each in 0..1, ReportLab's expected range.
@@ -90,6 +98,10 @@ def apply_theme(theme: dict | None) -> None:
     no per-function threading needed. No-ops (keeps the default palette)
     when theme is missing or its colours don't parse as valid hex."""
     global NAVY, GOLD, CHART_COLORS, SECTION_ACCENTS
+    NAVY = _DEFAULT_NAVY
+    GOLD = _DEFAULT_GOLD
+    CHART_COLORS = [NAVY, GOLD, TEAL, RED, SLATE, OLIVE, BURGUNDY, GREEN]
+    SECTION_ACCENTS = [GOLD, TEAL, GREEN, OLIVE, RED, SLATE]
     if not theme:
         return
     new_navy = _hex_to_rgb01(theme.get("primaryColor", "")) if theme.get("primaryColor") else None
@@ -2130,7 +2142,7 @@ def _draw_chart(c, spec, x0, y0, w, h):
 def build_pdf(report: str, title: str, question: str, summary: str,
               key_stats: list, charts: list, logo_b64: str = "",
               file_images: list | None = None, web_images: list | None = None,
-              theme: dict | None = None) -> bytes:
+              theme: dict | None = None, sources: object = None) -> bytes:
     apply_theme(theme)
     import json as _json
 
@@ -3108,6 +3120,78 @@ def build_pdf(report: str, title: str, question: str, summary: str,
                 # _past_data_sources is declared.
                 _past_data_sources[0] = True
 
+    # ── Complete source appendix ─────────────────────────────────────────────
+    # The writer sees a curated source subset to keep its prompt manageable,
+    # but exports must show the entire provenance inventory.  This renderer is
+    # intentionally independent of whatever abbreviated source table the LLM
+    # may have put in the prose, and it has no row cap: 100 inputs render as
+    # 100 numbered source cards over as many appendix pages as required.
+    source_manifest = normalise_source_manifest(sources)
+    if source_manifest:
+        c.showPage(); hf("Complete Data Sources"); y[0] = BODY_TOP
+
+        def _source_heading(continued: bool = False) -> None:
+            c.setFillColorRGB(*GOLD); c.setFont("Helvetica-Bold", 8.5)
+            c.drawString(MARGIN, y[0], "SOURCES CONTINUED" if continued else "COMPLETE DATA SOURCES")
+            nl(20)
+            c.setFillColorRGB(*NAVY); c.setFont("Times-Bold", 18 if not continued else 14)
+            c.drawString(MARGIN, y[0], "Research provenance" if not continued else "Research provenance — continued")
+            nl(12)
+            c.setStrokeColorRGB(*GOLD); c.setLineWidth(1.2)
+            c.line(MARGIN, y[0], MARGIN + CW, y[0])
+            nl(18)
+            if not continued:
+                c.setFillColorRGB(*BODY_TXT); c.setFont("Helvetica", 9)
+                note = f"{len(source_manifest)} source{'s' if len(source_manifest) != 1 else ''} used or supplied for this report."
+                c.drawString(MARGIN, y[0], note)
+                nl(18)
+
+        _source_heading()
+        for index, source in enumerate(source_manifest, start=1):
+            source_title = _safe_text(str(source.get("title") or "Untitled source"))
+            publisher = _safe_text(str(source.get("publisher") or source.get("kind") or "Source"))
+            kind = _safe_text(str(source.get("kind") or "Source"))
+            url = str(source.get("url") or "")
+            title_lines = _wrap(c, source_title, "Helvetica-Bold", 9.2, CW - 50)
+            meta_lines = _wrap(c, f"{publisher} · {kind}", "Helvetica", 7.7, CW - 50)
+            # One final line is reserved for a concise, visible link label.
+            # The full HTTP URL is attached as a PDF hyperlink over that label.
+            row_h = max(38, 13 + len(title_lines) * 11 + len(meta_lines) * 9 + (12 if url else 0))
+            if y[0] - row_h < BODY_BOT:
+                c.showPage(); hf("Complete Data Sources"); y[0] = BODY_TOP
+                _source_heading(continued=True)
+
+            top = y[0]
+            c.setFillColorRGB(0.975, 0.98, 0.995)
+            c.roundRect(MARGIN, top - row_h + 4, CW, row_h, 5, fill=1, stroke=0)
+            c.setStrokeColorRGB(0.86, 0.89, 0.95); c.setLineWidth(0.45)
+            c.roundRect(MARGIN, top - row_h + 4, CW, row_h, 5, fill=0, stroke=1)
+            c.setFillColorRGB(*GOLD)
+            c.circle(MARGIN + 14, top - 15, 9, fill=1, stroke=0)
+            c.setFillColorRGB(*NAVY); c.setFont("Helvetica-Bold", 7.5)
+            c.drawCentredString(MARGIN + 14, top - 17.7, str(index))
+
+            text_x = MARGIN + 30
+            text_y = top - 11
+            c.setFillColorRGB(*NAVY); c.setFont("Helvetica-Bold", 9.2)
+            for line in title_lines:
+                c.drawString(text_x, text_y, line)
+                text_y -= 11
+            c.setFillColorRGB(*GREY); c.setFont("Helvetica", 7.7)
+            for line in meta_lines:
+                c.drawString(text_x, text_y, line)
+                text_y -= 9
+            if url:
+                label = _fit_cell(c, f"Open source: {publisher}", "Helvetica", 7.7, CW - 50)
+                c.setFillColorRGB(*TEAL); c.setFont("Helvetica", 7.7)
+                c.drawString(text_x, text_y, label)
+                label_w = c.stringWidth(label, "Helvetica", 7.7)
+                try:
+                    c.linkURL(url, (text_x, text_y - 2, text_x + label_w, text_y + 8), relative=0, thickness=0)
+                except Exception:
+                    pass  # a bad URL should never stop the report export
+            y[0] -= row_h + 6
+
     # Fallback chart rendering is intentionally suppressed.
     # The LLM system prompt places all charts inline via [CHART_n] placeholders.
     # Dumping leftovers after References corrupts the document structure.
@@ -3164,6 +3248,7 @@ async def generate_pdf(request: Request):
     file_images: list = body.get("fileImages", [])  # [{name, mimeType, data}]
     images: list    = body.get("images", [])  # [{url, caption}] from report generation
     theme: dict | None = body.get("theme") if isinstance(body.get("theme"), dict) else None
+    sources = normalise_source_manifest(body.get("sources", []))
 
     # Debug: log images and whether report contains [WEB_IMG_n] placeholders
     import re as _re_dbg
@@ -3364,7 +3449,7 @@ async def generate_pdf(request: Request):
         log.info("PDF: injected fallback [WEB_IMG_n] placeholders")
 
     try:
-        pdf_bytes = build_pdf(report, title, question, summary, key_stats, charts, logo_b64, file_images, web_images, theme)
+        pdf_bytes = build_pdf(report, title, question, summary, key_stats, charts, logo_b64, file_images, web_images, theme, sources)
     except Exception as e:
         log.error("PDF: build_pdf failed: %s", e)
         return JSONResponse({"error": f"Failed to generate PDF: {e}"}, status_code=500)

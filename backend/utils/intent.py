@@ -248,15 +248,35 @@ def _heuristic_intent(
         evidence.append("comparison")
     if has_rag or has_files:
         evidence.append("documents")
+
+    wants_report = bool(_REPORT_WORD_RE.search(q))
     if not evidence:
-        evidence = ["general_knowledge"]
+        # Bug fix: a bare "write a detailed report on X" / "deep-dive on X"
+        # carries none of the specific keyword signals above (no "news",
+        # no "vs", no "trend"...), so this used to fall all the way through
+        # to evidence=["general_knowledge"] — which downstream in
+        # _build_multi_angle_search_queries maps to NO angle suffix at all
+        # (see _EVIDENCE_ANGLE_SUFFIX), collapsing the search to a single
+        # base query. That's exactly backwards: an explicit "report"/
+        # "deep-dive" request is asking for MORE research depth, not less,
+        # and this heuristic path only runs when the LLM intent call is
+        # already unavailable (no Groq keys / rate-limited / bad response)
+        # — precisely the condition under which the request most needs a
+        # robust, non-LLM-dependent multi-angle fallback instead of a
+        # silent single-query downgrade. Give a bare report request a
+        # broad-but-cheap default evidence set (recency + trend) so it
+        # still gets a multi-angle search; a request with no report/deep-dive
+        # wording and no other signal is left as genuine general_knowledge
+        # (e.g. "explain how photosynthesis works" shouldn't trigger a news
+        # search just because it's a question).
+        evidence = ["news", "historical"] if wants_report else ["general_knowledge"]
 
     return RequestIntent(
         resolved_topic=resolved_topic,
         is_followup=is_followup,
-        intent_label="report request" if _REPORT_WORD_RE.search(q) else "",
+        intent_label="report request" if wants_report else "",
         evidence_needed=evidence,
-        wants_report=bool(_REPORT_WORD_RE.search(q)),
+        wants_report=wants_report,
         notes="heuristic fallback — keyword-based evidence detection",
         source="heuristic",
     )

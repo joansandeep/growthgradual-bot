@@ -41,6 +41,7 @@ from fastapi.responses import JSONResponse, Response
 # when the theme was first produced (routes/report.py) costs nothing and
 # closes off a client that edits the JSON it sends back before re-download.
 from routes.report import _sanitize_theme
+from routes.source_manifest import normalise_source_manifest
 
 router = APIRouter()
 log = logging.getLogger("html_report")
@@ -1147,6 +1148,26 @@ p {{ font-size: 16.5px; color: #d6d9e8; }}
   text-align: center; padding: 40px 8vw 60px; font-family: var(--font-heading);
   font-size: 12px; color: #6a7295; border-top: 1px solid rgba(255,255,255,0.06);
 }}
+.gg-sources {{
+  margin-top: 64px; padding: 28px; border: 1px solid rgba(255,255,255,0.12);
+  border-radius: 18px; background: rgba(255,255,255,0.035);
+}}
+.gg-sources h2 {{ margin-top: 0; }}
+.gg-sources-intro {{ color: #aeb6cf; font-size: 14px; margin: 0 0 20px; }}
+.gg-sources-grid {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); gap: 10px; }}
+.gg-source-card {{
+  display: grid; grid-template-columns: 30px minmax(0, 1fr); gap: 10px; padding: 12px;
+  border: 1px solid rgba(255,255,255,0.09); border-radius: 10px; background: rgba(8,14,35,0.24);
+  break-inside: avoid;
+}}
+.gg-source-number {{
+  width: 25px; height: 25px; display: grid; place-items: center; border-radius: 50%;
+  background: var(--gold); color: var(--navy-deep); font: 700 11px var(--font-heading);
+}}
+.gg-source-title {{ color: #fff; font: 600 14px var(--font-heading); line-height: 1.35; overflow-wrap: anywhere; }}
+.gg-source-meta {{ color: #aeb6cf; font-size: 11px; margin-top: 4px; }}
+.gg-source-link {{ color: var(--gold-light); font-size: 12px; text-decoration: none; overflow-wrap: anywhere; }}
+.gg-source-link:hover {{ text-decoration: underline; }}
 @media (max-width: 640px) {{ .gg-hero {{ padding: 60px 6vw 40px; }} main {{ padding: 0 6vw 70px; }} }}
 """
 
@@ -1213,10 +1234,41 @@ document.addEventListener('DOMContentLoaded', function () {
 """
 
 
+def _render_sources_appendix(sources: object) -> str:
+    """Render every source as a compact, readable end-of-report appendix."""
+    manifest = normalise_source_manifest(sources)
+    if not manifest:
+        return ""
+    cards: list[str] = []
+    for index, source in enumerate(manifest, start=1):
+        title = html.escape(source["title"])
+        publisher = html.escape(source.get("publisher") or source.get("kind") or "Source")
+        kind = html.escape(source.get("kind") or "Source")
+        url = source.get("url") or ""
+        link = (
+            f'<a class="gg-source-link" href="{html.escape(url, quote=True)}" target="_blank" rel="noopener noreferrer">Open source ↗</a>'
+            if url else
+            '<span class="gg-source-link">Provided in report data</span>'
+        )
+        cards.append(
+            f'<article class="gg-source-card"><div class="gg-source-number">{index}</div>'
+            f'<div><div class="gg-source-title">{title}</div><div class="gg-source-meta">{publisher} · {kind}</div>{link}</div></article>'
+        )
+    count = len(manifest)
+    return (
+        '<section class="gg-sources gg-reveal" data-reveal>'
+        '<h2 class="gg-section-h2">Complete Data Sources</h2>'
+        f'<p class="gg-sources-intro">{count} source{"s" if count != 1 else ""} used or supplied for this report. '
+        'This appendix is complete and is kept separate from the report narrative for easier reading.</p>'
+        f'<div class="gg-sources-grid">{"".join(cards)}</div></section>'
+    )
+
+
 def build_html_report(report: str, title: str, question: str, summary: str,
                        key_stats: list, charts: list, images: list,
-                       theme: dict | None = None) -> str:
+                       theme: dict | None = None, sources: object = None) -> str:
     body_html = _markdown_to_html(report, charts, images, theme)
+    sources_html = _render_sources_appendix(sources)
     stats_html = _render_key_stats(key_stats)
     safe_title = html.escape(title or question or "Research Report")
     safe_summary = html.escape(summary or "")
@@ -1244,6 +1296,7 @@ def build_html_report(report: str, title: str, question: str, summary: str,
   {stats_html}
   <main>
     {body_html}
+    {sources_html}
   </main>
   <footer class="gg-footer">Growth Gradual — In The Money · growth-gradual.com</footer>
   <script>{_JS}</script>
@@ -1279,6 +1332,7 @@ async def generate_html_report(request: Request):
     charts: list = body.get("charts", [])
     images: list = body.get("images", [])
     theme: dict | None = _sanitize_theme(body.get("theme"))
+    sources = normalise_source_manifest(body.get("sources", []))
 
     # Same unwrap-double-encoded-JSON safety net as routes/pdf.py.
     stripped = report.strip()
@@ -1301,7 +1355,7 @@ async def generate_html_report(request: Request):
     report = re.sub(r"```\s*$", "", report).strip()
 
     try:
-        html_doc = build_html_report(report, title, question, summary, key_stats, charts, images, theme)
+        html_doc = build_html_report(report, title, question, summary, key_stats, charts, images, theme, sources)
     except Exception as e:
         log.error("HTML report: build_html_report failed: %s", e)
         return JSONResponse({"error": f"Failed to generate HTML report: {e}"}, status_code=500)

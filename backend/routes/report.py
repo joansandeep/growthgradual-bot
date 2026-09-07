@@ -3,6 +3,8 @@ POST /api/chat/report  — Generate comprehensive research report (JSON)
 Body: { question: str, sources: [{title, url, snippet, fullContent?}] }
 """
 import asyncio
+import colorsys
+import hashlib
 import json
 import logging
 import re
@@ -32,6 +34,7 @@ from utils.screener_kb import (
     format_screener_snapshots_as_source as _format_screener_snapshots_as_source,
 )
 from utils.intent import resolve_request_intent, RequestIntent
+from routes.source_manifest import normalise_source_manifest
 
 router = APIRouter()
 log = logging.getLogger("report")
@@ -241,16 +244,19 @@ Respond with EXACTLY this shape:
   "images": [{ "prompt": "<AI image-generation prompt — see AI IMAGE RULES>", "caption": "<short caption>" }, ...] (0-2 items — see AI IMAGE RULES; optional, include only where a genuine visual opportunity exists),
   "keyStats": [{ "label": "<short label>", "value": "<value string>", "change": "<+/- % or empty string>" }],
   "summary": "<2-3 sentence executive summary>",
-  "theme": { "primaryColor": "<hex>", "accentColor": "<hex>", "toneNote": "<short label, e.g. 'comical', 'minimal', 'dark mode', 'playful', 'corporate'>", "fontFamily": "<OPTIONAL real Google Fonts family name that fits the requested style, e.g. 'Fredoka', 'Comic Neue', 'Space Grotesk', 'Playfair Display', 'JetBrains Mono' — omit for the default typography>", "customCss": "<OPTIONAL extra CSS rules the HTML renderer should layer on top of its base stylesheet to achieve effects flat color-swapping can't — dashed hand-drawn-style borders, playful rotation on headings, bouncy rounded shadows, sticker-like badges, confetti/dot background patterns, gradient text, etc. Plain CSS rule blocks only (selectors + declarations), no <style> tag, no @import, no url(), no javascript: — omit unless the requested style genuinely calls for it>", "richStyleNeeded": <true only when the requested style needs visual treatment (fonts, decorative shapes, illustration-like flourishes, layered color, playful motion) that a flat two-color PDF re-theme structurally cannot deliver and the HTML version should be the one offered — false or omit otherwise, including for ordinary corporate/professional requests> } | null
+  "theme": { "primaryColor": "<hex>", "accentColor": "<hex>", "toneNote": "<short label describing this report's visual direction>", "fontFamily": "<OPTIONAL real Google Fonts family name that fits an explicitly requested style, e.g. 'Fredoka', 'Comic Neue', 'Space Grotesk', 'Playfair Display', 'JetBrains Mono'>", "customCss": "<OPTIONAL extra CSS rules for an explicitly requested rich visual treatment. Plain CSS rules only; no <style>, @import, url(), or javascript:>", "richStyleNeeded": <true only when an explicitly requested visual treatment cannot be represented by a static PDF> }
 }
 
-THEME — ONLY when the user's question explicitly asks for a visual style, mood, color scheme, or
-tone for the report itself (e.g. "make it comical", "dark theme", "playful tone", "corporate look",
-"neon colors", "make it fun") — NOT for requests about the report's financial topic. When such a
-request is present:
+THEME — There is NO fixed report theme. Return a valid "theme" object for EVERY report.
+Choose a restrained, high-contrast editorial palette that suits THIS report's subject and audience;
+do not fall back to a single house navy/gold or a memorised style recipe. If the user explicitly
+asks for a visual style, mood, color scheme, or tone (e.g. "make it comical", "dark theme",
+"playful tone", "corporate look", "neon colors", "make it fun"), that request overrides your
+normal visual judgement. In every case:
   - Pick "primaryColor"/"accentColor" as hex codes that genuinely fit the requested style (e.g.
-    "comical" → bright, saturated, playful colors, not navy/gold; "dark mode" → near-black background
-    tones; "corporate" → the existing navy/gold is already fine, you may omit theme entirely).
+    "comical" → bright, saturated, playful colors; "dark mode" → near-black background tones;
+    a research brief → calm, readable editorial colors). Keep text contrast strong and avoid harsh
+    combinations that make long-form reading tiring.
   - Set "toneNote" to a short label capturing the requested style, and — this is the part that
     actually changes the report, not just its colors — write the "report" and "summary" text itself
     in a register that matches that style (e.g. genuinely comical: puns, playful asides, light
@@ -268,8 +274,8 @@ request is present:
     requested style work and a static PDF with just two swapped colors would clearly fall short of
     what was asked — not for every theme request. Ordinary "corporate blue" or a single named accent
     color is still fine as a PDF; leave "richStyleNeeded" false/omitted for those.
-  - When the user asks for NO particular style, omit "theme" (or set it to null) and write in the
-    normal formal analyst register — never invent a theme unprompted.
+  - When the user asks for NO particular style, use a fresh restrained editorial palette and write
+    in the normal formal analyst register. Do not add decorative customCss just to make it different.
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 CRITICAL DATA INTEGRITY RULES — VIOLATIONS DEGRADE REPORT QUALITY:
@@ -803,9 +809,15 @@ to give the report a visual anchor — a conceptual/editorial illustration, neve
   machine mid-stitch, warm afternoon light through a window, shallow depth of field" if the report is
   about a boutique tailoring business.
   Style: describe it as an editorial illustration or a documentary-style photograph (pick whichever
-  suits the topic), with a concrete color/lighting direction (e.g. "muted navy and warm gold tones,
-  soft directional light" or "high-contrast documentary photography, natural light") — never leave the
-  visual style to chance.
+  suits the topic), with a concrete color/lighting direction picked FRESH for this report's subject —
+  e.g. "muted terracotta and slate tones, late-afternoon side light" for a construction/infrastructure
+  piece, "cool teal and steel-grey tones, overcast diffuse light" for a logistics/shipping piece, "warm
+  amber and forest-green tones, golden-hour light" for an agriculture piece — never leave the visual
+  style to chance, and never default to any single fixed color pairing across different reports; the
+  palette named here is illustrative of the LEVEL of specificity wanted, not a house style to reuse.
+  NOTE: this image-prompt color direction is independent of the separate top-level "theme" field above
+  — do not let whatever pairing you pick here leak into "theme.primaryColor"/"theme.accentColor";
+  choose each on its own merits for its own purpose.
   Never ask for text, numbers, charts, logos, tickers, or any real named/branded company mark to appear
   IN the image; the model generating the picture cannot render accurate data or trademarks, so asking
   for them produces misleading or unusable output.
@@ -869,12 +881,46 @@ technical deep-dive might use the actual technical concepts as headings; a begin
 might use plain-language questions as headings. A thin section padded out to fill a slot in some
 imagined template is worse than a shorter, denser, purpose-built report.
 
+SECTION DEPTH — GO BEYOND A FLAT LIST OF H2s: a report that clears the length floor (see MINIMUM
+LENGTH below) almost never reads well as a flat run of H2 sections with long undivided prose or
+tables under each one. Once an H2 section covers more than one distinct angle (e.g. "Financial
+Performance" covering revenue, margins, AND cash flow; or "Sector Backdrop" covering policy,
+demand, AND competition), break it into H3 subsections — one per distinct angle — instead of
+running it all together under the single H2 heading. Use a further H4 beneath an H3 only when that
+subsection itself has a genuinely distinct sub-breakdown worth its own heading (e.g. an H3 "Peer
+Comparison" splitting into H4s per peer, or an H3 "Risk Factors" splitting into H4s per risk
+category) — do not add H4s just to hit a depth target, and do not force a subsection split where a
+section is genuinely a single, unified point best made in one pass. The goal is real structural
+depth that mirrors how the underlying material actually breaks down — a two-or-three-level heading
+hierarchy for substantial sections, a single H2 with no children for a section that truly is one
+idea — not a fixed rule to nest everything three levels deep. This is on top of, not a replacement
+for, the "pick as many or as few sections as the request supports" rule above — it governs how deep
+each section you already decided to include should go, not how many top-level sections to plan.
+
 If the request is for grounded market/company/financial research and citing sources fits the piece
 you're writing, never invent a source, a citation, or a source-listing entry to fill out a section —
 an omitted section, or omitted row, is always better than a fabricated one. Any source you do name
 must be copied verbatim from a source you were actually given this turn (its real title/site name
 and its exact URL) — never a well-known outlet recalled from memory because it sounds plausible,
 never a guessed or reused URL, never a vague invented institutional name.
+
+REFERENCES MUST BE CLEARLY CALLED OUT: whenever the report draws on the scraped web sources (i.e.
+this is not a purely conceptual/comedic/beginner-explainer piece with nothing to cite), end the
+report with a clearly labeled references section — head it "Sources", "Data Sources", or
+"References" (pick one, do not use more than one such heading). List EVERY distinct source you
+actually drew on in the report, one per line, each formatted as the source's real title/headline
+followed by an em dash and its publisher/site name — e.g. "Sensex, Nifty close at record highs on
+FII buying — Moneycontrol". Note: raw URLs are intentionally stripped out of the rendered PDF
+wherever they'd appear, including this section, so never write a bare link as the whole entry —
+always pair it with the actual headline/title so the entry still identifies the source once the
+link is gone. Do not fold sources into a vague list of bare domain names ("Moneycontrol",
+"Economic Times") with no headline — each entry must name the specific piece it came from — and do
+not bury the list inside another section; it must be its own clearly headed section so a reader can
+immediately see where every fact came from. This section lists sources actually provided this turn
+only (see the verbatim-copy rule above); if the report genuinely used none, skip the section
+entirely rather than inventing entries to fill it. In-body citations still follow the existing rule
+(name the source in the sentence, never bracket markers like [1]) — this end section is the
+complete, authoritative listing, not a duplicate of the inline mentions.
 
 FORMAT RATIO — LET THE REQUEST DECIDE THE PRESENTATION:
   Tables, charts, bullet lists, blockquote callouts, and images are all OPTIONAL tools, not
@@ -1522,6 +1568,49 @@ def _sanitize_theme(theme) -> dict | None:
     if isinstance(rich, bool):
         out["richStyleNeeded"] = rich
     return out or None
+
+
+def _derive_report_theme(question: str) -> dict:
+    """Create a calm, readable per-report fallback palette.
+
+    A model response can occasionally omit its required theme field.  Rather
+    than reverting that report to a permanent house palette, derive colours
+    from the request itself.  This keeps the visual system flexible while
+    retaining reliable dark/light contrast for long-form exports.
+
+    Deliberately NOT compared against or forced away from any particular
+    palette (including the PDF renderer's own navy/gold default) — this
+    only fires when the model returns no usable theme at all. Whatever the
+    model DOES return, including a navy/gold pairing it genuinely judged to
+    fit the topic, is left alone; see _resolve_theme below and the THEME
+    instructions in SYSTEM_PROMPT, which is where that judgment call
+    actually belongs.
+    """
+    digest = hashlib.blake2s((question or "Research Report").encode("utf-8"), digest_size=4).digest()
+    hue = int.from_bytes(digest[:2], "big") / 65535.0
+    accent_hue = (hue + 0.42 + (digest[2] / 2550.0)) % 1.0
+
+    def to_hex(h: float, lightness: float, saturation: float) -> str:
+        r, g, b = colorsys.hls_to_rgb(h, lightness, saturation)
+        return f"#{round(r * 255):02x}{round(g * 255):02x}{round(b * 255):02x}"
+
+    return {
+        "primaryColor": to_hex(hue, 0.23, 0.48),
+        "accentColor": to_hex(accent_hue, 0.55, 0.62),
+        "toneNote": "report-specific editorial",
+    }
+
+
+def _resolve_theme(raw_theme, question: str) -> dict:
+    """Single entry point used by all three JSON-parse outcomes (clean parse,
+    salvage, repair) below — sanitize whatever theme the model returned, and
+    only fall through to the derived per-question palette when the model
+    returned nothing sanitizable. No comparison against any fixed palette:
+    the model's own theme choice — including a navy/gold pairing it
+    genuinely judged to fit — is trusted and passed straight through. Steering
+    it away from any particular color pairing is the SYSTEM_PROMPT's job,
+    not a runtime override here."""
+    return _sanitize_theme(raw_theme) or _derive_report_theme(question)
 
 
 def _resolve_recommended_format(base_format: str, theme: dict | None) -> str:
@@ -3967,7 +4056,15 @@ async def generate_report(request: Request):
         )
 
     question: str       = body.get("question", "")
-    sources: list[dict] = body.get("sources", [])
+    raw_sources = body.get("sources", [])
+    sources: list[dict] = [s for s in raw_sources if isinstance(s, dict)] if isinstance(raw_sources, list) else []
+    # Names are sufficient for the export appendix.  Do not retain a second
+    # copy of uploaded text merely to display where the research came from.
+    raw_source_documents = body.get("sourceDocuments", [])
+    source_documents: list[dict] = (
+        [d for d in raw_source_documents if isinstance(d, dict)]
+        if isinstance(raw_source_documents, list) else []
+    )
     file_context: str   = body.get("fileContext", "")
     file_images: list[dict] = body.get("fileImages", [])
     # These are DIFFERENT from file_images above: file_images is full-page
@@ -4038,6 +4135,11 @@ async def generate_report(request: Request):
                 "summary": f"{len(articles)} market headlines gathered via {source_label} as of {today_label}.",
                 "fileImages": [],
                 "recommendedFormat": "html",
+                "sources": normalise_source_manifest([
+                    {"title": article.get("title", ""), "url": article.get("url", ""),
+                     "publisher": article.get("source", ""), "kind": "News article"}
+                    for article in articles
+                ], source_documents),
             })
         log.info("Report: market-news digest — no articles from either source, falling through to normal pipeline")
 
@@ -4397,6 +4499,13 @@ async def generate_report(request: Request):
         re.IGNORECASE,
     )
     recommended_format = "html" if _WANTS_INTERACTIVE_RE.search(question) else "pdf"
+
+    # Preserve the complete provenance inventory before selecting the smaller
+    # research subset used in the LLM prompt below.  This list is returned to
+    # the client and rendered as the final Sources appendix in every export;
+    # it is intentionally uncapped, so 100 discovered sources remain 100
+    # visible source entries rather than being silently reduced to 25.
+    source_manifest = normalise_source_manifest(sources, source_documents)
 
     # Fetch real page content (not just Tavily's snippet) for as many sources
     # as we reasonably can — this is where the actual chartable numbers live.
@@ -5329,7 +5438,7 @@ async def generate_report(request: Request):
             report_text = await _extend_report_to_floor(report_text, question, MIN_REPORT_CHARS)
 
         clean_title = _sanitize_title(parsed.get("title", ""), question)
-        clean_theme = _sanitize_theme(parsed.get("theme"))
+        clean_theme = _resolve_theme(parsed.get("theme"), question)
         final_format = _resolve_recommended_format(recommended_format, clean_theme)
         elapsed = (time.perf_counter() - t0) * 1000
         log.info("Report complete in %.0fms — title=%r  charts=%d  images=%d  keyStats=%d  format=%s",
@@ -5344,6 +5453,7 @@ async def generate_report(request: Request):
             "fileImages": embedded_file_images,  # extracted charts/images only — never full pages
             "recommendedFormat": final_format,
             "theme":      clean_theme,
+            "sources":    source_manifest,
         }))
     except Exception as exc:
         log.error("Report: JSON parse failed: %s  (raw length: %d)", exc, len(raw))
@@ -5424,7 +5534,7 @@ async def generate_report(request: Request):
             salvaged["report"], _salv_charts = _extract_markdown_tables(salvaged["report"], _salv_charts)
             _salv_charts = _strip_url_columns(_salv_charts)
             salvaged["charts"] = await attach_datawrapper_charts(_salv_charts)
-            _salv_theme = _sanitize_theme(salvaged.get("theme"))
+            _salv_theme = _resolve_theme(salvaged.get("theme"), question)
             return JSONResponse(_decode_leaked_unicode_escapes({
                 "title":      _sanitize_title(salvaged.get("title", ""), question),
                 "report":     _strip_citation_markers(salvaged.get("report", "")),
@@ -5435,6 +5545,7 @@ async def generate_report(request: Request):
                 "fileImages": embedded_file_images,
                 "recommendedFormat": _resolve_recommended_format(recommended_format, _salv_theme),
                 "theme":      _salv_theme,
+                "sources":    source_manifest,
             }))
 
         try:
@@ -5473,7 +5584,7 @@ async def generate_report(request: Request):
             repaired_charts = await attach_datawrapper_charts(_rep_charts)
             repaired_report = _inject_fallback_image_placeholders(repaired_report, repaired_imgs)
             repaired_report = _strip_citation_markers(repaired_report)
-            _rep_theme = _sanitize_theme(repaired_parsed.get("theme"))
+            _rep_theme = _resolve_theme(repaired_parsed.get("theme"), question)
             return JSONResponse(_decode_leaked_unicode_escapes({
                 "title":      _sanitize_title(repaired_parsed.get("title", ""), question),
                 "report":     repaired_report,
@@ -5484,6 +5595,7 @@ async def generate_report(request: Request):
                 "fileImages": embedded_file_images,
                 "recommendedFormat": _resolve_recommended_format(recommended_format, _rep_theme),
                 "theme":      _rep_theme,
+                "sources":    source_manifest,
             }))
         except Exception as e:
             log.warning("Report: JSON repair attempt failed (%s)", e)
@@ -5495,4 +5607,3 @@ async def generate_report(request: Request):
             "report": "## Report Generation Error\n\nThe AI response could not be parsed. Please try a more specific question.",
             "charts": [], "images": [], "keyStats": [], "summary": "", "fileImages": embedded_file_images,
         }, status_code=502)
-

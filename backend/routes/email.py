@@ -28,6 +28,7 @@ from typing import Optional
 import httpx
 from fastapi import APIRouter, File, Form, UploadFile
 from fastapi.responses import JSONResponse
+from routes.source_manifest import normalise_source_manifest
 
 router = APIRouter()
 log = logging.getLogger("email_report")
@@ -184,7 +185,35 @@ def _md_to_html(md: str) -> str:
     return "\n".join(out)
 
 
-def _build_html(title: str, summary: str, key_stats: list[dict], report_md: str, ts: str) -> str:
+def _render_sources_html(sources: object) -> str:
+    manifest = normalise_source_manifest(sources)
+    if not manifest:
+        return ""
+    rows: list[str] = []
+    for index, source in enumerate(manifest, start=1):
+        source_title = html_module.escape(source["title"])
+        publisher = html_module.escape(source.get("publisher") or source.get("kind") or "Source")
+        kind = html_module.escape(source.get("kind") or "Source")
+        url = source.get("url") or ""
+        link = (
+            f'<a href="{html_module.escape(url, quote=True)}" style="color:{BLUE};font-size:11px;text-decoration:none;">Open source ↗</a>'
+            if url else
+            f'<span style="color:{GREY};font-size:11px;">Provided in report data</span>'
+        )
+        rows.append(
+            f'<tr><td style="width:28px;vertical-align:top;padding:10px 4px 10px 0;color:{GOLD};font-weight:700;">{index}.</td>'
+            f'<td style="padding:10px 0;border-bottom:1px solid #e8ebf5;"><div style="font-weight:700;color:{NAVY};font-size:12px;">{source_title}</div>'
+            f'<div style="color:{GREY};font-size:10px;margin:3px 0 5px;">{publisher} · {kind}</div>{link}</td></tr>'
+        )
+    return (
+        f'<div style="margin:28px 0 0;padding-top:18px;border-top:2px solid {GOLD};">'
+        f'<h2 style="color:{NAVY};font-size:17px;margin:0 0 5px;">Complete Data Sources</h2>'
+        f'<p style="margin:0 0 10px;color:{GREY};font-size:11px;">All {len(manifest)} sources used or supplied for this report.</p>'
+        f'<table style="width:100%;border-collapse:collapse;">{"".join(rows)}</table></div>'
+    )
+
+
+def _build_html(title: str, summary: str, key_stats: list[dict], report_md: str, ts: str, sources: object = None) -> str:
     stat_cards = ""
     if key_stats:
         cards = []
@@ -212,7 +241,7 @@ def _build_html(title: str, summary: str, key_stats: list[dict], report_md: str,
     <h1 style="color:white;font-size:24px;font-weight:700;margin:20px 0 6px;line-height:1.3;">{html_module.escape(title or 'Research Report')}</h1>
     <p style="color:rgba(255,255,255,.5);font-size:11px;margin:0;">Generated {ts} &nbsp;|&nbsp; Growth Gradual AI Research</p>
   </td></tr>
-  <tr><td style="padding:28px 36px;">{summary_block}{stat_cards}<div style="margin-top:20px;font-size:14px;line-height:1.7;color:#2d3561;">{_md_to_html(report_md)}</div></td></tr>
+  <tr><td style="padding:28px 36px;">{summary_block}{stat_cards}<div style="margin-top:20px;font-size:14px;line-height:1.7;color:#2d3561;">{_md_to_html(report_md)}</div>{_render_sources_html(sources)}</td></tr>
   <tr><td style="background:{LIGHT};padding:18px 36px;border-top:1px solid #dde3f5;">
     <table width="100%" cellpadding="0" cellspacing="0"><tr>
       <td style="font-size:10px;color:{GREY};"><strong style="color:{NAVY};">Growth Gradual</strong> — In The Money</td>
@@ -232,6 +261,7 @@ async def send_report_email(
     title:      str = Form(""),
     summary:    str = Form(""),
     keyStats:   str = Form("[]"),
+    sources:    str = Form("[]"),
     file: Optional[UploadFile] = File(None),
 ):
     brevo_key    = os.environ.get("BREVO_API_KEY", "").strip()
@@ -261,6 +291,10 @@ async def send_report_email(
         key_stats = json.loads(keyStats)
     except Exception:
         key_stats = []
+    try:
+        source_manifest = normalise_source_manifest(json.loads(sources))
+    except Exception:
+        source_manifest = []
 
     # ── Sanitize subject & title: strip markdown symbols, collapse whitespace ──
     def _sanitize_header(text: str) -> str:
@@ -272,11 +306,18 @@ async def send_report_email(
     title   = _sanitize_header(title)
 
     ts        = datetime.now(timezone.utc).strftime("%d %b %Y, %I:%M %p UTC")
-    html_body = _build_html(title, summary, key_stats, report, ts)
+    html_body = _build_html(title, summary, key_stats, report, ts, source_manifest)
 
     plain = re.sub(r"#+\s*", "", report)
     plain = re.sub(r"\*+", "", plain)
     plain = re.sub(r"\[(?:CHART|FILE_IMG|PAGE_IMG)_\d+\]", "", plain).strip()
+    source_plain = "\n".join(
+        f"{i}. {item['title']} — {item.get('publisher') or item.get('kind') or 'Source'}"
+        + (f"\n   {item['url']}" if item.get("url") else "")
+        for i, item in enumerate(source_manifest, start=1)
+    )
+    if source_plain:
+        plain = f"{plain}\n\nComplete Data Sources\n{'-' * 21}\n{source_plain}"
     plain_body = f"{title}\n{'='*len(title)}\n\n{summary}\n\n{plain}" if title else plain
 
     log.info("Email report → %d recipients via Brevo | title=%r", len(to_list), (title or "")[:60])
