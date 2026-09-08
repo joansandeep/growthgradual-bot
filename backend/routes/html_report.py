@@ -1061,6 +1061,13 @@ main {{ width: min(var(--content-max), calc(100% - 48px)); margin: 0 auto; paddi
 .gg-metric-value {{ font: 700 24px var(--font-heading); color: var(--ink); }}
 .gg-metric-label {{ margin-top: 5px; font: 600 11px var(--font-heading); color: var(--muted); text-transform: uppercase; letter-spacing: .05em; }}
 .gg-metric-change {{ margin-top: 5px; font-size: 12px; font-weight: 700; }}
+
+/* Legacy/stat-dashboard primitive used by metrics_dashboard sections. */
+.gg-stats-grid {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 12px; margin: 18px 0; }}
+.gg-stat-card {{ min-width: 0; padding: 14px 15px; border: 1px solid var(--rule); background: var(--paper); break-inside: avoid; }}
+.gg-stat-value {{ font: 700 22px var(--font-heading); color: var(--ink); line-height: 1.12; overflow-wrap: anywhere; }}
+.gg-stat-label {{ margin-top: 5px; font: 600 10px var(--font-heading); color: var(--muted); text-transform: uppercase; letter-spacing: .045em; line-height: 1.2; }}
+.gg-stat-change {{ margin-top: 4px; font-size: 11px; font-weight: 700; }}
 .gg-change-up {{ color: var(--positive); }} .gg-change-down {{ color: var(--negative); }}
 
 .gg-timeline {{ position: relative; display: grid; gap: 14px; margin: 18px 0; }}
@@ -1107,8 +1114,61 @@ main {{ width: min(var(--content-max), calc(100% - 48px)); margin: 0 auto; paddi
   .gg-timeline-item {{ grid-template-columns: 1fr; gap: 5px; }}
 }}
 @media print {{
+  /* PDF/print layout: override browser-oriented widths so A4 content cannot overflow. */
+  html, body {{ background: #fff; }}
+  body {{ font-size: 10.5pt; line-height: 1.48; overflow-wrap: anywhere; }}
+  p, .gg-list {{ font-size: 10.5pt; line-height: 1.48; }}
+  h1 {{ break-after: avoid-page; }}
+  h2, h3, h4 {{ break-after: avoid-page; page-break-after: avoid; }}
+  p {{ orphans: 3; widows: 3; }}
+  main, .gg-cover {{ width: 100% !important; max-width: none !important; margin-left: 0 !important; margin-right: 0 !important; }}
+  main {{ padding: 18px 0 38px; }}
+  .gg-cover {{ margin-top: 0; }}
+  .gg-title {{ font-size: 30pt; line-height: 1.08; }}
+  .gg-summary {{ font-size: 12pt; line-height: 1.5; }}
+  .gg-summary-card {{ padding: 16px 18px; }}
+  .gg-report-sections {{ gap: 18px; }}
+  .gg-section {{ break-inside: auto; }}
+  .gg-section-heading {{ break-inside: avoid; break-after: avoid-page; margin-bottom: 10px; }}
+  .gg-section-heading h2 {{ font-size: 18pt; line-height: 1.15; }}
+  .gg-section--full_bleed {{ width: 100% !important; margin-left: 0; padding-left: 0; padding-right: 0; }}
+  .gg-section-body--two_column {{ columns: 2 260px; column-gap: 24px; }}
+  .gg-chart-wrap, .gg-table-wrap {{ margin: 12px 0; padding: 10px 12px; }}
+  .gg-chart-canvas-box {{ height: 220px; min-height: 0; }}
+  .gg-pdf-chart-fallback {{ width: 100% !important; max-width: 100% !important; overflow: hidden; }}
+  .gg-pdf-chart-fallback svg {{ width: 100% !important; height: auto !important; max-width: 100% !important; display: block; }}
+  .gg-table-scroll {{ overflow: visible; width: 100%; }}
+  .gg-table {{ width: 100%; table-layout: fixed; font-size: 9.2pt; }}
+  .gg-table th {{ padding: 6px 7px; font-size: 9pt; overflow-wrap: anywhere; }}
+  .gg-table td {{ padding: 6px 7px; font-size: 9pt; overflow-wrap: anywhere; }}
+  .gg-metrics {{ grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; margin: 12px 0; }}
+  .gg-metric {{ padding: 9px 10px; }}
+  .gg-metric-value {{ font-size: 17pt; line-height: 1.1; }}
+  .gg-metric-label {{ font-size: 8pt; line-height: 1.2; }}
+  .gg-metric-change {{ font-size: 8.5pt; }}
+  .gg-stats-grid {{ grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; margin: 12px 0; }}
+  .gg-stat-card {{ padding: 9px 10px; }}
+  .gg-stat-value {{ font-size: 16pt; line-height: 1.08; }}
+  .gg-stat-label {{ font-size: 7.8pt; line-height: 1.18; }}
+  .gg-stat-change {{ font-size: 8pt; }}
+  .gg-timeline-item {{ grid-template-columns: 86px minmax(0, 1fr); gap: 10px; padding: 10px 0; }}
+  .gg-timeline-title {{ font-size: 10.5pt; }}
+  .gg-timeline-desc {{ font-size: 9.5pt; }}
+  .gg-callout {{ margin: 12px 0; padding: 10px 12px; }}
+  .gg-risk-grid {{ grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; margin: 12px 0; }}
+  .gg-risk {{ padding: 9px; }}
+  .gg-risk__meta, .gg-risk__mitigation {{ font-size: 8.8pt; }}
+  .gg-sources {{ margin-top: 24px; padding: 14px; }}
+  .gg-sources-intro {{ font-size: 9pt; }}
+  .gg-sources-grid {{ grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 6px; }}
+  .gg-sources[data-source-placement="appendix"] {{ break-before: page; page-break-before: always; }}
+  .gg-source-card {{ grid-template-columns: 18px minmax(0, 1fr); gap: 6px; padding: 7px; }}
+  .gg-source-number {{ width: 18px; height: 18px; font-size: 8pt; border-radius: 4px; }}
+  .gg-source-title {{ font-size: 8.7pt; line-height: 1.22; }}
+  .gg-source-meta {{ font-size: 7.6pt; margin-top: 2px; }}
+  .gg-source-link {{ font-size: 7.8pt; line-height: 1.15; }}
+  .gg-footer {{ padding: 18px 0 24px; font-size: 8pt; break-before: avoid; }}
   .gg-reveal {{ opacity: 1 !important; transform: none !important; }}
-  .gg-section--full_bleed {{ width: auto; margin-left: 0; padding-left: 0; padding-right: 0; }}
 }}
 """
 

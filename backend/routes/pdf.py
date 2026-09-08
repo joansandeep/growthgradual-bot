@@ -3273,7 +3273,7 @@ def _svg_chart_from_config(config: dict, width: int = 720, height: int = 320) ->
     data = config.get("data") or {}
     labels = [str(x) for x in (data.get("labels") or [])]
     datasets = data.get("datasets") or []
-    margin_l, margin_r, margin_t, margin_b = 58, 24, 24, 54
+    margin_l, margin_r, margin_t, margin_b = 58, 24, 44, 54
     plot_w = width - margin_l - margin_r
     plot_h = height - margin_t - margin_b
     grid = []
@@ -3284,8 +3284,14 @@ def _svg_chart_from_config(config: dict, width: int = 720, height: int = 320) ->
         for i in range(6):
             y = margin_t + plot_h * i / 5
             grid.append(f'<line x1="{margin_l}" y1="{y:.1f}" x2="{width-margin_r}" y2="{y:.1f}" stroke="#d9dde7" stroke-width="1"/>')
-            val = ""
-            text.append(f'<text x="{margin_l-8}" y="{y+4:.1f}" text-anchor="end" font-size="9" fill="#6b7280">{val}</text>')
+            tick = vmax - (span * i / 5)
+            if abs(tick) >= 1000:
+                val = f"{tick:,.0f}"
+            elif abs(tick) >= 10:
+                val = f"{tick:,.1f}"
+            else:
+                val = f"{tick:,.2f}"
+            text.append(f'<text x="{margin_l-8}" y="{y+4:.1f}" text-anchor="end" font-size="9" fill="#6b7280">{_svg_escape(val)}</text>')
 
     all_values = []
     for ds in datasets:
@@ -3312,6 +3318,13 @@ def _svg_chart_from_config(config: dict, width: int = 720, height: int = 320) ->
         return margin_t + (vmax - float(v)) / span * plot_h
 
     colors = ["#1a1f4e", "#c8860a", "#21767a", "#b93c37", "#4a5c8a", "#806e28", "#6e2f3a", "#168058"]
+    legend_x = margin_l
+    for ds_i, ds in enumerate(datasets[:8]):
+        name = _svg_escape(ds.get("label") or ds.get("name") or f"Series {ds_i + 1}")
+        lx = legend_x + ds_i * 150
+        if lx + 130 <= width - margin_r:
+            marks.append(f'<rect x="{lx}" y="12" width="10" height="10" rx="2" fill="{colors[ds_i%len(colors)]}"/>')
+            text.append(f'<text x="{lx+15}" y="21" font-size="9" fill="#5f6675">{name}</text>')
     for i, lbl in enumerate(labels[:40]):
         x = margin_l + (i + 0.5) * plot_w / max(1, len(labels))
         text.append(f'<text x="{x:.1f}" y="{height-18}" text-anchor="middle" font-size="9" fill="#5f6675">{_svg_escape(lbl)}</text>')
@@ -3462,7 +3475,7 @@ def _strip_non_printing_runtime(html_doc: str) -> str:
     html_doc = re.sub(r'<script>.*?</script>', '', html_doc, flags=re.DOTALL)
     print_css = """
 <style id="gg-pdf-print-overrides">
-@page { size: A4; margin: 14mm 12mm 16mm 12mm; }
+@page { size: A4; margin: 14mm 12mm 18mm 12mm; @bottom-center { content: "Growth Gradual | " counter(page); font-family: system-ui, sans-serif; font-size: 8pt; color: #9aa2b1; } }
 html, body { print-color-adjust: exact !important; -webkit-print-color-adjust: exact !important; }
 * { animation: none !important; transition: none !important; caret-color: transparent !important; }
 [data-reveal] { opacity: 1 !important; transform: none !important; visibility: visible !important; }
