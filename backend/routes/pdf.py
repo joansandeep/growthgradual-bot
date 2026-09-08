@@ -3460,6 +3460,35 @@ def _strip_non_printing_runtime(html_doc: str) -> str:
     overflow-x, grid place-items and screen-only media queries). Normalize
     those constructs only in the PDF copy so the web report remains unchanged.
     """
+    # Remove browser media blocks entirely from the PDF copy. The dedicated
+    # print stylesheet below becomes the only print-specific CSS.
+    def _strip_media_blocks(doc: str) -> str:
+        pos = 0
+        while True:
+            low = doc.lower()
+            candidates = [low.find(token, pos) for token in ('@media screen', '@media (max-width', '@media print') if low.find(token, pos) >= 0]
+            if not candidates:
+                return doc
+            idx = min(candidates)
+            brace = doc.find('{', idx)
+            if brace < 0:
+                return doc
+            depth = 0
+            end_idx = None
+            for j in range(brace, len(doc)):
+                if doc[j] == '{':
+                    depth += 1
+                elif doc[j] == '}':
+                    depth -= 1
+                    if depth == 0:
+                        end_idx = j + 1
+                        break
+            if end_idx is None:
+                return doc
+            doc = doc[:idx] + doc[end_idx:]
+            pos = idx
+    html_doc = _strip_media_blocks(html_doc)
+
     # Make the generated HTML CSS print-safe before WeasyPrint parses it.
     html_doc = re.sub(r'font-size:\s*clamp\([^;{}]+\)', 'font-size: 42px', html_doc, flags=re.IGNORECASE)
     html_doc = re.sub(r'width:\s*100vw', 'width: 100%', html_doc, flags=re.IGNORECASE)
@@ -3467,7 +3496,6 @@ def _strip_non_printing_runtime(html_doc: str) -> str:
     html_doc = re.sub(r'position:\s*sticky', 'position: static', html_doc, flags=re.IGNORECASE)
     html_doc = re.sub(r'overflow-x:\s*auto', 'overflow: visible', html_doc, flags=re.IGNORECASE)
     html_doc = re.sub(r'place-items:\s*center', 'align-items: center; justify-content: center', html_doc, flags=re.IGNORECASE)
-    html_doc = re.sub(r'@media\s*\(max-width:\s*760px\)\s*\{', '@media screen and (max-width: 760px) {', html_doc, flags=re.IGNORECASE)
     html_doc = re.sub(r'print-color-adjust:\s*exact\s*!?important?;?', '', html_doc, flags=re.IGNORECASE)
     html_doc = re.sub(r'-webkit-print-color-adjust:\s*exact\s*!?important?;?', '', html_doc, flags=re.IGNORECASE)
     html_doc = re.sub(r'\sloading=["\']lazy["\']', "", html_doc, flags=re.IGNORECASE)
@@ -3493,7 +3521,6 @@ def _strip_non_printing_runtime(html_doc: str) -> str:
     print_css = """
 <style id="gg-pdf-print-overrides">
 @page { size: A4; margin: 14mm 12mm 18mm 12mm; @bottom-center { content: "Growth Gradual | " counter(page); font-family: system-ui, sans-serif; font-size: 8pt; color: #9aa2b1; } }
-html, body { print-color-adjust: exact !important; -webkit-print-color-adjust: exact !important; }
 * { animation: none !important; transition: none !important; caret-color: transparent !important; }
 [data-reveal] { opacity: 1 !important; transform: none !important; visibility: visible !important; }
 .gg-chart-canvas-box { min-height: 280px; }

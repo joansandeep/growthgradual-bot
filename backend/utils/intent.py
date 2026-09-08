@@ -192,6 +192,12 @@ _REGULATORY_RE = re.compile(
 )
 _HISTORICAL_RE = re.compile(r"\b(trend|historical|history|over time|past \d+|since \d{4}|quarter[- ]on[- ]quarter|year[- ]on[- ]year|yoy|qoq)\b", re.IGNORECASE)
 _COMPARISON_RE = re.compile(r"\bvs\.?\b|\bversus\b|\bcompar", re.IGNORECASE)
+_SCIENTIFIC_RE = re.compile(
+    r"\b(scientific|science|virolog(?:y|ical)|virus|viral|pathogen|influenza|h5n1|h5n6|h7n7|"
+    r"clinical|epidemiolog(?:y|ical)|genomic|genomics|transmission|vaccine|vaccines|antiviral|"
+    r"surveillance|study|studies|trial|trials|case(?:s)?|mortality|immunity|infectious|zoonotic)\b",
+    re.IGNORECASE,
+)
 
 
 def _heuristic_intent(
@@ -246,10 +252,27 @@ def _heuristic_intent(
         evidence.append("historical")
     if _COMPARISON_RE.search(scan_text):
         evidence.append("comparison")
+    # When the LLM intent resolver is unavailable, retain a scientific
+    # evidence signal for clearly scientific/health research requests instead
+    # of downgrading them to generic news/history. This keeps the downstream
+    # domain-specific research and relevance gate active for topics such as
+    # H5N1 even during Groq outages.
+    if _SCIENTIFIC_RE.search(scan_text):
+        if "historical" not in evidence and _HISTORICAL_RE.search(scan_text):
+            evidence.append("historical")
+        if "news" not in evidence and _NEWS_RE.search(scan_text):
+            evidence.append("news")
     if has_rag or has_files:
         evidence.append("documents")
 
     wants_report = bool(_REPORT_WORD_RE.search(q))
+    if wants_report and _SCIENTIFIC_RE.search(scan_text):
+        # A report explicitly about a scientific topic should search recent
+        # evidence plus historical/clinical/surveillance material when the
+        # generic keyword signals alone did not select enough coverage.
+        for kind in ("news", "historical"):
+            if kind not in evidence:
+                evidence.append(kind)
     if not evidence:
         # Bug fix: a bare "write a detailed report on X" / "deep-dive on X"
         # carries none of the specific keyword signals above (no "news",

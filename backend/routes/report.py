@@ -2110,7 +2110,7 @@ MIN_REPORT_CHARS = 14_000
 # read timeout for a stuck one), 100s covers roughly 3-9 real attempts across
 # different models/keys while leaving ~70s of the 170s budget for the report
 # pipeline's other steps (source gathering, images, chart publishing).
-GEMINI_TIME_BUDGET_SECONDS = 70
+GEMINI_TIME_BUDGET_SECONDS = 100
 # Old note, still relevant to why this is a soft time budget and not a hard
 # abort: it is only ever consulted between attempts (never mid-request), so
 # a key/model that's already in flight always gets to finish or hit its own
@@ -2149,7 +2149,7 @@ _GEMINI_MAX_OUTPUT = {
 # its entire GEMINI_MAX_KEYS_PER_MODEL allotment one slow timeout at a time —
 # two consecutive exceptions on the same model is treated the same as a 404
 # and the loop moves on to the next model instead of proving it a third time.
-GEMINI_MAX_CONSECUTIVE_EXCEPTIONS = 2
+GEMINI_MAX_CONSECUTIVE_EXCEPTIONS = 3
 
 
 async def call_gemini(user_prompt: str) -> tuple[str, str]:
@@ -3352,15 +3352,20 @@ _LEADING_STOPWORDS = {
 }
 
 
-def _extract_company_candidates(question: str) -> list[str]:
+def _extract_company_candidates(question: str, intent=None) -> list[str]:
     """Extract conservative company-name candidates for finance lookups.
 
     Prefer explicit comparison sides and corporate-suffix anchors. Do not treat
     sentence verbs, headings, or arbitrary capitalized words as companies."""
-    q = re.sub(r"\s+", " ", question or "").strip()
+    # Use the resolved research topic for entity extraction whenever the
+    # intent resolver has one. This prevents instruction words such as
+    # "Prepare"/"Create" from being mistaken for company names when the
+    # LLM intent call is unavailable.
+    research_question = str(getattr(intent, "resolved_topic", "") or question or "").strip()
+    q = re.sub(r"\s+", " ", research_question).strip()
     candidates: list[str] = []
     ignored = {
-        "create", "give", "show", "tell", "use", "compare", "comparison",
+        "create", "prepare", "give", "show", "tell", "use", "compare", "comparison",
         "report", "analysis", "analyze", "analyse", "covering", "business",
         "financial", "performance", "strategy", "positioning", "international",
         "exposure", "competitive", "advantages", "risks", "valuation",
@@ -4030,13 +4035,21 @@ def _attach_presentation_to_plan(plan: dict, question: str = "", intent=None) ->
         else:
             spec, warnings = ReportPresentationSpec.from_llm_output(raw_presentation)
 
-        existing = {s.title.strip().lower(): s for s in spec.sections if s.title}
+        # Work from a JSON-safe representation of the validated spec. Passing
+        # dataclass instances (e.g. ProseBlock/TableBlock) back into
+        # from_llm_output() makes the schema reject every existing block with
+        # "expected an object", effectively erasing the LLM's presentation.
+        serialized_sections = {
+            str(s.get("title") or "").strip().lower(): s
+            for s in (spec.to_dict().get("sections") or [])
+            if str(s.get("title") or "").strip()
+        }
         repaired = []
         for idx, sec in enumerate(planner_sections):
             title = str(sec.get("heading") or "").strip()
-            existing_sec = existing.get(title.lower())
+            existing_sec = serialized_sections.get(title.lower())
             if existing_sec is not None:
-                d = existing_sec.__dict__.copy()
+                d = dict(existing_sec)
                 d["order"] = idx
                 repaired.append(d)
             else:
@@ -4605,7 +4618,7 @@ async def generate_report(request: Request):
             # market context, comparisons, recent news) — supplement with web data.
             log.info("Report: file-first mode — supplementing with web search")
             search_queries = await _build_multi_angle_search_queries(
-                question, conversation_context, _classify_query(question), intent=intent,
+                question, conversation_context, _classify_query(str(getattr(intent, "resolved_topic", "") or question)), intent=intent,
             )
             if len(search_queries) > 1:
                 log.info("Report: file-first mode — %d-angle search: %r",
@@ -4627,13 +4640,13 @@ async def generate_report(request: Request):
             # would just return irrelevant noise, so skip it entirely.
             log.info("Report: file-first mode — question doesn't need web search, using file data only")
     elif not sources:
-        log.info("Report: no sources — running own Tavily search for %r", question[:60])
+        log.info("Report: no sources — running own Tavily search for %r", (getattr(intent, "resolved_topic", "") or question)[:60])
         from routes.chat import (
             tavily_search_multi as _tavily_search_multi,
             _looks_like_ai_overview, classify_query as _classify_query,
         )
         search_queries = await _build_multi_angle_search_queries(
-            question, conversation_context, _classify_query(question), intent=intent,
+            question, conversation_context, _classify_query(str(getattr(intent, "resolved_topic", "") or question)), intent=intent,
         )
         if search_queries != [question]:
             log.info("Report: search enriched into %d angle(s): %r",
@@ -4779,10 +4792,10 @@ async def generate_report(request: Request):
     # capitalized company-like phrase, regardless of keyword match. This is
     # safe — a candidate that isn't a real company simply fails to resolve
     # in screener_kb / Yahoo lookup and is silently dropped, same as today.
-    _early_company_candidates = _extract_company_candidates(question)
+    _early_company_candidates = _extract_company_candidates(question, intent=intent)
     if _STOCK_COMPANY_INTENT_RE.search(question) or _early_company_candidates:
         try:
-            company_candidates = _early_company_candidates or _extract_company_candidates(question)
+            company_candidates = _early_company_candidates or _extract_company_candidates(question, intent=intent)
             if company_candidates:
                 # Screener.in knowledge base first: unlike the live Yahoo
                 # snapshot below, this returns real multi-period series
@@ -4870,7 +4883,7 @@ async def generate_report(request: Request):
     # Prioritize sources that actually mention the named entities/topics in the
     # request. This does not delete provenance; it only determines which results
     # are enriched and shown first to the report writer.
-    _company_names_for_ranking = _extract_company_candidates(question)
+    _company_names_for_ranking = _extract_company_candidates(question, intent=intent)
     if _company_names_for_ranking:
         q_tokens = {t for t in re.findall(r"[a-z0-9&]+", question.lower()) if len(t) >= 4}
         scored_sources = []
@@ -5020,8 +5033,9 @@ async def generate_report(request: Request):
     # still request an AI-generated illustrative scene when no useful source image
     # exists, but source-backed images are the safer choice for named companies,
     # products and real-world events.
+    image_subject = str(getattr(intent, "resolved_topic", "") or question or "").strip()
     image_candidates = _filter_image_candidates(
-        image_candidates_raw, limit=8, subject=question
+        image_candidates_raw, limit=8, subject=image_subject
     )
     image_candidates_block = _build_image_candidates_block(image_candidates)
 
@@ -5048,6 +5062,11 @@ async def generate_report(request: Request):
     )
     plan_block = f"\n\n{_format_plan_for_prompt(report_plan)}\n" if report_plan else ""
     report_presentation = report_plan.get("presentation") if isinstance(report_plan, dict) else None
+    # Keep report-writing subject aligned with the intent resolver. The raw user
+    # message may include command framing ("Prepare a report on ..."), while
+    # resolved_topic is the actual research subject and is the safer anchor for
+    # titles, entity mentions, and follow-up reports.
+    report_topic = str(getattr(intent, "resolved_topic", "") or question or "").strip()
 
     user_prompt = (
         f"Today's date is {today}. Resolve \"latest\", \"current\", \"this quarter/year\", "
@@ -5058,7 +5077,7 @@ async def generate_report(request: Request):
         f"rather than guessing."
         + quarter_anchor
         + "\n\n"
-        f"Research Question / Topic (this — and ONLY this — defines the report's title and subject): {question}\n"
+        f"Research Question / Topic (this — and ONLY this — defines the report's title and subject): {report_topic}\n"
         + plan_block
         + (f"\nPRIMARY SOURCE — ANALYSE THIS FIRST (uploaded file data takes highest priority):{file_section}" if file_section else "")
         + conversation_section
@@ -5824,9 +5843,9 @@ async def generate_report(request: Request):
         if report_text != _report_text_before_inject:
             log.info("Report: injected fallback [WEB_IMG_n] placeholder(s) — %d image(s) total now placed", len(images))
         if len(report_text) < MIN_REPORT_CHARS:
-            report_text = await _extend_report_to_floor(report_text, question, MIN_REPORT_CHARS)
+            report_text = await _extend_report_to_floor(report_text, report_topic, MIN_REPORT_CHARS)
 
-        clean_title = _sanitize_title(parsed.get("title", ""), question)
+        clean_title = _sanitize_title(parsed.get("title", ""), report_topic)
         clean_theme = _resolve_theme(parsed.get("theme"), question)
         final_format = _resolve_recommended_format(recommended_format, clean_theme)
         elapsed = (time.perf_counter() - t0) * 1000

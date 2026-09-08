@@ -977,6 +977,13 @@ def _build_css(theme: dict | None) -> str:
     gold = theme.get("accentColor") or "#3f6ed8"
     navy_deep = _shade_hex(navy, -0.22)
     gold_light = _shade_hex(gold, 0.28)
+    # Derive secondary surfaces/rules from the report's own theme so the
+    # renderer does not impose a single fixed palette.
+    paper = theme.get("surfaceColor") or _shade_hex(navy, 0.97)
+    paper_alt = theme.get("surfaceAltColor") or _shade_hex(gold, 0.93)
+    ink = theme.get("textColor") or navy
+    ink_soft = theme.get("mutedColor") or _shade_hex(navy, 0.45)
+    rule = theme.get("borderColor") or _shade_hex(navy, 0.82)
     font = theme.get("fontFamily")
     if font:
         font_body = f"'{font}', system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif"
@@ -986,8 +993,8 @@ def _build_css(theme: dict | None) -> str:
         font_heading = "system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif"
     return f"""
 :root {{
-  --accent: {gold}; --accent-soft: {gold_light}; --ink: #172033; --ink-soft: #526077;
-  --paper: #ffffff; --paper-alt: #f5f7fb; --rule: #dce3ef; --muted: #6b7280;
+  --accent: {gold}; --accent-soft: {gold_light}; --ink: {ink}; --ink-soft: {ink_soft};
+  --paper: {paper}; --paper-alt: {paper_alt}; --rule: {rule}; --muted: {ink_soft};
   --negative: #b42318; --positive: #147a4b; --font-body: {font_body}; --font-heading: {font_heading};
   --content-max: 1120px;
 }}
