@@ -25,7 +25,7 @@ interface WebImage { url: string; caption?: string; }
 // the parts a flat PDF re-theme can't express, so they only ever actually
 // change anything when the report is downloaded as HTML.
 interface ReportTheme { primaryColor?: string; accentColor?: string; toneNote?: string; fontFamily?: string; customCss?: string; richStyleNeeded?: boolean; }
-interface ReportData { report: string; title?: string; charts: ChartSpec[]; images?: WebImage[]; keyStats: {label:string;value:string;change?:string}[]; summary: string; fileImages?: {name:string;mimeType:string;data:string}[]; sourceDocuments?: {name:string;text:string;file_type?:string}[]; sources?: ReportSource[]; recommendedFormat?: 'pdf' | 'html'; theme?: ReportTheme; }
+interface ReportData { report: string; title?: string; charts: ChartSpec[]; images?: WebImage[]; presentation?: Record<string, unknown>; keyStats: {label:string;value:string;change?:string}[]; summary: string; fileImages?: {name:string;mimeType:string;data:string}[]; sourceDocuments?: {name:string;text:string;file_type?:string}[]; sources?: ReportSource[]; recommendedFormat?: 'pdf' | 'html'; theme?: ReportTheme; }
 interface KbCompany { id: number; ticker: string; name: string; downloadUrl: string; }
 interface Message {
   id: string; role: 'user' | 'assistant'; text: string; ts: number;
@@ -727,6 +727,7 @@ function ReportPanel({ msg, question, hasPriorContext, onGenerate }: { msg: Mess
   const [emailOpen, setEmailOpen]     = useState(false);
   const [emailSending, setEmailSending] = useState(false);
   const [emailResult, setEmailResult] = useState<{ ok: boolean; msg: string } | null>(null);
+  const [artifactError, setArtifactError] = useState<string | null>(null);
   // Default ON to match the previous always-include behaviour; only ever
   // shown when there's actually prior conversation to include (i.e. not the
   // very first response in the thread).
@@ -740,57 +741,99 @@ function ReportPanel({ msg, question, hasPriorContext, onGenerate }: { msg: Mess
   const done = !!rd && !!rd.report && rd.report.trim().length > 0;
   const eligible = msg.reportEligible ?? false;
 
+  useEffect(() => {
+    if (done) setOpen(true);
+  }, [done]);
+
   if (!loading && !done && !eligible && !error) return null;
 
   const downloadPdf = async () => {
     if (!rd || !rd.report || !rd.report.trim() || pdfLoading) return;
     setPdfLoading(true);
+    setArtifactError(null);
     try {
       const res = await fetch('/api/chat/report/pdf', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ report: rd.report, title: rd.title, charts: rd.charts, images: rd.images ?? [], question, keyStats: rd.keyStats, summary: rd.summary, fileImages: rd.fileImages ?? [], sources: rd.sources ?? [], theme: rd.theme ?? null }),
+        body: JSON.stringify({ report: rd.report, title: rd.title, charts: rd.charts, images: rd.images ?? [], question, keyStats: rd.keyStats, summary: rd.summary, fileImages: rd.fileImages ?? [], sources: rd.sources ?? [], theme: rd.theme ?? null, presentation: rd.presentation ?? null }),
       });
-      const contentType = res.headers.get('Content-Type') ?? '';
-      if (contentType.includes('application/pdf')) {
-        const blob = await res.blob();
-        const url = URL.createObjectURL(blob);
-        const a = document.createElement('a');
-        a.href = url;
-        a.download = `growth-gradual-report-${new Date().toISOString().slice(0,10)}.pdf`;
-        document.body.appendChild(a); a.click(); a.remove();
-        setTimeout(() => URL.revokeObjectURL(url), 5000);
-      } else {
-        const win = window.open('', '_blank');
-        if (win) { win.document.write(await res.text()); win.document.close(); win.focus(); setTimeout(() => win.print(), 600); }
+      if (!res.ok) {
+        let message = `PDF generation failed (HTTP ${res.status}).`;
+        try {
+          const body = await res.json();
+          if (typeof body?.error === 'string' && body.error.trim()) message = body.error;
+        } catch { /* non-JSON upstream error */ }
+        setArtifactError(message);
+        return;
       }
-    } catch(e) { console.error('[downloadPdf]', e); }
-    finally { setPdfLoading(false); }
+      const contentType = (res.headers.get('Content-Type') ?? '').toLowerCase();
+      if (!contentType.includes('application/pdf')) {
+        let message = 'The server returned an unexpected response instead of a PDF.';
+        try {
+          const body = await res.text();
+          if (body.trim()) message = body.slice(0, 240);
+        } catch { /* ignore */ }
+        setArtifactError(message);
+        return;
+      }
+      const blob = await res.blob();
+      if (!blob.size) {
+        setArtifactError('The generated PDF was empty. Please try again.');
+        return;
+      }
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `growth-gradual-report-${new Date().toISOString().slice(0,10)}.pdf`;
+      a.style.display = 'none';
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 5000);
+    } catch(e) {
+      console.error('[downloadPdf]', e);
+      setArtifactError('Could not download the PDF. Please try again.');
+    } finally { setPdfLoading(false); }
   };
 
   const downloadHtml = async () => {
     if (!rd || !rd.report || !rd.report.trim() || htmlLoading) return;
     setHtmlLoading(true);
+    setArtifactError(null);
     try {
       const res = await fetch('/api/chat/report/html', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ report: rd.report, title: rd.title, charts: rd.charts, images: rd.images ?? [], question, keyStats: rd.keyStats, summary: rd.summary, fileImages: rd.fileImages ?? [], sources: rd.sources ?? [], theme: rd.theme ?? null }),
+        body: JSON.stringify({ report: rd.report, title: rd.title, charts: rd.charts, images: rd.images ?? [], question, keyStats: rd.keyStats, summary: rd.summary, fileImages: rd.fileImages ?? [], sources: rd.sources ?? [], theme: rd.theme ?? null, presentation: rd.presentation ?? null }),
       });
       if (!res.ok) {
         const errBody = await res.json().catch(() => null);
-        console.error('[downloadHtml]', errBody?.error ?? `HTTP ${res.status}`);
+        setArtifactError(typeof errBody?.error === 'string' ? errBody.error : `HTML generation failed (HTTP ${res.status}).`);
+        return;
+      }
+      const contentType = (res.headers.get('Content-Type') ?? '').toLowerCase();
+      if (!contentType.includes('text/html')) {
+        setArtifactError('The server returned an unexpected response instead of an HTML report.');
         return;
       }
       const blob = await res.blob();
+      if (!blob.size) {
+        setArtifactError('The generated HTML report was empty. Please try again.');
+        return;
+      }
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = url;
       a.download = `growth-gradual-report-${new Date().toISOString().slice(0,10)}.html`;
-      document.body.appendChild(a); a.click(); a.remove();
+      a.style.display = 'none';
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
       setTimeout(() => URL.revokeObjectURL(url), 5000);
-    } catch(e) { console.error('[downloadHtml]', e); }
-    finally { setHtmlLoading(false); }
+    } catch(e) {
+      console.error('[downloadHtml]', e);
+      setArtifactError('Could not download the HTML report. Please try again.');
+    } finally { setHtmlLoading(false); }
   };
 
   // The backend recommends "html" only when the question itself asked for
@@ -884,6 +927,12 @@ function ReportPanel({ msg, question, hasPriorContext, onGenerate }: { msg: Mess
             <div style={{ display:'flex', alignItems:'center', gap:6, fontSize:11, color:'#dc2626', fontFamily:"'DM Sans',sans-serif" }}>
               <span style={{ fontSize:13 }}>⚠️</span>
               <span>{error}</span>
+            </div>
+          )}
+          {artifactError && (
+            <div style={{ display:'flex', alignItems:'center', gap:6, fontSize:11, color:'#dc2626', fontFamily:"'DM Sans',sans-serif" }}>
+              <span style={{ fontSize:13 }}>⚠️</span>
+              <span>{artifactError}</span>
             </div>
           )}
           {!loading && !done && eligible && (
@@ -1656,6 +1705,7 @@ export default function GrowthGradualChat() {
           report: updatedReport,
           title: data.title || reportData.title,
           charts: updatedCharts || reportData.charts,
+          presentation: data.presentation ?? reportData.presentation,
         };
         setMessages(prev => prev.map(m => {
           if (m.id === reportMsgId && m.reportData) {
@@ -2267,6 +2317,7 @@ export default function GrowthGradualChat() {
             // every later download, and preserved across section edits —
             // this is what actually makes fontFamily/customCss apply.
             theme: data.theme ?? undefined,
+            presentation: data.presentation ?? undefined,
           },
         } : m));
 

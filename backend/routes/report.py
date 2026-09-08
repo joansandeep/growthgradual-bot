@@ -4802,6 +4802,7 @@ async def generate_report(request: Request):
         intent=intent,
     )
     plan_block = f"\n\n{_format_plan_for_prompt(report_plan)}\n" if report_plan else ""
+    report_presentation = report_plan.get("presentation") if isinstance(report_plan, dict) else None
 
     user_prompt = (
         f"Today's date is {today}. Resolve \"latest\", \"current\", \"this quarter/year\", "
@@ -5596,6 +5597,7 @@ async def generate_report(request: Request):
             "fileImages": embedded_file_images,  # extracted charts/images only — never full pages
             "recommendedFormat": final_format,
             "theme":      clean_theme,
+            "presentation": report_presentation,
             "sources":    source_manifest,
         }))
     except Exception as exc:
@@ -5688,6 +5690,7 @@ async def generate_report(request: Request):
                 "fileImages": embedded_file_images,
                 "recommendedFormat": _resolve_recommended_format(recommended_format, _salv_theme),
                 "theme":      _salv_theme,
+                "presentation": report_presentation,
                 "sources":    source_manifest,
             }))
 
@@ -5738,6 +5741,7 @@ async def generate_report(request: Request):
                 "fileImages": embedded_file_images,
                 "recommendedFormat": _resolve_recommended_format(recommended_format, _rep_theme),
                 "theme":      _rep_theme,
+                "presentation": report_presentation,
                 "sources":    source_manifest,
             }))
         except Exception as e:
