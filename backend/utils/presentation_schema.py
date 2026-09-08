@@ -354,6 +354,21 @@ class ProseBlock:
 
 
 @dataclass
+class BulletsBlock:
+    kind: str = "bullets"
+    title: str = ""
+    items: List[str] = field(default_factory=list)
+
+    @staticmethod
+    def from_dict(data: Dict[str, Any], warnings: List[str]) -> "BulletsBlock":
+        data = data or {}
+        return BulletsBlock(
+            title=clean_text(data.get("title"), warnings=warnings, field_name="bullets.title", max_len=MAX_SHORT_TEXT_LEN),
+            items=_coerce_list_of_str(data.get("items"), warnings, "bullets.items", max_items=100),
+        )
+
+
+@dataclass
 class TableBlock:
     kind: str = "table"
     title: str = ""
@@ -581,6 +596,7 @@ class EvidenceBlock:
 # Discriminated union of all content block types.
 ContentBlock = Union[
     MetricsBlock,
+    BulletsBlock,
     ProseBlock,
     TableBlock,
     ChartBlock,
@@ -592,6 +608,7 @@ ContentBlock = Union[
 
 _BLOCK_KIND_MAP = {
     "metrics": MetricsBlock,
+    "bullets": BulletsBlock,
     "prose": ProseBlock,
     "table": TableBlock,
     "chart": ChartBlock,

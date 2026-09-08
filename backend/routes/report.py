@@ -785,14 +785,14 @@ BAD chart examples — NEVER do this:
 AI IMAGE RULES — DATA NEVER GOES IN AN IMAGE.
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 Every number, ranking, trend, or comparison belongs in a [CHART_n] or a table — NEVER in a
-generated image. Images here are AI-generated (via Gemini), not stock/web photography, and exist
+generated image. Images here may be source-backed web images or AI-generated illustrations, and exist
 to give the report a visual anchor — a conceptual/editorial illustration, never a substitute for a chart.
-✓ OPTIONAL: include an image only where it genuinely improves this specific report — a visual/scene-like
-  moment (a place, an event, an industry, a process) that the request, topic, or register actually calls
-  for. "images": [] is correct whenever no such genuine opportunity exists, not just for abstract topics —
+✓ OPTIONAL: include an image only where it genuinely improves this specific report — prefer a relevant
+  source-backed image candidate for named/factual subjects; use synthetic imagery only for clearly illustrative scenes. "images": [] is correct whenever no such genuine opportunity exists, not just for abstract topics —
   do not add an image merely because a report is being generated.
-✓ Maximum 2 images per report. Never one per subsection, never "for visual variety."
-✓ Each entry: {"prompt": "<scene description for an image generator>", "caption": "<1 short sentence>"}.
+✓ Prefer source-backed candidate images for factual/named subjects. Use AI-generated imagery only for clearly illustrative scenes. Maximum 2 images per report. Never one per subsection, never "for visual variety."
+✓ For a source-backed image, use {"candidateIndex": <number from CANDIDATE IMAGES>, "caption": "<1 short sentence>"}.
+✓ For an AI-generated illustrative image, use {"prompt": "<scene description for an image generator>", "caption": "<1 short sentence>"}. Do not invent URLs.
 ✓ WRITE A SPECIFIC, CONCRETE SCENE — not a generic mood board. The prompt must name an actual
   subject tied to THIS report's content: a specific industry setting, a specific activity, a specific
   vantage point/angle, specific lighting, specific composition. Think like an art director briefing a
@@ -1036,10 +1036,7 @@ GLOBAL RULES:
   request calls for a data-driven presentation — use as many markdown tables as the sources and the
   requested style genuinely support; a narrower question, or a prose-heavy requested style, correctly
   uses fewer or none.
-- Images: 1-3 AI-generated illustrative images (see AI IMAGE RULES) — actively look for at least one
-  genuine opportunity per report (a concept, place, product, process, or scene worth visualizing),
-  not only as a last resort where no chart/table fits. A report with zero images should be the
-  exception (a narrow, purely numeric question with nothing visual to illustrate), not the default.
+- Images: prefer relevant source-backed images selected by candidateIndex when search results provide a clearly topical image. Use an AI-generated illustrative image only when a specific, grounded scene is genuinely useful and no appropriate source image exists. Zero images is a valid outcome; never force an image for decoration.
 - keyStats: 10-14 real metrics with values and change indicators. These power the infographic stat-card
   strips rendered throughout the PDF (cover page, plus additional strips dropped in automatically
   wherever a section turns out data-dense — the renderer decides placement from actual content, not
@@ -1200,37 +1197,53 @@ _OFFTOPIC_IMAGE_HINTS = (
 )
 
 
-def _filter_image_candidates(raw_images: list[dict], limit: int = 10) -> list[dict]:
-    """Dedupe by URL and drop obvious logos/icons/tracking pixels before these
-    ever reach the LLM prompt — cheaper and safer than trusting the model to
-    catch all of them, though the prompt also tells it to skip junk-looking
-    candidates as a second line of defense."""
+def _filter_image_candidates(raw_images: list[dict], limit: int = 10, subject: str = "") -> list[dict]:
+    """Filter and rank image candidates by topical relevance.
+
+    Logos/icons/tracking images are dropped first. Remaining images are scored
+    against the actual report subject so unrelated images cannot win simply
+    because Tavily ranked them highly for a broad query."""
     import urllib.parse as _urlparse
     seen: set[str] = set()
-    out: list[dict] = []
-    for img in raw_images:
+    rows: list[dict] = []
+    stop = {
+        "the", "this", "that", "and", "or", "for", "with", "from", "into",
+        "about", "report", "analysis", "compare", "comparison", "covering",
+        "performance", "strategy", "future", "growth", "risks", "considerations",
+        "recent", "current", "detailed", "create", "give", "show", "use",
+    }
+    subject_tokens = {
+        t for t in re.findall(r"[a-z0-9&]+", (subject or "").lower())
+        if len(t) >= 4 and t not in stop
+    }
+    for img in raw_images or []:
+        if not isinstance(img, dict):
+            continue
         url = (img.get("url") or "").strip()
         if not url or url in seen:
             continue
         low = url.lower()
         if any(hint in low for hint in _JUNK_IMAGE_HINTS):
             continue
-        desc_low = (img.get("description") or "").lower()
+        desc = (img.get("description") or "").strip()
+        desc_low = desc.lower()
         if any(hint in desc_low for hint in _OFFTOPIC_IMAGE_HINTS):
             continue
-        seen.add(url)
         try:
             domain = _urlparse.urlparse(url).netloc.replace("www.", "")
         except Exception:
             domain = ""
-        out.append({
-            "url": url,
-            "description": (img.get("description") or "").strip()[:200],
-            "domain": domain,
-        })
-        if len(out) >= limit:
-            break
-    return out
+        tokens = set(re.findall(r"[a-z0-9&]+", f"{desc} {domain}".lower()))
+        hits = len(subject_tokens & tokens) if subject_tokens else 1
+        if subject_tokens and hits == 0:
+            continue
+        score = hits * 10 + min(len(desc), 160) / 1000.0
+        rows.append({"url": url, "description": desc[:200], "domain": domain, "_score": score})
+        seen.add(url)
+    rows.sort(key=lambda r: r["_score"], reverse=True)
+    for row in rows:
+        row.pop("_score", None)
+    return rows[:limit]
 
 
 def _build_image_candidates_block(candidates: list[dict]) -> str:
@@ -1313,66 +1326,18 @@ def _inject_fallback_image_placeholders(report_text: str, images: list[dict]) ->
 def _force_fallback_images(
     images: list[dict], image_candidates: list[dict], model_used: str = "?"
 ) -> tuple[list[dict], bool]:
-    """If image selection came back empty despite usable candidates being
-    offered, force the best 1-2 through rather than ship a report with zero
-    photos purely because the model played it safe — or because a JSON-salvage
-    path never recovered an images array at all on a truncated response.
-    Candidates here already survived the junk-domain/logo filter in
-    _filter_image_candidates, so a forced pick is never a raw, unfiltered URL.
-    Called identically from the main parse path and both JSON-salvage paths
-    below so the guarantee holds no matter which path produced the result.
-    Returns (images, was_forced) — was_forced tells the caller whether to
-    treat the mask as all-valid rather than reuse a stale validation mask."""
-    if images or not image_candidates:
-        return images, False
-    ranked = sorted(image_candidates, key=lambda c: len(c.get("description") or ""), reverse=True)
-    forced = ranked[:2]
-    forced_images = [
-        {
-            "url": c["url"],
-            "caption": (c.get("description") or f"Related image from {c.get('domain') or 'source'}")[:90],
-        }
-        for c in forced
-    ]
-    log.warning(
-        "Report: model=%s selected 0 images from %d candidates — forcing in %d fallback "
-        "image(s) (%s) so the report doesn't end up purely text/chart-only",
-        model_used, len(image_candidates), len(forced_images), [c.get("domain") for c in forced],
-    )
-    return forced_images, True
+    """Never invent or force an image just to fill space. Image absence is a
+    valid outcome when no relevant source-backed image or trustworthy AI scene
+    exists. This keeps unrelated images out of factual reports."""
+    return images, False
 
 
 def _top_up_images(
     images: list[dict], image_candidates: list[dict], model_used: str = "?", target: int = 2
 ) -> tuple[list[dict], bool]:
-    """The model is asked to pick 2-4 relevant images (see IMAGE RULES) but has
-    sometimes selected just 1 even with more decent candidates left unused.
-    Top up to `target` from the remaining candidates rather than ship a report
-    thinner on photos than what was actually available. Never touches what the
-    model (or _force_fallback_images) already picked — only adds more, and
-    never re-adds a URL already in the list."""
-    if len(images) >= target or not image_candidates:
-        return images, False
-    used_urls = {img.get("url") for img in images}
-    remaining = [c for c in image_candidates if c["url"] not in used_urls]
-    if not remaining:
-        return images, False
-    ranked = sorted(remaining, key=lambda c: len(c.get("description") or ""), reverse=True)
-    added = ranked[: target - len(images)]
-    new_images = images + [
-        {
-            "url": c["url"],
-            "caption": (c.get("description") or f"Related image from {c.get('domain') or 'source'}")[:90],
-        }
-        for c in added
-    ]
-    log.warning(
-        "Report: model=%s selected only %d image(s) (rules ask for 2-4) — topping up with %d more "
-        "from unused candidates (%s)",
-        model_used, len(images), len(added), [c.get("domain") for c in added],
-    )
-    return new_images, True
-
+    """Do not top-up imagery merely to reach a visual quota. Relevance beats
+    image count."""
+    return images, False
 
 def _remap_web_image_placeholders(report_text: str, valid_mask: list[bool]) -> str:
     """Twin of _remap_chart_placeholders for [WEB_IMG_n] — renumbers against
@@ -2118,15 +2083,11 @@ GEMINI_MODELS = [
     "gemini-3.5-flash",        # 65 536 output tokens — GA, but currently timing out for this account — kept as last-resort in case it recovers
 ]
 
-# Minimum acceptable report length — see the "MINIMUM LENGTH — HARD FLOOR" mandate
-# in SYSTEM_PROMPT (>= 8 rendered PDF pages, ~4,500-6,000+ words). Kept as one
-# constant so Groq/Gemini paths (and any future provider) enforce the same floor.
-# Raised from 22_000 -> 30_000 after reports were shipping at ~5K chars / 4 pages
-# despite the old floor, because BOTH call paths below had this check downgraded
-# to "log only, accept as-is" during the research-engine pivot — it was never
-# actually rejecting short output. Restored as a real retry trigger; see the
-# checks in call_groq() and call_gemini().
-MIN_REPORT_CHARS = 30_000
+# Minimum acceptable report length. Keep this as a quality guard, but do not
+# force multiple expensive model retries merely to satisfy a character target.
+# Reports can already span many pages once tables/charts/source appendices render,
+# and the old 30K floor was causing avoidable timeout cascades in production.
+MIN_REPORT_CHARS = 14_000
 
 # A prior revision removed the global wall-clock budget entirely (see history
 # below) because it was cutting the loop off after only ~3 attempts against a
@@ -2145,7 +2106,7 @@ MIN_REPORT_CHARS = 30_000
 # read timeout for a stuck one), 100s covers roughly 3-9 real attempts across
 # different models/keys while leaving ~70s of the 170s budget for the report
 # pipeline's other steps (source gathering, images, chart publishing).
-GEMINI_TIME_BUDGET_SECONDS = 100
+GEMINI_TIME_BUDGET_SECONDS = 70
 # Old note, still relevant to why this is a soft time budget and not a hard
 # abort: it is only ever consulted between attempts (never mid-request), so
 # a key/model that's already in flight always gets to finish or hit its own
@@ -2166,7 +2127,7 @@ GEMINI_MAX_KEYS_PER_MODEL = 6
 # consistently short output across several different models/keys means the
 # floor isn't reachable for this request's source material, not that the
 # next attempt will suddenly clear it.
-GEMINI_MAX_UNDER_FLOOR_ATTEMPTS = 4
+GEMINI_MAX_UNDER_FLOOR_ATTEMPTS = 2
 
 # Per-model max output tokens — used to set the right ceiling per attempt.
 # Setting this too high on flash-lite causes it to hang; match the actual model limit.
@@ -2546,6 +2507,33 @@ async def _call_gemini_flash_image(client: httpx.AsyncClient, model: str, key: s
     )
 
 
+_IMAGE_STYLE_SUFFIX = (
+    ", editorial documentary photography or restrained editorial illustration, natural lighting, "
+    "realistic materials and proportions, context-specific composition, no text, no watermark, "
+    "no logos, no charts, no numbers"
+)
+
+_GENERIC_IMAGE_PHRASES = (
+    "modern office", "business concept", "corporate meeting", "team meeting",
+    "laptop on a desk", "generic city skyline", "stock photo", "business people",
+    "professional workspace", "abstract business", "futuristic technology"
+)
+
+def _image_prompt_is_specific(prompt: str, subject: str) -> bool:
+    """Reject generic image prompts before paying for image generation. The prompt
+    must be concrete enough to be tied to this report's topic."""
+    p = (prompt or "").lower()
+    if len(p) < 80:
+        return False
+    if any(x in p for x in _GENERIC_IMAGE_PHRASES):
+        return False
+    stop = {"the","and","for","with","from","into","this","that","report","analysis","about","covering","recent","current"}
+    subject_tokens = {t for t in re.findall(r"[a-z0-9&]+", (subject or "").lower()) if len(t) >= 4 and t not in stop}
+    if not subject_tokens:
+        return True
+    prompt_tokens = set(re.findall(r"[a-z0-9&]+", p))
+    return len(subject_tokens & prompt_tokens) >= 1
+
 async def generate_gemini_image(prompt: str) -> tuple[bytes | None, str]:
     """Generate a single PNG/JPEG image from a text prompt. Tries Pollinations
     AI first (free, unlimited, no API key — see _call_pollinations_image),
@@ -2556,7 +2544,7 @@ async def generate_gemini_image(prompt: str) -> tuple[bytes | None, str]:
     for logging only — see the caller's summary log, which used to hardcode
     "via Gemini" regardless of which provider actually produced the image
     (misleading, since Pollinations succeeds the vast majority of the time)."""
-    async with httpx.AsyncClient(timeout=60) as client:
+    async with httpx.AsyncClient(timeout=10) as client:
         img, poll_model = await _call_pollinations_image(client, prompt)
     if img:
         log.info("Image gen: generated via Pollinations model=%s (%d bytes)", poll_model, len(img))
@@ -2570,12 +2558,14 @@ async def generate_gemini_image(prompt: str) -> tuple[bytes | None, str]:
         return None, ""
 
     all_models = [(m, "gemini") for m in GEMINI_IMAGE_MODELS] + [(m, "imagen") for m in IMAGEN_MODELS]
-    attempts = [
-        (key, model, family)
-        for model, family in all_models
-        for key in round_robin(rest_keys)
-        if not is_rate_limited(key) and not is_rate_limited(f"{key}:{model}")
-    ]
+    # Image generation is optional. Use a single bounded fallback key/model
+    # rather than exhausting the entire credential pool and consuming the
+    # report request's latency budget.
+    preferred = next((k for k in round_robin(rest_keys) if not is_rate_limited(k)), None)
+    if not preferred:
+        return None, ""
+    attempts = [(preferred, GEMINI_IMAGE_MODELS[0], "gemini")]
+
     # Models confirmed unavailable (404) — skip their remaining key attempts
     # without aborting attempts for the other model(s) still in the queue.
     dead_models: set[str] = set()
@@ -2584,7 +2574,7 @@ async def generate_gemini_image(prompt: str) -> tuple[bytes | None, str]:
             continue
         try:
             t0 = time.perf_counter()
-            async with httpx.AsyncClient(timeout=60) as client:
+            async with httpx.AsyncClient(timeout=10) as client:
                 res = (
                     await _call_imagen(client, model, key, prompt)
                     if family == "imagen"
@@ -2652,71 +2642,72 @@ async def generate_gemini_image(prompt: str) -> tuple[bytes | None, str]:
     return None, ""
 
 
-async def _generate_ai_report_images(raw_images: list, max_images: int = 2) -> tuple[list[dict], list[bool]]:
-    """Turn the model's requested image PROMPTS (see AI IMAGE RULES) into real
-    generated images. Returns ({"url": "data:image/...;base64,...", "caption"})
-    entries plus a keep-mask aligned to raw_images' original order, in the same
-    shape _validate_image_selections/_remap_web_image_placeholders expect —
-    a failed generation is simply dropped (mask False), never a hard error."""
-    # Appended to every image prompt so report images share one cohesive,
-    # premium editorial look tied to the brand (deep navy + warm gold, the
-    # same palette used across the PDF's header/cover/accent elements)
-    # instead of each image landing on whatever generic style the model
-    # defaults to on its own. Composition/quality directives here are
-    # deliberately generic (never topic-specific) since the report's own
-    # prompt already carries the specific scene — this only shapes *how*
-    # that scene is rendered, not *what* it depicts.
-    _BRAND_STYLE_SUFFIX = (
-        ", premium editorial photography, cinematic natural lighting, shallow depth of field, "
-        "rich detail and texture, sophisticated muted color grade with deep navy blue and warm "
-        "gold accent tones, shot on a full-frame camera, magazine feature quality, no text, "
-        "no watermark, no logos"
-    )
+async def _generate_ai_report_images(
+    raw_images: list,
+    max_images: int = 1,
+    subject: str = "",
+    candidates: list[dict] | None = None,
+) -> tuple[list[dict], list[bool]]:
+    """Resolve image requests using source-backed images first and AI imagery
+    only for explicitly requested, topic-grounded illustrative scenes."""
+    raw = raw_images or []
+    candidates = candidates or []
+    mask = [False] * len(raw)
+    resolved: dict[int, dict] = {}
+    ai_jobs: list[tuple[int, str, str]] = []
 
-    candidates: list[tuple[int, str, str]] = []  # (original_index, prompt, caption)
-    for i, entry in enumerate(raw_images or []):
+    for i, entry in enumerate(raw):
         if not isinstance(entry, dict):
             continue
+        idx = entry.get("candidateIndex")
+        try:
+            idx = int(idx)
+        except (TypeError, ValueError):
+            idx = 0
+        if 1 <= idx <= len(candidates):
+            c = candidates[idx - 1]
+            resolved[i] = {
+                "url": c["url"],
+                "caption": str(entry.get("caption") or c.get("description") or "Source image").strip()[:160],
+            }
+            mask[i] = True
+            continue
         prompt = str(entry.get("prompt") or "").strip()
-        if not prompt:
+        if not prompt or len(ai_jobs) >= max_images:
             continue
-        caption = str(entry.get("caption") or "").strip()[:160]
-        candidates.append((i, f"{prompt}{_BRAND_STYLE_SUFFIX}", caption))
-        if len(candidates) >= max_images:
-            break
-
-    mask = [False] * len(raw_images or [])
-    if not candidates:
-        return [], mask
-
-    results = await asyncio.gather(
-        *[generate_gemini_image(prompt) for _, prompt, _ in candidates],
-        return_exceptions=True,
-    )
-
-    import base64 as _b64
-    final: list[dict] = []
-    sources_used: list[str] = []
-    for (orig_idx, prompt, caption), result in zip(candidates, results):
-        if isinstance(result, Exception) or not result:
+        # For named company/product/event reports, prefer real source-backed imagery.
+        # Synthetic images are reserved for conceptual/scientific scenes where exact
+        # identity is not being claimed.
+        named_subject = bool(re.search(r"\b(motors?|industries|ltd|limited|inc|corp|bank|technology|technologies|jlr|tata|mahindra|tesla|apple|google|microsoft|nvidia|sebi|rbi)\b", subject, re.I))
+        if named_subject:
+            log.info("Image gen: skipping synthetic image for named subject; use source-backed candidate if available")
             continue
-        img_bytes, source = result
-        if not img_bytes:
+        if not _image_prompt_is_specific(prompt, subject):
+            log.warning("Image gen: rejecting generic/non-grounded prompt for %r", subject[:80])
             continue
-        b64 = _b64.b64encode(img_bytes).decode("ascii")
-        final.append({"url": f"data:image/png;base64,{b64}", "caption": caption})
-        mask[orig_idx] = True
-        if source:
-            sources_used.append(source)
+        ai_jobs.append((i, prompt, str(entry.get("caption") or "").strip()[:160]))
 
-    if final:
-        # Was hardcoded "via Gemini" regardless of which provider actually
-        # produced the image — misleading, since Pollinations (tried first,
-        # see generate_gemini_image) succeeds the vast majority of the time
-        # and Gemini/Imagen only ever run as a fallback.
-        src_summary = ", ".join(sorted(set(sources_used))) or "unknown"
-        log.info("Report: generated %d/%d AI image(s) via %s", len(final), len(candidates), src_summary)
-    return final, mask
+    if ai_jobs:
+        results = await asyncio.gather(
+            *[generate_gemini_image(f"{prompt}{_IMAGE_STYLE_SUFFIX}") for _, prompt, _ in ai_jobs],
+            return_exceptions=True,
+        )
+        import base64 as _b64
+        for (orig_idx, _prompt, caption), result in zip(ai_jobs, results):
+            if isinstance(result, Exception) or not result:
+                continue
+            img_bytes, source = result
+            if not img_bytes:
+                continue
+            b64 = _b64.b64encode(img_bytes).decode("ascii")
+            resolved[orig_idx] = {
+                "url": f"data:image/png;base64,{b64}",
+                "caption": caption or "Illustrative AI-generated image",
+            }
+            mask[orig_idx] = True
+            log.info("Report: AI image generated for request %d via %s", orig_idx + 1, source or "unknown")
+
+    return [resolved[i] for i in range(len(raw)) if mask[i] and i in resolved], mask
 
 
 async def extract_data_from_images(question: str, file_images: list[dict]) -> str:
@@ -3245,34 +3236,95 @@ _LEADING_STOPWORDS = {
 
 
 def _extract_company_candidates(question: str) -> list[str]:
-    """Pulls plausible company-name phrases out of free text so stock
-    fundamentals can be looked up for whatever companies the user actually
-    named, instead of relying on a fixed list. Two passes:
-      1. Sequences of capitalized words (e.g. "Reliance Industries", "Tata
-         Motors") — catches most real company names.
-      2. Known corporate suffixes anchor a slightly wider window, so
-         "reliance industries" (lowercase, informal typing) still resolves
-         via the suffix match downstream in Yahoo's fuzzy search.
-    Deduplicated, capped at 6 to bound the number of lookups.
-    """
+    """Extract conservative company-name candidates for finance lookups.
+
+    Prefer explicit comparison sides and corporate-suffix anchors. Do not treat
+    sentence verbs, headings, or arbitrary capitalized words as companies."""
+    q = re.sub(r"\s+", " ", question or "").strip()
     candidates: list[str] = []
-    for m in re.finditer(r"\b([A-Z][a-zA-Z&.]*(?:\s+[A-Z][a-zA-Z&.]*){0,3})\b", question):
+    ignored = {
+        "create", "give", "show", "tell", "use", "compare", "comparison",
+        "report", "analysis", "analyze", "analyse", "covering", "business",
+        "financial", "performance", "strategy", "positioning", "international",
+        "exposure", "competitive", "advantages", "risks", "valuation",
+        "considerations", "future", "growth", "prospects", "suv", "stock",
+    }
+
+    def clean_candidate(value: str) -> str:
+        value = re.sub(r"[^A-Za-z0-9&. -]", " ", value or "")
+        value = re.sub(r"\s+", " ", value).strip(" -,:;")
+        words = [w for w in value.split() if w.lower() not in ignored]
+        suffix_words = {"industries", "motors", "limited", "ltd.", "ltd", "inc", "corp", "corporation", "bank", "technologies", "tech", "pharma", "steel", "power", "energy", "cement", "finance"}
+        if words and words[0].lower() in suffix_words and len(words) > 1:
+            words = list(reversed(words))
+        return " ".join(words[:5]).strip()
+
+    def add(value: str) -> None:
+        value = clean_candidate(value)
+        if len(value) < 3 or len(value.split()) > 5:
+            return
+        low = value.lower()
+        if low in {"tata", "mahindra", "motors", "industries", "bank", "power", "steel"}:
+            return
+        if value not in candidates:
+            candidates.append(value)
+
+    # Explicit comparison form: keep each side independent.
+    m = re.search(r"(.+?)\b(?:vs\.?|versus)\b(.+?)(?:\bcovering\b|\bwith\b|\bregarding\b|\babout\b|$)", q, re.I)
+    if m:
+        left = re.split(r"\bof\b|\bon\b", m.group(1), maxsplit=1, flags=re.I)[-1]
+        right = m.group(2)
+        # Strip sentence-leading report language from the left side.
+        left = re.sub(r"^(?:create|give|show|tell)\b.*?\b(?:report|analysis)\b\s*(?:of|on|for)?\s*", "", left, flags=re.I).strip()
+        # Right side is normally already just the company name.
+        add(left)
+        add(right)
+
+    # Corporate-suffix anchors: collect only the short noun phrase immediately
+    # preceding/following the suffix.
+    for m in _COMPANY_SUFFIX_RE.finditer(q):
+        before = re.sub(r"[^A-Za-z0-9&. -]", " ", q[:m.start()]).split()
+        after = re.sub(r"[^A-Za-z0-9&. -]", " ", q[m.start():m.end()]).split()
+        picked: list[str] = []
+        for w in reversed(before):
+            if w.lower() in {"and", "or", "of", "on", "for", "the", "a", "an", "vs", "versus", "with", "covering"} or w.lower() in ignored:
+                break
+            picked.append(w)
+            if len(picked) >= 3:
+                break
+        if picked:
+            add(" ".join(reversed(picked + after[:1])))
+
+    # Final fallback: short capitalized noun phrases, but reject grammar words.
+    for m in re.finditer(r"\b([A-Z][A-Za-z&.]*(?:\s+[A-Z][A-Za-z&.]*){0,2})\b", q):
         phrase = m.group(1).strip()
-        words = phrase.split()
-        if words[0] in _LEADING_STOPWORDS:
-            words = words[1:]
-            phrase = " ".join(words)
-        if len(words) >= 1 and phrase and phrase not in candidates:
-            candidates.append(phrase)
-    # Dedup case-insensitively while preserving first-seen casing/order.
-    seen_lower: set[str] = set()
-    deduped: list[str] = []
+        if phrase.split()[0].lower() in ignored:
+            continue
+        add(phrase)
+
+    seen: set[str] = set()
+    out: list[str] = []
     for c in candidates:
         key = c.lower()
-        if key not in seen_lower and len(c) > 2:
-            seen_lower.add(key)
-            deduped.append(c)
-    return deduped[:6]
+        if key not in seen:
+            seen.add(key)
+            out.append(c)
+
+    # Drop accidental reversed-name artefacts such as "Industries Reliance"
+    # or "Motors Tata" when the correctly ordered form is already present.
+    final: list[str] = []
+    lower_out = {x.lower(): x for x in out}
+    suffix_words = {w.lower().rstrip(".") for w in re.findall(r"[A-Za-z]+", "Industries Motors Limited Ltd Inc Corp Corporation Bank Technologies Tech Pharma Steel Power Energy Cement Finance") }
+    for c in out:
+        rev = " ".join(reversed(c.split())).lower()
+        if rev in lower_out and rev != c.lower():
+            # Keep the form whose final token looks like a corporate suffix
+            # (e.g. "Tata Motors"), not the accidental reversal.
+            if c.split()[-1].lower().rstrip(".") in suffix_words:
+                final.append(c)
+            continue
+        final.append(c)
+    return final[:4]
 
 
 # ─── POST /api/chat/report/edit — edit a single section of an existing report ──
@@ -3426,7 +3478,7 @@ async def _call_llm_plain(system_prompt: str, user_prompt: str) -> str:
         if is_rate_limited(key):
             continue
         try:
-            async with httpx.AsyncClient(timeout=60) as client:
+            async with httpx.AsyncClient(timeout=10) as client:
                 res = await client.post(
                     "https://api.groq.com/openai/v1/chat/completions",
                     headers={"Content-Type": "application/json", "Authorization": f"Bearer {key}"},
@@ -3453,7 +3505,7 @@ async def _call_llm_plain(system_prompt: str, user_prompt: str) -> str:
         if not _is_rest_api_key(key) or is_rate_limited(key):
             continue
         try:
-            async with httpx.AsyncClient(timeout=60) as client:
+            async with httpx.AsyncClient(timeout=10) as client:
                 res = await client.post(
                     f"https://generativelanguage.googleapis.com/v1beta/models/{GEMINI_MODELS[0]}:generateContent?key={key}",
                     json={
@@ -3574,7 +3626,7 @@ async def _call_llm_json(system_prompt: str, user_prompt: str) -> dict | None:
         if is_rate_limited(key):
             continue
         try:
-            async with httpx.AsyncClient(timeout=60) as client:
+            async with httpx.AsyncClient(timeout=10) as client:
                 res = await client.post(
                     "https://api.groq.com/openai/v1/chat/completions",
                     headers={"Content-Type": "application/json", "Authorization": f"Bearer {key}"},
@@ -3603,7 +3655,7 @@ async def _call_llm_json(system_prompt: str, user_prompt: str) -> dict | None:
         if not _is_rest_api_key(key) or is_rate_limited(key):
             continue
         try:
-            async with httpx.AsyncClient(timeout=60) as client:
+            async with httpx.AsyncClient(timeout=10) as client:
                 res = await client.post(
                     f"https://generativelanguage.googleapis.com/v1beta/models/{GEMINI_MODELS[0]}:generateContent?key={key}",
                     json={
@@ -3686,7 +3738,7 @@ Respond with this shape:
         "emphasis": "low" | "normal" | "high" | "critical",
         "order": 0,
         "blocks": [
-          {"kind": "metrics" | "prose" | "table" | "chart" | "timeline" | "comparison" | "risk_matrix" | "evidence"}
+          {"kind": "metrics" | "bullets" | "prose" | "table" | "chart" | "timeline" | "comparison" | "risk_matrix" | "evidence"}
         ]
       }
     ],
@@ -3924,14 +3976,17 @@ def _format_plan_for_prompt(plan: dict) -> str:
     notes = (plan.get("notes") or "").strip()
     if notes:
         lines.append(f"\nPlanner notes: {notes}")
+    presentation = plan.get("presentation") or {}
+    if presentation:
+        lines.append("\nVALIDATED PRESENTATION SPEC (use this as the report composition contract):")
+        lines.append(json.dumps(presentation, ensure_ascii=False, separators=(",", ":")))
     lines.append(
-        "\nFollow this plan's section names, order, and formats as your default — it already accounted "
-        "for what this request needs and what the source data actually supports. You MAY still deviate "
-        "(merge, drop, rename, or reformat a section) if, once you're actually looking at the full source "
-        "text below, a planned section turns out to have no real data/content behind it, or a better split "
-        "becomes obvious — but do not discard the plan wholesale or fall back to a generic template. Every "
-        "rule above (data integrity, chart rules, table vs chart, no repetition, JSON shape, truncation "
-        "rules) still applies exactly as written regardless of what this plan says."
+        "\nFollow this plan's section names, order, formats, and validated presentation composition as the default. "
+        "The presentation object is the composition contract for THIS report, not decorative metadata. Do not "
+        "replace it with a generic report template or invent extra top-level sections. Only omit a planned "
+        "component when the full source material genuinely cannot support it; otherwise preserve the planned "
+        "hierarchy and component mix. Every rule above (data integrity, chart rules, table vs chart, no repetition, "
+        "JSON shape, truncation rules) still applies exactly as written regardless of what this plan says."
     )
     return "\n".join(lines)
 
@@ -4340,7 +4395,9 @@ async def generate_report(request: Request):
                           len(search_queries), [q[:60] for q in search_queries])
             searched = await _tavily_search_multi(
                 search_queries, max_results=15, min_results=10,
+                images_out=image_candidates_raw,
                 historical_intent=bool(_HISTORICAL_INTENT_RE.search(question)),
+                max_keys_per_query=2,
             )
             sources = [
                 {"title": r["title"], "url": r["url"],
@@ -4366,7 +4423,9 @@ async def generate_report(request: Request):
                       len(search_queries), [q[:100] for q in search_queries])
         searched = await _tavily_search_multi(
             search_queries, max_results=15,
+            images_out=image_candidates_raw,
             historical_intent=bool(_HISTORICAL_INTENT_RE.search(question)),
+            max_keys_per_query=2,
         )
         sources = [
             {"title": r["title"], "url": r["url"],
@@ -4563,11 +4622,28 @@ async def generate_report(request: Request):
     )
     recommended_format = "html" if _WANTS_INTERACTIVE_RE.search(question) else "pdf"
 
+    # Prioritize sources that actually mention the named entities/topics in the
+    # request. This does not delete provenance; it only determines which results
+    # are enriched and shown first to the report writer.
+    _company_names_for_ranking = _extract_company_candidates(question)
+    if _company_names_for_ranking:
+        q_tokens = {t for t in re.findall(r"[a-z0-9&]+", question.lower()) if len(t) >= 4}
+        scored_sources = []
+        for _idx, _src in enumerate(sources):
+            hay = " ".join([str(_src.get("title") or ""), str(_src.get("snippet") or ""), str(_src.get("fullContent") or "")]).lower()
+            company_hits = sum(1 for c in _company_names_for_ranking if c.lower() in hay)
+            entity_token_hits = sum(1 for tok in q_tokens if tok in hay)
+            score = company_hits * 20 + entity_token_hits
+            if any(k in hay for k in ("automotive", "auto", "vehicle", "ev", "suv")) and any(k in question.lower() for k in ("motor", "automobile", "automotive", "suv", "ev")):
+                score += 4
+            scored_sources.append((score, _idx, _src))
+        scored_sources.sort(key=lambda x: (-x[0], x[1]))
+        sources = [item[2] for item in scored_sources]
+        log.info("Report: prioritized %d sources against extracted entities %r", len(sources), _company_names_for_ranking)
+
     # Preserve the complete provenance inventory before selecting the smaller
-    # research subset used in the LLM prompt below.  This list is returned to
-    # the client and rendered as the final Sources appendix in every export;
-    # it is intentionally uncapped, so 100 discovered sources remain 100
-    # visible source entries rather than being silently reduced to 25.
+    # research subset used in the LLM prompt below. This list is returned to
+    # the client and rendered as the final Sources appendix in every export.
     source_manifest = normalise_source_manifest(sources, source_documents)
 
     # Fetch real page content (not just Tavily's snippet) for as many sources
@@ -4695,17 +4771,14 @@ async def generate_report(request: Request):
             f"{conversation_context[:2000]}\n"
         )
 
-    # Curate the images Tavily found during the search(es) above into a
-    # numbered candidate list the model can pick from (never URLs it invents
-    # itself — see _validate_image_selections below).
-    # Web-image embedding (stock/decorative photos from Tavily image search) is
-    # disabled — the report should only carry charts, graphs and tables, never
-    # unrelated stock photography. Forcing this to an empty list makes every
-    # downstream helper (_force_fallback_images, _top_up_images,
-    # _inject_fallback_image_placeholders) a no-op, since they all short-circuit
-    # when image_candidates/images is empty.
-    image_candidates: list[dict] = []
-    image_candidates_block = ""
+    # Prefer relevant source-backed images over synthetic imagery. The writer can
+    # still request an AI-generated illustrative scene when no useful source image
+    # exists, but source-backed images are the safer choice for named companies,
+    # products and real-world events.
+    image_candidates = _filter_image_candidates(
+        image_candidates_raw, limit=8, subject=question
+    )
+    image_candidates_block = _build_image_candidates_block(image_candidates)
 
     from datetime import date
     _today_date = date.today()
@@ -5419,7 +5492,14 @@ async def generate_report(request: Request):
         report_text = _remap_chart_placeholders(report_text, original_charts_list, valid_mask)
 
         original_images_list = parsed.get("images") or []
-        images, images_valid_mask = await _generate_ai_report_images(original_images_list)
+        try:
+            images, images_valid_mask = await asyncio.wait_for(
+                _generate_ai_report_images(original_images_list, subject=question, candidates=image_candidates),
+                timeout=18,
+            )
+        except asyncio.TimeoutError:
+            log.warning("Report: AI image generation exceeded 18s budget — skipping synthetic images")
+            images, images_valid_mask = [], [False] * len(original_images_list)
         if len(images) < len(original_images_list):
             log.info("AI image generation: produced %d / %d requested", len(images), len(original_images_list))
 

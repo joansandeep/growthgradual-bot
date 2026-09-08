@@ -1070,7 +1070,7 @@ async def _enrich_thin_results(results: list[dict]) -> list[dict]:
 
 async def tavily_search(
     query: str, max_results: int = 20, min_results: int = 10, images_out: list | None = None,
-    historical_intent: bool = False,
+    historical_intent: bool = False, max_keys: int | None = None,
 ) -> list[dict]:
     """
     NOTE: min_results is accepted for call-site compatibility but no longer
@@ -1121,9 +1121,14 @@ async def tavily_search(
     t0 = time.perf_counter()
 
     if len(keys) > 1:
+        # Report generation can trigger several distinct search angles in one request.
+        # Fan-out across every configured key multiplies latency and cost without
+        # materially improving relevance when the query is identical. Callers that
+        # need a bounded report-time budget can cap the number of keys used per angle.
+        search_keys = keys[:max_keys] if max_keys and max_keys > 0 else keys
         result_lists = await asyncio.gather(*[
             _tavily_one_call(k, query, max_results, qtype, country, images_out, time_range)
-            for k in keys
+            for k in search_keys
         ])
 
         seen_urls: set[str] = set()
@@ -1149,11 +1154,11 @@ async def tavily_search(
             log.info(
                 "Tavily %d-key fan-out: 0 results for %r with country=%r qtype=%s — "
                 "retrying once with country/topic narrowing dropped",
-                len(keys), query[:60], country, qtype,
+                len(search_keys), query[:60], country, qtype,
             )
             retry_lists = await asyncio.gather(*[
                 _tavily_one_call(k, query, max_results, "general", None, images_out, time_range)
-                for k in keys
+                for k in search_keys
             ])
             for res in retry_lists:
                 for r in res:
@@ -1166,7 +1171,7 @@ async def tavily_search(
         combined = _sort_and_filter_by_freshness(combined, keep_old=historical_intent)
         elapsed = (time.perf_counter() - t0) * 1000
         log.info("Tavily %d-key fan-out done: %d results in %.0fms",
-                  len(keys), len(combined), elapsed)
+                  len(search_keys), len(combined), elapsed)
         return combined
 
     # ── Fallback: only one key configured ────────────────────────────────
@@ -1190,6 +1195,7 @@ async def tavily_search(
 async def tavily_search_multi(
     queries: list[str], max_results: int = 20, min_results: int = 10,
     images_out: list | None = None, historical_intent: bool = False,
+    max_keys_per_query: int | None = None,
 ) -> list[dict]:
     """
     Runs tavily_search() once per query (in parallel) and merges the
@@ -1214,12 +1220,14 @@ async def tavily_search_multi(
         return await tavily_search(
             queries[0], max_results=max_results, min_results=min_results,
             images_out=images_out, historical_intent=historical_intent,
+            max_keys=max_keys_per_query,
         )
 
     result_lists = await asyncio.gather(*[
         tavily_search(
             q, max_results=max_results, min_results=min_results,
             images_out=images_out, historical_intent=historical_intent,
+            max_keys=max_keys_per_query,
         )
         for q in queries
     ])
