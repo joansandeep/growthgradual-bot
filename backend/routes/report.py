@@ -3816,49 +3816,265 @@ def _validate_report_plan(plan) -> bool:
     return True
 
 
-def _attach_presentation_to_plan(plan: dict, question: str = "", intent=None) -> dict:
-    """Normalize the planner presentation and guarantee a usable spec.
+def _presentation_domain_from_context(question: str = "", intent=None) -> str:
+    """Infer a presentation domain for safe fallback/supplementation only.
 
-    The presentation is a required composition contract for new reports. If
-    the LLM omits it, derive a safe domain-appropriate preset from intent/topic
-    rather than silently reverting the renderer to the legacy fixed template.
-    Invalid LLM presentation data is still sanitized through the schema.
+    This is not a report template selector. It is used only when the LLM
+    omits/partially emits the presentation spec, so we still preserve the
+    planner's actual section list rather than falling back to the legacy
+    renderer composition.
+    """
+    evidence = set(getattr(intent, "evidence_needed", []) or [])
+    label = str(getattr(intent, "intent_label", "") or "").lower()
+    topic = str(question or "").lower()
+    if "comparison" in evidence or "comparison" in label or re.search(r"\bvs\.?\b|versus", topic):
+        return ReportDomain.COMPARISON.value
+    if "regulatory" in evidence or "regulation" in label or any(k in topic for k in ("sebi", "regulat", "compliance", "policy", "rule", "law")):
+        return ReportDomain.REGULATORY.value
+    if "scientific" in evidence or "expert_opinion" in evidence or "clinical" in label or any(k in topic for k in ("clinical", "virology", "trial", "scientific", "disease", "pathogen", "influenza")):
+        return ReportDomain.SCIENTIFIC.value
+    if "news" in evidence or "market" in label or any(k in topic for k in ("market", "stock", "share", "price", "news")):
+        return ReportDomain.MARKET_NEWS.value
+    if "financials" in evidence:
+        return ReportDomain.FINANCIAL.value
+    return ReportDomain.GENERIC.value
+
+
+def _presentation_slug_text(value: object) -> str:
+    return re.sub(r"[^a-z0-9]+", " ", str(value or "").lower()).strip()
+
+
+def _presentation_section_type_from_plan(section: dict) -> str:
+    """Map a planner section to the closest supported presentation type."""
+    heading = str(section.get("heading") or "").lower()
+    fmt = str(section.get("format") or "prose").lower()
+    if any(k in heading for k in ("valuation", "multiple", "price target")):
+        return "valuation"
+    if any(k in heading for k in ("risk", "threat", "challenge", "downside")):
+        return "risk_assessment"
+    if any(k in heading for k in ("timeline", "chronology", "history", "sequence", "evolution")):
+        return "timeline"
+    if any(k in heading for k in ("comparison", "versus", " vs ", "benchmark", "peer")):
+        return "comparison"
+    if any(k in heading for k in ("regulat", "compliance", "obligation", "requirement", "policy", "rule", "law")):
+        return "compliance"
+    if any(k in heading for k in ("finding", "result", "evidence", "study", "outcome")):
+        return "findings"
+    if any(k in heading for k in ("method", "methodology", "approach")):
+        return "methodology"
+    if any(k in heading for k in ("financial", "revenue", "profit", "balance sheet", "cash flow", "margin")):
+        return "financials"
+    if any(k in heading for k in ("market context", "market drivers", "macro")):
+        return "market_context"
+    if any(k in heading for k in ("news", "developments", "what changed")):
+        return "news_digest"
+    if any(k in heading for k in ("recommend", "verdict", "takeaway", "conclusion")):
+        return "recommendations"
+    if fmt == "table":
+        return "comparison" if "compare" in heading else "custom"
+    return "narrative"
+
+
+def _presentation_blocks_from_plan(section: dict, section_type: str) -> list[dict]:
+    """Create composition hints from the planner section's requested format.
+
+    These are intentionally data-free hints. Actual blocks are rendered only
+    when the report/writer provides matching source-backed data.
+    """
+    heading = str(section.get("heading") or "").lower()
+    fmt = str(section.get("format") or "prose").lower()
+    blocks: list[dict] = []
+
+    if section_type in {"financials", "valuation", "metrics_dashboard"} or any(
+        k in heading for k in ("metric", "financial", "revenue", "profit", "valuation", "margin")
+    ):
+        blocks.append({"kind": "metrics"})
+    if section_type == "comparison" or "comparison" in heading or " vs " in heading:
+        blocks.append({"kind": "comparison"})
+    if section_type == "risk_assessment" or any(k in heading for k in ("risk", "challenge", "threat")):
+        blocks.append({"kind": "risk_matrix"})
+    if section_type == "timeline":
+        blocks.append({"kind": "timeline"})
+    if section_type in {"findings", "compliance", "methodology"}:
+        blocks.append({"kind": "evidence"})
+    if fmt in {"table", "mixed"}:
+        blocks.append({"kind": "table"})
+    if fmt in {"chart", "mixed"}:
+        blocks.append({"kind": "chart"})
+    if fmt in {"bullets", "mixed"}:
+        blocks.append({"kind": "bullets"})
+    if not blocks:
+        blocks.append({"kind": "prose"})
+    # De-duplicate while preserving deliberate ordering.
+    seen = set()
+    unique = []
+    for b in blocks:
+        kind = b.get("kind")
+        if kind not in seen:
+            seen.add(kind)
+            unique.append(b)
+    return unique
+
+
+def _derived_presentation_from_plan(plan: dict, question: str = "", intent=None, warnings: list[str] | None = None) -> dict:
+    """Build a validated presentation from the planner's own section plan.
+
+    Crucially, this keeps the LLM planner's actual headings and order. It does
+    not swap them for a hard-coded report template. It is used only when the
+    LLM presentation object is missing or incomplete.
+    """
+    warning_list = warnings if warnings is not None else []
+    domain = _presentation_domain_from_context(question, intent)
+    sections = []
+    for i, sec in enumerate(plan.get("sections") or []):
+        title = str(sec.get("heading") or f"Section {i + 1}").strip()
+        section_type = _presentation_section_type_from_plan(sec)
+        layout = "single_column"
+        lower = title.lower()
+        fmt = str(sec.get("format") or "prose").lower()
+        if section_type == "comparison" or "comparison" in lower or " vs " in lower:
+            layout = "two_column"
+        elif fmt == "table":
+            layout = "single_column"
+        elif fmt == "mixed" and any(k in lower for k in ("financial", "segment", "market", "performance")):
+            layout = "grid"
+        elif section_type in {"risk_assessment", "findings", "compliance"}:
+            layout = "two_column"
+
+        density = "dense" if fmt in {"table", "chart", "mixed"} else "standard"
+        emphasis = "high" if section_type in {"findings", "risk_assessment", "valuation", "comparison"} else "normal"
+        sections.append({
+            "id": f"planned-{i + 1}",
+            "title": title,
+            "section_type": section_type,
+            "layout": layout,
+            "density": density,
+            "emphasis": emphasis,
+            "order": i,
+            "blocks": _presentation_blocks_from_plan(sec, section_type),
+        })
+
+    if not sections:
+        warning_list.append("planner had no sections; using minimal generic presentation")
+        return default_spec_for_domain(domain).to_dict()
+
+    # Fallback presentation decisions vary only where the planner did not
+    # specify a choice. They never replace the planner's section composition.
+    cover_treatment = {
+        ReportDomain.COMPARISON.value: "classic",
+        ReportDomain.FINANCIAL.value: "data_driven",
+        ReportDomain.REGULATORY.value: "minimal",
+        ReportDomain.SCIENTIFIC.value: "minimal",
+        ReportDomain.COMPANY_ANALYSIS.value: "bold_banner",
+        ReportDomain.MARKET_NEWS.value: "bold_banner",
+    }.get(domain, "minimal")
+    exec_placement = {
+        ReportDomain.COMPARISON.value: "top_of_body",
+        ReportDomain.REGULATORY.value: "top_of_body",
+        ReportDomain.SCIENTIFIC.value: "top_of_body",
+        ReportDomain.FINANCIAL.value: "after_cover",
+        ReportDomain.COMPANY_ANALYSIS.value: "after_cover",
+        ReportDomain.MARKET_NEWS.value: "top_of_body",
+    }.get(domain, "after_cover")
+    source_placement = "appendix" if domain in {ReportDomain.REGULATORY.value, ReportDomain.SCIENTIFIC.value} else "end_of_report"
+    return {
+        "domain": domain,
+        "cover": {
+            "enabled": True,
+            "title": "",
+            "subtitle": "",
+            "treatment": cover_treatment,
+            "show_date": True,
+            "show_author": False,
+        },
+        "executive_summary": {
+            "placement": exec_placement,
+            "heading": "Executive Summary",
+            "key_metrics": [],
+        },
+        "sections": sections,
+        "source_appendix": {
+            "placement": source_placement,
+            "group_by_section": domain in {ReportDomain.REGULATORY.value, ReportDomain.SCIENTIFIC.value},
+            "include_appendix": True,
+        },
+        "default_layout": "single_column",
+        "default_density": "dense" if len(sections) >= 8 else "standard",
+    }
+
+
+def _attach_presentation_to_plan(plan: dict, question: str = "", intent=None) -> dict:
+    """Normalize and preserve a complete presentation composition contract.
+
+    The LLM presentation is authoritative where valid. If it is missing or
+    incomplete, the planner's already-validated section list is used to fill
+    the gaps. This prevents the renderer from silently reverting to the same
+    legacy layout for every report type.
     """
     raw_presentation = plan.get("presentation")
+    warnings: list[str] = []
 
-    def _infer_domain() -> str:
-        evidence = set(getattr(intent, "evidence_needed", []) or [])
-        label = str(getattr(intent, "intent_label", "") or "").lower()
-        topic = str(question or "").lower()
-        if "comparison" in evidence or "comparison" in label or " vs " in topic:
-            return ReportDomain.COMPARISON.value
-        if "regulatory" in evidence or "regulation" in label or any(k in topic for k in ("sebi", "regulat", "compliance", "policy", "rule", "law")):
-            return ReportDomain.REGULATORY.value
-        if "scientific" in evidence or "clinical" in label or any(k in topic for k in ("clinical", "virology", "trial", "scientific", "disease", "pathogen")):
-            return ReportDomain.SCIENTIFIC.value
-        if "news" in evidence or "market" in label or any(k in topic for k in ("market", "stock", "share", "price")):
-            return ReportDomain.MARKET_NEWS.value
-        if "financials" in evidence:
-            return ReportDomain.FINANCIAL.value
-        return ReportDomain.GENERIC.value
+    if isinstance(raw_presentation, dict):
+        try:
+            spec, presentation_warnings = ReportPresentationSpec.from_llm_output(raw_presentation)
+            warnings.extend(presentation_warnings)
+            if spec.sections:
+                normalized = spec.to_dict()
+                # Ensure every planner section has a presentation entry. Match
+                # by title first, then append missing planner sections using the
+                # planner's own format/heading as the source of truth.
+                existing = {(_presentation_slug_text(x.get("title")), x.get("id")): x for x in normalized.get("sections", [])}
+                present_titles = {_presentation_slug_text(x.get("title")) for x in normalized.get("sections", [])}
+                plan_by_title = {}
+                for i, sec in enumerate(plan.get("sections") or []):
+                    title = str(sec.get("heading") or f"Section {i + 1}").strip()
+                    slug = _presentation_slug_text(title)
+                    plan_by_title[slug] = i
 
-    if raw_presentation is None:
-        domain = _infer_domain()
-        fallback = default_spec_for_domain(domain)
-        plan["presentation"] = fallback.to_dict()
-        log.info("Report: planner omitted presentation; injected validated %s preset", domain)
-        return plan
+                # The planner's section list is authoritative for report
+                # composition. Re-align any valid LLM presentation sections to
+                # that exact order before adding missing sections.
+                for item in normalized.get("sections", []):
+                    idx = plan_by_title.get(_presentation_slug_text(item.get("title")))
+                    if idx is not None:
+                        item["order"] = idx
 
-    try:
-        presentation_spec, presentation_warnings = ReportPresentationSpec.from_llm_output(raw_presentation)
-        if presentation_warnings:
-            log.info("Report: presentation spec sanitized during planning: %s", presentation_warnings)
-        plan["presentation"] = presentation_spec.to_dict()
-    except Exception as e:
-        domain = _infer_domain()
-        log.warning("Report: presentation validation failed; using %s preset: %s", domain, e)
-        plan["presentation"] = default_spec_for_domain(domain).to_dict()
+                for i, sec in enumerate(plan.get("sections") or []):
+                    title = str(sec.get("heading") or f"Section {i + 1}").strip()
+                    slug = _presentation_slug_text(title)
+                    if slug in present_titles:
+                        continue
+                    stype = _presentation_section_type_from_plan(sec)
+                    normalized["sections"].append({
+                        "id": f"planned-{i + 1}",
+                        "title": title,
+                        "section_type": stype,
+                        "layout": "two_column" if stype == "comparison" else "single_column",
+                        "density": "dense" if sec.get("format") in {"table", "chart", "mixed"} else "standard",
+                        "emphasis": "high" if stype in {"comparison", "risk_assessment", "valuation", "findings"} else "normal",
+                        "order": i,
+                        "blocks": _presentation_blocks_from_plan(sec, stype),
+                    })
+                    present_titles.add(slug)
+                normalized["sections"] = sorted(normalized["sections"], key=lambda x: int(x.get("order", 0)))
+                # A generic domain is less useful than the resolved context
+                # when the model omitted domain while still supplying a spec.
+                if normalized.get("domain") == ReportDomain.GENERIC.value:
+                    normalized["domain"] = _presentation_domain_from_context(question, intent)
+                plan["presentation"] = normalized
+                if warnings:
+                    log.info("Report: presentation normalized with planner-section supplementation: %s", warnings)
+                return plan
+        except Exception as exc:
+            warnings.append(f"presentation validation failed: {type(exc).__name__}")
 
+    derived = _derived_presentation_from_plan(plan, question=question, intent=intent, warnings=warnings)
+    plan["presentation"] = derived
+    log.info(
+        "Report: rebuilt presentation from planner sections (domain=%s, sections=%d)%s",
+        derived.get("domain"), len(derived.get("sections") or []),
+        f" warnings={warnings}" if warnings else "",
+    )
     return plan
 
 
