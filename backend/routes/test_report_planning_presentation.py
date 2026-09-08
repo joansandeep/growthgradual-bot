@@ -16,9 +16,8 @@ Covers:
      ReportPresentationSpec schema module (never trusted as raw JSON).
   2. A plan with an INVALID/malformed "presentation" field is sanitized to a
      safe fallback rather than rejecting the whole plan.
-  3. A plan with NO "presentation" field at all (the pre-existing shape)
-     still passes validation and is left untouched — full backward
-     compatibility with plans that predate this field.
+  3. A plan with NO "presentation" field at all still passes validation and
+     gets a safe presentation reconstructed from its validated planner sections.
 """
 
 import os
@@ -65,7 +64,9 @@ def test_plan_without_presentation_still_works():
     _assert(_validate_report_plan(plan), "existing plan shape (no presentation) must still validate")
 
     result = _attach_presentation_to_plan(dict(plan))
-    _assert(isinstance(result.get("presentation"), dict), "missing presentation fallback")
+    _assert(isinstance(result.get("presentation"), dict), "missing presentation must be reconstructed safely")
+    _assert([s.get("title") for s in result["presentation"].get("sections", [])] == ["Overview", "Key Metrics"],
+            "presentation must preserve the actual planner section structure")
     _assert(result["sections"] == plan["sections"], "existing planner fields must be preserved untouched")
     _assert(result["depth"] == plan["depth"], "existing planner fields must be preserved untouched")
 
@@ -113,7 +114,7 @@ def test_plan_with_invalid_presentation_is_sanitized_not_rejected():
     pres = result["presentation"]
     _assert(pres.get("domain") == "generic", "unknown domain must fall back to a safe default")
     _assert("<script>" not in pres["cover"]["title"], "markup must be stripped from presentation free-text fields")
-    _assert(isinstance(pres.get("sections"), list), "invalid sections must fall back to a safe (empty) list")
+    _assert(isinstance(pres.get("sections"), list), "invalid presentation sections must become a safe list")
 
     # Must still safely re-parse through the schema module without raising
     # (an empty sections list is a valid, if minimal, fallback outcome —

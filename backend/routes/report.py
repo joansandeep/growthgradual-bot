@@ -9,6 +9,7 @@ import json
 import logging
 import re
 import time
+from urllib.parse import urlparse
 
 import httpx
 from fastapi import APIRouter
@@ -35,7 +36,10 @@ from utils.screener_kb import (
 )
 from utils.intent import resolve_request_intent, RequestIntent
 from routes.source_manifest import normalise_source_manifest
-from utils.presentation_schema import ReportPresentationSpec, default_spec_for_domain, ReportDomain
+from utils.presentation_schema import (
+    ReportPresentationSpec, default_spec_for_domain, ReportDomain, SectionType,
+    LayoutVariant, ContentDensity, EmphasisLevel,
+)
 
 router = APIRouter()
 log = logging.getLogger("report")
@@ -3081,6 +3085,116 @@ _EVIDENCE_ANGLE_SUFFIX = {
 }
 
 
+
+def _research_domain_from_intent(question: str, intent: "RequestIntent | None") -> str:
+    evidence = set(getattr(intent, "evidence_needed", []) or [])
+    label = str(getattr(intent, "intent_label", "") or "").lower()
+    text = f"{getattr(intent, 'resolved_topic', '')} {question}".lower()
+    if "scientific" in evidence or "clinical" in evidence or any(
+        k in text for k in ("scientific", "virolog", "virus", "disease", "clinical", "epidemiolog",
+                            "genomic", "pathogen", "influenza", "h5n1", "trial", "vaccine")
+    ):
+        return "scientific"
+    if "regulatory" in evidence or "regulat" in label or any(k in text for k in ("regulation", "regulatory", "compliance", "sebi", "policy", "law")):
+        return "regulatory"
+    if "comparison" in evidence or " vs " in text or " versus " in text:
+        return "comparison"
+    if "financials" in evidence or "market_data" in evidence or "market" in label:
+        return "financial"
+    return "generic"
+
+
+def _subject_terms(question: str, intent: "RequestIntent | None") -> list[str]:
+    """Build relevance anchors from the resolved subject, not report-writing instructions."""
+    resolved = str(getattr(intent, "resolved_topic", "") or "").strip()
+    subject = resolved or question
+    subject = re.sub(r"\b(?:prepare|create|give|generate|write|make|produce|provide)\b", " ", subject, flags=re.I)
+    subject = re.sub(r"\b(?:a|an|the)?\s*(?:deep|detailed|comprehensive|scientific|research|comparison|analysis|report|study|review)\b", " ", subject, flags=re.I)
+    subject = re.sub(r"\s+", " ", subject).strip()
+    tokens = [t for t in re.findall(r"[a-z0-9]+(?:[.-][a-z0-9]+)?", subject.lower()) if len(t) >= 4 or re.search(r"\d", t)]
+    # Drop common task words and weak generic words; retain distinctive technical terms.
+    stop = {"cover", "covering", "current", "state", "human", "risk", "recent", "key", "questions", "research", "report", "analysis", "data", "evidence", "findings", "growth", "performance", "future"}
+    out=[]
+    for t in tokens:
+        if t in stop or t in out: continue
+        out.append(t)
+    return out[:20]
+
+
+def _source_relevance_score(src: dict, question: str, intent: "RequestIntent | None") -> tuple[float, int]:
+    """Score a web source against the resolved subject; return (score, anchor_hits)."""
+    title = str(src.get("title") or "")
+    snippet = str(src.get("snippet") or "")
+    content = str(src.get("fullContent") or "")
+    hay = f"{title} {snippet} {content}".lower()
+    terms = _subject_terms(question, intent)
+    domain = _research_domain_from_intent(question, intent)
+    hits = sum(1 for t in terms if re.search(rf"(?<![a-z0-9]){re.escape(t)}(?![a-z0-9])", hay))
+    score = hits * 8.0
+    resolved = str(getattr(intent, "resolved_topic", "") or "").strip().lower()
+    if resolved and len(resolved) >= 6 and resolved in hay:
+        score += 30
+    host = urlparse(str(src.get("url") or "")).hostname or ""
+    host = host.lower()
+    authoritative_science = ("who.int", "cdc.gov", "usda.gov", "fda.gov", "nih.gov", "ncbi.nlm.nih.gov", "pubmed.ncbi.nlm.nih.gov", "nature.com", "science.org", "thelancet.com", "nejm.org", "sciencedirect.com")
+    authoritative_reg = ("sebi.gov.in", "rbi.org.in", "sec.gov", "finra.org", "ec.europa.eu", "gov.in")
+    if domain == "scientific" and any(host == d or host.endswith("." + d) for d in authoritative_science):
+        score += 18
+    if domain == "regulatory" and any(host == d or host.endswith("." + d) for d in authoritative_reg):
+        score += 18
+    # For a scientific subject, reward direct technical anchors.
+    if domain == "scientific":
+        sci_hits = sum(1 for t in ("h5n1", "influenza", "virology", "clinical", "surveillance", "vaccine", "antiviral", "genomic", "transmission") if t in hay)
+        score += min(sci_hits, 5) * 2
+    return score, hits
+
+
+def _filter_relevant_sources(sources: list[dict], question: str, intent: "RequestIntent | None") -> list[dict]:
+    """Remove demonstrably off-topic web sources while preserving user/internal sources."""
+    if not sources:
+        return sources
+    domain = _research_domain_from_intent(question, intent)
+    scored = []
+    internal = []
+    for idx, src in enumerate(sources):
+        if str(src.get("url") or "").startswith("internal://"):
+            internal.append(src)
+            continue
+        score, hits = _source_relevance_score(src, question, intent)
+        scored.append((score, hits, idx, src))
+    scored.sort(key=lambda x: (-x[0], -x[1], x[2]))
+    terms = _subject_terms(question, intent)
+    # Stronger gate for scientific/regulatory/company-comparison research.
+    if domain in {"scientific", "regulatory", "comparison", "financial"} and terms:
+        kept = []
+        for item in scored:
+            score, hits, _, src = item
+            minimum_hits = 1 if len(terms) <= 2 else 2
+            if hits >= minimum_hits or score >= 24:
+                kept.append(src)
+        if kept:
+            return internal + kept
+        # No relevant web source: deliberately return no web evidence rather than contaminating the report.
+        return internal
+    # Generic requests get ranking but not aggressive deletion.
+    return internal + [x[3] for x in scored[:30]]
+
+
+async def _build_strict_subject_search_queries(question: str, intent: "RequestIntent | None") -> list[str]:
+    topic = str(getattr(intent, "resolved_topic", "") or question).strip()
+    domain = _research_domain_from_intent(question, intent)
+    if domain == "scientific":
+        return [
+            f'"{topic}" human transmission cases clinical evidence WHO CDC',
+            f'"{topic}" virology genomic surveillance vaccine antiviral recent evidence',
+        ]
+    if domain == "regulatory":
+        return [f'"{topic}" regulator official guidance compliance', f'"{topic}" recent rule circular enforcement official']
+    if domain == "comparison":
+        return [f'"{topic}" financial comparison official results', f'"{topic}" market share strategy comparison']
+    return [f'"{topic}" latest evidence data sources']
+
+
 async def _build_multi_angle_search_queries(
     question: str,
     conversation_context: str,
@@ -3114,7 +3228,10 @@ async def _build_multi_angle_search_queries(
         # clinical trials"), which hurts every angle query built from it.
         if len(topic) > 100:
             topic = topic[:100].rsplit(" ", 1)[0]
-        base = _augment_query_for_historical_data(topic if intent.is_followup else cleaned_question)
+        if _research_domain_from_intent(question, intent) == "scientific":
+            base = f"{topic} human transmission clinical cases virology surveillance"
+        else:
+            base = _augment_query_for_historical_data(topic)
         queries = [base]
         for kind in intent.evidence_needed:
             suffix = _EVIDENCE_ANGLE_SUFFIX.get(kind)
@@ -3816,265 +3933,135 @@ def _validate_report_plan(plan) -> bool:
     return True
 
 
-def _presentation_domain_from_context(question: str = "", intent=None) -> str:
-    """Infer a presentation domain for safe fallback/supplementation only.
-
-    This is not a report template selector. It is used only when the LLM
-    omits/partially emits the presentation spec, so we still preserve the
-    planner's actual section list rather than falling back to the legacy
-    renderer composition.
+def _presentation_section_from_plan(sec: dict, order: int) -> dict:
+    """Convert one validated planner section into a renderer-independent presentation section.
+    This is a bridge/fallback only; it does not impose a domain template.
     """
-    evidence = set(getattr(intent, "evidence_needed", []) or [])
-    label = str(getattr(intent, "intent_label", "") or "").lower()
-    topic = str(question or "").lower()
-    if "comparison" in evidence or "comparison" in label or re.search(r"\bvs\.?\b|versus", topic):
-        return ReportDomain.COMPARISON.value
-    if "regulatory" in evidence or "regulation" in label or any(k in topic for k in ("sebi", "regulat", "compliance", "policy", "rule", "law")):
-        return ReportDomain.REGULATORY.value
-    if "scientific" in evidence or "expert_opinion" in evidence or "clinical" in label or any(k in topic for k in ("clinical", "virology", "trial", "scientific", "disease", "pathogen", "influenza")):
-        return ReportDomain.SCIENTIFIC.value
-    if "news" in evidence or "market" in label or any(k in topic for k in ("market", "stock", "share", "price", "news")):
-        return ReportDomain.MARKET_NEWS.value
-    if "financials" in evidence:
-        return ReportDomain.FINANCIAL.value
-    return ReportDomain.GENERIC.value
+    heading = str(sec.get("heading") or f"Section {order + 1}").strip()
+    purpose = str(sec.get("purpose") or "").strip().lower()
+    fmt = str(sec.get("format") or "prose").strip().lower()
+    text = f"{heading} {purpose}".lower()
+    if any(k in text for k in ("valuation", "multiple", "price-to-earnings", "p/e")):
+        section_type = SectionType.VALUATION
+    elif any(k in text for k in ("risk", "challenge", "threat", "uncertainty")):
+        section_type = SectionType.RISK_ASSESSMENT
+    elif any(k in text for k in ("regulat", "compliance", "policy", "law", "rule")):
+        section_type = SectionType.COMPLIANCE
+    elif any(k in text for k in ("timeline", "chronolog", "milestone", "history")):
+        section_type = SectionType.TIMELINE
+    elif any(k in text for k in ("comparison", "versus", "vs ", "competitive")):
+        section_type = SectionType.COMPARISON
+    elif any(k in text for k in ("financial", "revenue", "profit", "balance sheet", "earnings", "cash flow")):
+        section_type = SectionType.FINANCIALS
+    elif any(k in text for k in ("finding", "result", "evidence", "study", "clinical", "virolog", "research")):
+        section_type = SectionType.FINDINGS
+    elif any(k in text for k in ("methodology", "method", "data source")):
+        section_type = SectionType.METHODOLOGY
+    elif any(k in text for k in ("market", "news", "stock", "price action")):
+        section_type = SectionType.MARKET_CONTEXT
+    elif any(k in text for k in ("recommend", "outlook", "next steps", "action")):
+        section_type = SectionType.RECOMMENDATIONS
+    else:
+        section_type = SectionType.NARRATIVE
 
+    blocks = []
+    if fmt == "chart":
+        blocks = [{"kind": "chart"}]
+    elif fmt == "table":
+        blocks = [{"kind": "table"}]
+    elif fmt == "bullets":
+        blocks = [{"kind": "bullets"}]
+    elif fmt == "mixed":
+        blocks = [{"kind": "prose"}, {"kind": "table"}]
+    else:
+        blocks = [{"kind": "prose"}]
 
-def _presentation_slug_text(value: object) -> str:
-    return re.sub(r"[^a-z0-9]+", " ", str(value or "").lower()).strip()
-
-
-def _presentation_section_type_from_plan(section: dict) -> str:
-    """Map a planner section to the closest supported presentation type."""
-    heading = str(section.get("heading") or "").lower()
-    fmt = str(section.get("format") or "prose").lower()
-    if any(k in heading for k in ("valuation", "multiple", "price target")):
-        return "valuation"
-    if any(k in heading for k in ("risk", "threat", "challenge", "downside")):
-        return "risk_assessment"
-    if any(k in heading for k in ("timeline", "chronology", "history", "sequence", "evolution")):
-        return "timeline"
-    if any(k in heading for k in ("comparison", "versus", " vs ", "benchmark", "peer")):
-        return "comparison"
-    if any(k in heading for k in ("regulat", "compliance", "obligation", "requirement", "policy", "rule", "law")):
-        return "compliance"
-    if any(k in heading for k in ("finding", "result", "evidence", "study", "outcome")):
-        return "findings"
-    if any(k in heading for k in ("method", "methodology", "approach")):
-        return "methodology"
-    if any(k in heading for k in ("financial", "revenue", "profit", "balance sheet", "cash flow", "margin")):
-        return "financials"
-    if any(k in heading for k in ("market context", "market drivers", "macro")):
-        return "market_context"
-    if any(k in heading for k in ("news", "developments", "what changed")):
-        return "news_digest"
-    if any(k in heading for k in ("recommend", "verdict", "takeaway", "conclusion")):
-        return "recommendations"
-    if fmt == "table":
-        return "comparison" if "compare" in heading else "custom"
-    return "narrative"
-
-
-def _presentation_blocks_from_plan(section: dict, section_type: str) -> list[dict]:
-    """Create composition hints from the planner section's requested format.
-
-    These are intentionally data-free hints. Actual blocks are rendered only
-    when the report/writer provides matching source-backed data.
-    """
-    heading = str(section.get("heading") or "").lower()
-    fmt = str(section.get("format") or "prose").lower()
-    blocks: list[dict] = []
-
-    if section_type in {"financials", "valuation", "metrics_dashboard"} or any(
-        k in heading for k in ("metric", "financial", "revenue", "profit", "valuation", "margin")
-    ):
-        blocks.append({"kind": "metrics"})
-    if section_type == "comparison" or "comparison" in heading or " vs " in heading:
-        blocks.append({"kind": "comparison"})
-    if section_type == "risk_assessment" or any(k in heading for k in ("risk", "challenge", "threat")):
-        blocks.append({"kind": "risk_matrix"})
-    if section_type == "timeline":
-        blocks.append({"kind": "timeline"})
-    if section_type in {"findings", "compliance", "methodology"}:
-        blocks.append({"kind": "evidence"})
-    if fmt in {"table", "mixed"}:
-        blocks.append({"kind": "table"})
-    if fmt in {"chart", "mixed"}:
-        blocks.append({"kind": "chart"})
-    if fmt in {"bullets", "mixed"}:
-        blocks.append({"kind": "bullets"})
-    if not blocks:
-        blocks.append({"kind": "prose"})
-    # De-duplicate while preserving deliberate ordering.
-    seen = set()
-    unique = []
-    for b in blocks:
-        kind = b.get("kind")
-        if kind not in seen:
-            seen.add(kind)
-            unique.append(b)
-    return unique
-
-
-def _derived_presentation_from_plan(plan: dict, question: str = "", intent=None, warnings: list[str] | None = None) -> dict:
-    """Build a validated presentation from the planner's own section plan.
-
-    Crucially, this keeps the LLM planner's actual headings and order. It does
-    not swap them for a hard-coded report template. It is used only when the
-    LLM presentation object is missing or incomplete.
-    """
-    warning_list = warnings if warnings is not None else []
-    domain = _presentation_domain_from_context(question, intent)
-    sections = []
-    for i, sec in enumerate(plan.get("sections") or []):
-        title = str(sec.get("heading") or f"Section {i + 1}").strip()
-        section_type = _presentation_section_type_from_plan(sec)
-        layout = "single_column"
-        lower = title.lower()
-        fmt = str(sec.get("format") or "prose").lower()
-        if section_type == "comparison" or "comparison" in lower or " vs " in lower:
-            layout = "two_column"
-        elif fmt == "table":
-            layout = "single_column"
-        elif fmt == "mixed" and any(k in lower for k in ("financial", "segment", "market", "performance")):
-            layout = "grid"
-        elif section_type in {"risk_assessment", "findings", "compliance"}:
-            layout = "two_column"
-
-        density = "dense" if fmt in {"table", "chart", "mixed"} else "standard"
-        emphasis = "high" if section_type in {"findings", "risk_assessment", "valuation", "comparison"} else "normal"
-        sections.append({
-            "id": f"planned-{i + 1}",
-            "title": title,
-            "section_type": section_type,
-            "layout": layout,
-            "density": density,
-            "emphasis": emphasis,
-            "order": i,
-            "blocks": _presentation_blocks_from_plan(sec, section_type),
-        })
-
-    if not sections:
-        warning_list.append("planner had no sections; using minimal generic presentation")
-        return default_spec_for_domain(domain).to_dict()
-
-    # Fallback presentation decisions vary only where the planner did not
-    # specify a choice. They never replace the planner's section composition.
-    cover_treatment = {
-        ReportDomain.COMPARISON.value: "classic",
-        ReportDomain.FINANCIAL.value: "data_driven",
-        ReportDomain.REGULATORY.value: "minimal",
-        ReportDomain.SCIENTIFIC.value: "minimal",
-        ReportDomain.COMPANY_ANALYSIS.value: "bold_banner",
-        ReportDomain.MARKET_NEWS.value: "bold_banner",
-    }.get(domain, "minimal")
-    exec_placement = {
-        ReportDomain.COMPARISON.value: "top_of_body",
-        ReportDomain.REGULATORY.value: "top_of_body",
-        ReportDomain.SCIENTIFIC.value: "top_of_body",
-        ReportDomain.FINANCIAL.value: "after_cover",
-        ReportDomain.COMPANY_ANALYSIS.value: "after_cover",
-        ReportDomain.MARKET_NEWS.value: "top_of_body",
-    }.get(domain, "after_cover")
-    source_placement = "appendix" if domain in {ReportDomain.REGULATORY.value, ReportDomain.SCIENTIFIC.value} else "end_of_report"
+    layout = LayoutVariant.SINGLE_COLUMN.value
+    if fmt == "mixed":
+        layout = LayoutVariant.TWO_COLUMN.value
+    density = ContentDensity.DENSE.value if fmt in {"table", "chart", "mixed"} else ContentDensity.STANDARD.value
     return {
-        "domain": domain,
-        "cover": {
-            "enabled": True,
-            "title": "",
-            "subtitle": "",
-            "treatment": cover_treatment,
-            "show_date": True,
-            "show_author": False,
-        },
-        "executive_summary": {
-            "placement": exec_placement,
-            "heading": "Executive Summary",
-            "key_metrics": [],
-        },
-        "sections": sections,
-        "source_appendix": {
-            "placement": source_placement,
-            "group_by_section": domain in {ReportDomain.REGULATORY.value, ReportDomain.SCIENTIFIC.value},
-            "include_appendix": True,
-        },
-        "default_layout": "single_column",
-        "default_density": "dense" if len(sections) >= 8 else "standard",
+        "id": re.sub(r"[^a-z0-9_-]+", "-", heading.lower()).strip("-") or f"section-{order}",
+        "title": heading,
+        "section_type": section_type.value,
+        "layout": layout,
+        "density": density,
+        "emphasis": EmphasisLevel.NORMAL.value,
+        "order": order,
+        "blocks": blocks,
     }
 
 
 def _attach_presentation_to_plan(plan: dict, question: str = "", intent=None) -> dict:
-    """Normalize and preserve a complete presentation composition contract.
+    """Normalize the planner presentation and guarantee that its sections match the actual plan.
 
-    The LLM presentation is authoritative where valid. If it is missing or
-    incomplete, the planner's already-validated section list is used to fill
-    the gaps. This prevents the renderer from silently reverting to the same
-    legacy layout for every report type.
+    The LLM presentation is preferred. If it is missing or incomplete, the existing validated
+    planner section list is used to repair/supplement the presentation instead of falling back to a
+    generic preset. This keeps composition dynamic while preventing the renderer from losing the plan.
     """
     raw_presentation = plan.get("presentation")
-    warnings: list[str] = []
 
-    if isinstance(raw_presentation, dict):
-        try:
-            spec, presentation_warnings = ReportPresentationSpec.from_llm_output(raw_presentation)
-            warnings.extend(presentation_warnings)
-            if spec.sections:
-                normalized = spec.to_dict()
-                # Ensure every planner section has a presentation entry. Match
-                # by title first, then append missing planner sections using the
-                # planner's own format/heading as the source of truth.
-                existing = {(_presentation_slug_text(x.get("title")), x.get("id")): x for x in normalized.get("sections", [])}
-                present_titles = {_presentation_slug_text(x.get("title")) for x in normalized.get("sections", [])}
-                plan_by_title = {}
-                for i, sec in enumerate(plan.get("sections") or []):
-                    title = str(sec.get("heading") or f"Section {i + 1}").strip()
-                    slug = _presentation_slug_text(title)
-                    plan_by_title[slug] = i
+    def _infer_domain() -> str:
+        evidence = set(getattr(intent, "evidence_needed", []) or [])
+        label = str(getattr(intent, "intent_label", "") or "").lower()
+        topic = str(getattr(intent, "resolved_topic", "") or question or "").lower()
+        if "comparison" in evidence or "comparison" in label or " vs " in topic or " versus " in topic:
+            return ReportDomain.COMPARISON.value
+        if "regulatory" in evidence or "regulation" in label or any(k in topic for k in ("sebi", "regulat", "compliance", "policy", "rule", "law")):
+            return ReportDomain.REGULATORY.value
+        if "scientific" in evidence or "clinical" in label or any(k in topic for k in ("clinical", "virology", "trial", "scientific", "disease", "pathogen", "influenza", "h5n1")):
+            return ReportDomain.SCIENTIFIC.value
+        if "news" in evidence or "market" in label or any(k in topic for k in ("market", "stock", "share", "price")):
+            return ReportDomain.MARKET_NEWS.value
+        if "financials" in evidence:
+            return ReportDomain.FINANCIAL.value
+        return ReportDomain.GENERIC.value
 
-                # The planner's section list is authoritative for report
-                # composition. Re-align any valid LLM presentation sections to
-                # that exact order before adding missing sections.
-                for item in normalized.get("sections", []):
-                    idx = plan_by_title.get(_presentation_slug_text(item.get("title")))
-                    if idx is not None:
-                        item["order"] = idx
+    planner_sections = [s for s in (plan.get("sections") or []) if isinstance(s, dict) and str(s.get("heading") or "").strip()]
+    try:
+        if raw_presentation is None:
+            # Start from a minimal valid spec only as a container, then replace its section list
+            # with the actual LLM planner's sections. No fixed domain template is used here.
+            domain = _infer_domain()
+            # Use the domain preset only as a safe visual baseline; immediately replace its
+            # substantive section structure with the actual planner sections below.
+            spec = default_spec_for_domain(domain)
+            warnings = ["presentation missing; reconstructed from validated planner sections"]
+        else:
+            spec, warnings = ReportPresentationSpec.from_llm_output(raw_presentation)
 
-                for i, sec in enumerate(plan.get("sections") or []):
-                    title = str(sec.get("heading") or f"Section {i + 1}").strip()
-                    slug = _presentation_slug_text(title)
-                    if slug in present_titles:
-                        continue
-                    stype = _presentation_section_type_from_plan(sec)
-                    normalized["sections"].append({
-                        "id": f"planned-{i + 1}",
-                        "title": title,
-                        "section_type": stype,
-                        "layout": "two_column" if stype == "comparison" else "single_column",
-                        "density": "dense" if sec.get("format") in {"table", "chart", "mixed"} else "standard",
-                        "emphasis": "high" if stype in {"comparison", "risk_assessment", "valuation", "findings"} else "normal",
-                        "order": i,
-                        "blocks": _presentation_blocks_from_plan(sec, stype),
-                    })
-                    present_titles.add(slug)
-                normalized["sections"] = sorted(normalized["sections"], key=lambda x: int(x.get("order", 0)))
-                # A generic domain is less useful than the resolved context
-                # when the model omitted domain while still supplying a spec.
-                if normalized.get("domain") == ReportDomain.GENERIC.value:
-                    normalized["domain"] = _presentation_domain_from_context(question, intent)
-                plan["presentation"] = normalized
-                if warnings:
-                    log.info("Report: presentation normalized with planner-section supplementation: %s", warnings)
-                return plan
-        except Exception as exc:
-            warnings.append(f"presentation validation failed: {type(exc).__name__}")
+        existing = {s.title.strip().lower(): s for s in spec.sections if s.title}
+        repaired = []
+        for idx, sec in enumerate(planner_sections):
+            title = str(sec.get("heading") or "").strip()
+            existing_sec = existing.get(title.lower())
+            if existing_sec is not None:
+                d = existing_sec.__dict__.copy()
+                d["order"] = idx
+                repaired.append(d)
+            else:
+                repaired.append(_presentation_section_from_plan(sec, idx))
 
-    derived = _derived_presentation_from_plan(plan, question=question, intent=intent, warnings=warnings)
-    plan["presentation"] = derived
-    log.info(
-        "Report: rebuilt presentation from planner sections (domain=%s, sections=%d)%s",
-        derived.get("domain"), len(derived.get("sections") or []),
-        f" warnings={warnings}" if warnings else "",
-    )
+        # Preserve an explicitly planned presentation-only section only if it is a source/appendix;
+        # never allow it to invent a second substantive report structure.
+        if not repaired and spec.sections:
+            repaired = [s.__dict__.copy() for s in spec.sections]
+        normalized_input = spec.to_dict()
+        normalized_input["sections"] = repaired
+        normalized_input["domain"] = (spec.domain.value if hasattr(spec.domain, "value") else str(spec.domain))
+        final_spec, final_warnings = ReportPresentationSpec.from_llm_output(normalized_input)
+        all_warnings = list(warnings or []) + list(final_warnings or [])
+        if all_warnings:
+            log.info("Report: presentation normalization: %s", all_warnings)
+        plan["presentation"] = final_spec.to_dict()
+    except Exception as e:
+        # Last-resort recovery still derives the composition from the current planner sections.
+        domain = _infer_domain()
+        fallback = default_spec_for_domain(domain).to_dict()
+        fallback["sections"] = [_presentation_section_from_plan(sec, idx) for idx, sec in enumerate(planner_sections)]
+        spec, final_warnings = ReportPresentationSpec.from_llm_output(fallback)
+        plan["presentation"] = spec.to_dict()
+        log.warning("Report: presentation normalization failed; reconstructed from plan: %s", e)
     return plan
 
 
@@ -4667,6 +4654,32 @@ async def generate_report(request: Request):
     else:
         from routes.chat import _looks_like_ai_overview
 
+    # Enforce topic relevance before any source enrichment/writing. This is especially important
+    # for scientific requests: an absence of H5N1 evidence must never be filled with unrelated Ebola,
+    # dengue, Alzheimer's, or AI articles simply because Tavily returned broadly related science news.
+    sources_before_filter = len(sources)
+    sources = _filter_relevant_sources(sources, question, intent)
+    if sources_before_filter and len(sources) < sources_before_filter:
+        log.info("Report: relevance gate removed %d off-topic web sources", sources_before_filter - len(sources))
+
+    # If a high-grounding request has no relevant evidence after the first search, issue a second,
+    # tightly-anchored verification search against the resolved subject. Never substitute unrelated
+    # sources just to make the report look complete.
+    if not sources and not has_file_data and _research_domain_from_intent(question, intent) in {"scientific", "regulatory", "comparison", "financial"}:
+        try:
+            from routes.chat import tavily_search_multi as _tavily_search_multi
+            strict_queries = await _build_strict_subject_search_queries(question, intent)
+            log.info("Report: strict relevance search for %s: %r", _research_domain_from_intent(question, intent), strict_queries)
+            searched_strict = await _tavily_search_multi(
+                strict_queries, max_results=10, min_results=6, images_out=image_candidates_raw,
+                historical_intent=bool(_HISTORICAL_INTENT_RE.search(question)), max_keys_per_query=1,
+            )
+            strict_sources = [{"title": r["title"], "url": r["url"], "snippet": r["snippet"], "fullContent": r.get("fullContent", "")} for r in searched_strict]
+            sources = _filter_relevant_sources(strict_sources, question, intent)
+            log.info("Report: strict relevance search retained %d/%d sources", len(sources), len(strict_sources))
+        except Exception as exc:
+            log.warning("Report: strict relevance search failed: %s", exc)
+
     # A Tavily search coming back empty does NOT mean the topic is
     # unanswerable — it just means there's no news article/webpage that
     # matches it. Personal/advisory questions ("give me a business idea
@@ -4687,8 +4700,10 @@ async def generate_report(request: Request):
             r"market\s+(today|now)|breaking)\b",
             question, re.IGNORECASE,
         ))
-        if needs_current_data:
-            log.warning("Report: still no sources after self-search, and question needs live data — failing")
+        grounded_domain = _research_domain_from_intent(question, intent)
+        needs_grounded_evidence = grounded_domain in {"scientific", "regulatory", "comparison", "financial"}
+        if needs_current_data or needs_grounded_evidence:
+            log.warning("Report: no relevant sources after relevance-gated search for %s — failing instead of substituting unrelated evidence", grounded_domain)
             return JSONResponse(
                 {"error": "Could not retrieve data for this topic. Please try again.",
                  "report": "Could not retrieve data for this topic. Please try again.",

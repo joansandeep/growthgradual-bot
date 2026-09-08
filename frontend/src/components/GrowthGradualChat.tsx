@@ -127,68 +127,19 @@ function loadConversations(): Conversation[] {
 }
 function saveConversations(convs: Conversation[]) {
   if (typeof window === 'undefined') return;
-
-  // Persist the actual chat history, but never persist ephemeral/loading state
-  // or raw attachment payloads. Report file images/source documents can be very
-  // large and may exhaust the browser storage quota; when that happens the old
-  // implementation lost the ENTIRE history because setItem threw.
+  // Strip reportLoading flag before persisting — a loading state in a saved conversation
+  // would re-trigger the report spinner with no active fetch on reload.
+  // Also drop reportFiles (raw base64 attachments) — keeping these out of
+  // localStorage avoids bloating it; reportEligible/reportQuestion are kept
+  // so the "Generate Report" button still works after a reload (just
+  // without the original attachments).
   const cleaned = convs.slice(0, 50).map(c => ({
     ...c,
-    messages: c.messages.map(m => ({
-      ...m,
-      reportLoading: false,
-      reportFiles: undefined,
-      reportData: m.reportData
-        ? {
-            ...m.reportData,
-            // Re-downloadable/derived payloads are intentionally not persisted.
-            fileImages: undefined,
-            sourceDocuments: undefined,
-            // Keep the report itself, metadata, sources and presentation so a
-            // restored conversation still contains the generated report.
-          }
-        : undefined,
-    })),
+    messages: c.messages.map(m => (m.reportLoading || m.reportFiles)
+      ? { ...m, reportLoading: false, reportFiles: undefined }
+      : m),
   }));
-
-  try {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(cleaned));
-    return;
-  } catch (err) {
-    // QuotaExceededError should never make prompts disappear from history.
-    // Retry with a compact representation that preserves every user/assistant
-    // message plus the essential report metadata.
-    try {
-      const compact = cleaned.slice(0, 30).map(c => ({
-        ...c,
-        messages: c.messages.map(m => m.reportData
-          ? {
-              ...m,
-              reportData: {
-                report: m.reportData.report.slice(0, 50000),
-                title: m.reportData.title,
-                summary: m.reportData.summary,
-                charts: m.reportData.charts,
-                images: m.reportData.images,
-                sources: m.reportData.sources,
-                keyStats: m.reportData.keyStats,
-                recommendedFormat: m.reportData.recommendedFormat,
-                theme: m.reportData.theme,
-                presentation: m.reportData.presentation,
-              },
-              reportLoading: false,
-              reportFiles: undefined,
-            }
-          : m),
-      }));
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(compact));
-      console.warn('[history] Storage quota reached; persisted compact history instead.', err);
-    } catch (compactErr) {
-      console.error('[history] Unable to persist conversation history.', compactErr);
-      // Do not throw into React state updates. The in-memory history remains
-      // available for the current session and can be saved on the next change.
-    }
-  }
+  localStorage.setItem(STORAGE_KEY, JSON.stringify(cleaned));
 }
 
 // ─── Markdown renderer ────────────────────────────────────────────────────────
@@ -1639,7 +1590,7 @@ export default function GrowthGradualChat() {
     bottomRef.current?.scrollIntoView({ behavior:'smooth' });
   }, [messages]);
 
-  // Save whenever the conversation list changes.
+  // Save whenever conversations change — deduplicate by id before persisting
   useEffect(() => {
     if (!conversations.length) return;
     const seen = new Set<string>();
@@ -1654,19 +1605,6 @@ export default function GrowthGradualChat() {
       setConversations(deduped);
     }
   }, [conversations]);
-
-  // Keep the active conversation synchronized with the live message list.
-  // Report generation, edits, chart extraction, follow-up suggestions and
-  // other async message updates happen after the original conversation was
-  // created; previously those later updates changed `messages` only, so the
-  // sidebar/localStorage kept an older snapshot. This effect makes every user
-  // prompt and every assistant update part of the persisted conversation.
-  useEffect(() => {
-    if (!activeId || !messages.length) return;
-    setConversations(prev => prev.map(c =>
-      c.id === activeId ? { ...c, messages, ts: Date.now() } : c
-    ));
-  }, [messages, activeId]);
 
   // New chat
   const startNewChat = useCallback(() => {

@@ -157,13 +157,13 @@ class SectionType(str, Enum):
     METRICS_DASHBOARD = "metrics_dashboard"
     NARRATIVE = "narrative"
     FINANCIALS = "financials"
-    VALUATION = "valuation"
     COMPLIANCE = "compliance"
     METHODOLOGY = "methodology"
     FINDINGS = "findings"
     TIMELINE = "timeline"
     COMPARISON = "comparison"
     RISK_ASSESSMENT = "risk_assessment"
+    VALUATION = "valuation"
     MARKET_CONTEXT = "market_context"
     NEWS_DIGEST = "news_digest"
     RECOMMENDATIONS = "recommendations"
@@ -824,21 +824,6 @@ class ReportPresentationSpec:
         )
 
         sections_raw = data.get("sections") or []
-        # Be tolerant of common LLM serialization variants while keeping the
-        # final representation strictly typed. Some models emit an explicit
-        # section_order array or plain section-title strings instead of the
-        # full section objects requested by the prompt. Preserve those titles
-        # and synthesize the minimum safe metadata rather than erasing the
-        # composition and forcing a renderer fallback.
-        if not sections_raw and isinstance(data.get("section_order"), list):
-            sections_raw = [
-                {"id": f"section-{i + 1}", "title": str(title), "order": i}
-                for i, title in enumerate(data.get("section_order")[:100])
-                if isinstance(title, (str, int, float))
-            ]
-            if sections_raw:
-                warnings.append("sections: reconstructed from section_order")
-
         sections: List[ReportSection] = []
         if isinstance(sections_raw, list):
             for i, s in enumerate(sections_raw[:100]):

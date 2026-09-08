@@ -63,7 +63,7 @@ def main() -> None:
     assert "Key Metrics" in financial_text
     assert "Compliance Overview" in regulatory_text
     assert "Methodology" in scientific_text
-    assert "Observed Trend" in financial_text
+    assert "OBSERVED TREND" in financial_text
 
     # The presentation presets produce different structural text/orderings,
     # proving that the PDF is consuming the presentation spec rather than a
