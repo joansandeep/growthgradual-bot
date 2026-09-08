@@ -3453,6 +3453,23 @@ def _replace_chart_runtime_with_svg(html_doc: str) -> str:
     return html_doc
 
 def _strip_non_printing_runtime(html_doc: str) -> str:
+    """Prepare browser-oriented report HTML for print/PDF engines.
+
+    The interactive HTML renderer intentionally uses a few modern screen CSS
+    features that WeasyPrint does not implement (clamp(), 100vw, sticky,
+    overflow-x, grid place-items and screen-only media queries). Normalize
+    those constructs only in the PDF copy so the web report remains unchanged.
+    """
+    # Make the generated HTML CSS print-safe before WeasyPrint parses it.
+    html_doc = re.sub(r'font-size:\s*clamp\([^;{}]+\)', 'font-size: 42px', html_doc, flags=re.IGNORECASE)
+    html_doc = re.sub(r'width:\s*100vw', 'width: 100%', html_doc, flags=re.IGNORECASE)
+    html_doc = re.sub(r'margin-left:\s*calc\(50%\s*-\s*50vw\)', 'margin-left: 0', html_doc, flags=re.IGNORECASE)
+    html_doc = re.sub(r'position:\s*sticky', 'position: static', html_doc, flags=re.IGNORECASE)
+    html_doc = re.sub(r'overflow-x:\s*auto', 'overflow: visible', html_doc, flags=re.IGNORECASE)
+    html_doc = re.sub(r'place-items:\s*center', 'align-items: center; justify-content: center', html_doc, flags=re.IGNORECASE)
+    html_doc = re.sub(r'@media\s*\(max-width:\s*760px\)\s*\{', '@media screen and (max-width: 760px) {', html_doc, flags=re.IGNORECASE)
+    html_doc = re.sub(r'print-color-adjust:\s*exact\s*!?important?;?', '', html_doc, flags=re.IGNORECASE)
+    html_doc = re.sub(r'-webkit-print-color-adjust:\s*exact\s*!?important?;?', '', html_doc, flags=re.IGNORECASE)
     html_doc = re.sub(r'\sloading=["\']lazy["\']', "", html_doc, flags=re.IGNORECASE)
     # HTML stat cards normally animate from 0 to their target in the browser.
     # PDF is static, so write the target value into the markup before printing.

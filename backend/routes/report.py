@@ -35,7 +35,7 @@ from utils.screener_kb import (
 )
 from utils.intent import resolve_request_intent, RequestIntent
 from routes.source_manifest import normalise_source_manifest
-from utils.presentation_schema import ReportPresentationSpec
+from utils.presentation_schema import ReportPresentationSpec, default_spec_for_domain, ReportDomain
 
 router = APIRouter()
 log = logging.getLogger("report")
@@ -3769,12 +3769,13 @@ HOW TO DECIDE — DATA FIRST, NEVER A TEMPLATE:
 11. If sources are thin or unavailable, simplify the composition and avoid unsupported chart/table/timeline/comparison blocks. A simpler valid report is better than a visually busy but evidence-poor report.
 12. Use the requested depth to control breadth, but do not turn depth into a fixed visual template. Keep the existing section-count guidance below as a planning aid only.
 13. Two requests on similar subjects should still be allowed to produce different presentation plans when their register, depth, intent, evidence, or available data differs.
+14. ALWAYS return a valid "presentation" object. It is the composition contract for this report. Never omit it; when uncertain, choose the safest composition supported by the request and source preview.
 
 SECTION PLANNING GUIDANCE:
-14. There is NO default section list and NO required section. An executive summary, overview, risks, recommendations, or conclusion belongs only when this request and evidence justify it.
-15. Match the per-section "format" to the data shape, not habit. A ranked metric series may fit a chart; four or more mixed-type fields may fit a table; a short qualitative finding may fit prose/bullets; a data-poor section should not be forced into a chart.
-16. If the source preview is empty or mostly irrelevant, plan fewer sections and favor prose/bullets rather than invented visuals.
-17. Number of sections should fit the requested depth — but the existing writer has a hard minimum-length floor. Unless the user explicitly asks for something short, avoid under-planning a substantive report; use the existing guidance of brief 2-4 sections, standard 7-10, detailed 9-12, comprehensive 11-14+ as flexible ranges, not rigid templates.
+15. There is NO default section list and NO required section. An executive summary, overview, risks, recommendations, or conclusion belongs only when this request and evidence justify it.
+16. Match the per-section "format" to the data shape, not habit. A ranked metric series may fit a chart; four or more mixed-type fields may fit a table; a short qualitative finding may fit prose/bullets; a data-poor section should not be forced into a chart.
+17. If the source preview is empty or mostly irrelevant, plan fewer sections and favor prose/bullets rather than invented visuals.
+18. Number of sections should fit the requested depth — but the existing writer has a hard minimum-length floor. Unless the user explicitly asks for something short, avoid under-planning a substantive report; use the existing guidance of brief 2-4 sections, standard 7-10, detailed 9-12, comprehensive 11-14+ as flexible ranges, not rigid templates.
 
 Never invent facts, numbers, sources, or data. Your job is to decide the structure and presentation from the evidence available to you."""
 
@@ -3785,11 +3786,10 @@ def _validate_report_plan(plan) -> bool:
     used for chart specs (_validate_chart_spec) — reject anything malformed
     rather than risk feeding garbage into the writer call.
 
-    Note: the optional "presentation" field is intentionally NOT checked
-    here — it has its own dedicated validation path through
-    ReportPresentationSpec.from_llm_output (see _plan_report_structure),
-    which sanitizes/falls back instead of rejecting the whole plan over a
-    malformed presentation field."""
+    Note: the "presentation" field has its own dedicated validation path
+    through ReportPresentationSpec.from_llm_output (see _plan_report_structure).
+    The planner normalization step guarantees a validated presentation before
+    the plan is sent downstream."""
     if not isinstance(plan, dict):
         return False
     if plan.get("depth") not in ("brief", "standard", "detailed", "comprehensive"):
@@ -3816,22 +3816,37 @@ def _validate_report_plan(plan) -> bool:
     return True
 
 
-def _attach_presentation_to_plan(plan: dict) -> dict:
-    """Given an already structurally-validated plan dict, sanitize/validate
-    its optional "presentation" field (if any) through the existing
-    ReportPresentationSpec schema module and replace it in-place with a
-    plain, JSON-safe dict. Never raises, never trusts raw LLM JSON as-is,
-    and never invents a presentation field that wasn't there.
+def _attach_presentation_to_plan(plan: dict, question: str = "", intent=None) -> dict:
+    """Normalize the planner presentation and guarantee a usable spec.
 
-    - plan has no "presentation" key -> returned unchanged (fully
-      backward-compatible with plans generated before this field existed).
-    - plan["presentation"] is malformed/invalid -> sanitized to a safe,
-      schema-valid default (with warnings logged), never rejected outright.
-    - plan["presentation"] is valid -> normalized/validated dict form.
+    The presentation is a required composition contract for new reports. If
+    the LLM omits it, derive a safe domain-appropriate preset from intent/topic
+    rather than silently reverting the renderer to the legacy fixed template.
+    Invalid LLM presentation data is still sanitized through the schema.
     """
     raw_presentation = plan.get("presentation")
+
+    def _infer_domain() -> str:
+        evidence = set(getattr(intent, "evidence_needed", []) or [])
+        label = str(getattr(intent, "intent_label", "") or "").lower()
+        topic = str(question or "").lower()
+        if "comparison" in evidence or "comparison" in label or " vs " in topic:
+            return ReportDomain.COMPARISON.value
+        if "regulatory" in evidence or "regulation" in label or any(k in topic for k in ("sebi", "regulat", "compliance", "policy", "rule", "law")):
+            return ReportDomain.REGULATORY.value
+        if "scientific" in evidence or "clinical" in label or any(k in topic for k in ("clinical", "virology", "trial", "scientific", "disease", "pathogen")):
+            return ReportDomain.SCIENTIFIC.value
+        if "news" in evidence or "market" in label or any(k in topic for k in ("market", "stock", "share", "price")):
+            return ReportDomain.MARKET_NEWS.value
+        if "financials" in evidence:
+            return ReportDomain.FINANCIAL.value
+        return ReportDomain.GENERIC.value
+
     if raw_presentation is None:
-        plan.pop("presentation", None)
+        domain = _infer_domain()
+        fallback = default_spec_for_domain(domain)
+        plan["presentation"] = fallback.to_dict()
+        log.info("Report: planner omitted presentation; injected validated %s preset", domain)
         return plan
 
     try:
@@ -3840,10 +3855,9 @@ def _attach_presentation_to_plan(plan: dict) -> dict:
             log.info("Report: presentation spec sanitized during planning: %s", presentation_warnings)
         plan["presentation"] = presentation_spec.to_dict()
     except Exception as e:
-        # from_llm_output is designed never to raise, but guard anyway — a
-        # bad presentation field must never take down the whole plan.
-        log.warning("Report: presentation spec validation failed unexpectedly, dropping it: %s", e)
-        plan.pop("presentation", None)
+        domain = _infer_domain()
+        log.warning("Report: presentation validation failed; using %s preset: %s", domain, e)
+        plan["presentation"] = default_spec_for_domain(domain).to_dict()
 
     return plan
 
@@ -3947,10 +3961,10 @@ async def _plan_report_structure(
     log.info("Report: plan ready — depth=%s, %d section(s): %s",
               plan.get("depth"), len(plan["sections"]), [s["heading"] for s in plan["sections"]])
 
-    # Optional presentation spec: never trust the planner's raw JSON for it —
-    # always validate/sanitize through the existing schema module first. See
-    # _attach_presentation_to_plan for the (independently testable) logic.
-    plan = _attach_presentation_to_plan(plan)
+    # Presentation is the renderer composition contract for this report.
+    # Always normalize it, and inject a validated domain preset when the LLM
+    # omits it so new reports do not silently fall back to the legacy template.
+    plan = _attach_presentation_to_plan(plan, question=question, intent=intent)
     return plan
 
 
