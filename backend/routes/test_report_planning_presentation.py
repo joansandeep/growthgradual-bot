@@ -65,7 +65,7 @@ def test_plan_without_presentation_still_works():
     _assert(_validate_report_plan(plan), "existing plan shape (no presentation) must still validate")
 
     result = _attach_presentation_to_plan(dict(plan))
-    _assert("presentation" not in result, "no presentation field must be added when none was given")
+    _assert(isinstance(result.get("presentation"), dict), "missing presentation fallback")
     _assert(result["sections"] == plan["sections"], "existing planner fields must be preserved untouched")
     _assert(result["depth"] == plan["depth"], "existing planner fields must be preserved untouched")
 

@@ -157,6 +157,7 @@ class SectionType(str, Enum):
     METRICS_DASHBOARD = "metrics_dashboard"
     NARRATIVE = "narrative"
     FINANCIALS = "financials"
+    VALUATION = "valuation"
     COMPLIANCE = "compliance"
     METHODOLOGY = "methodology"
     FINDINGS = "findings"
