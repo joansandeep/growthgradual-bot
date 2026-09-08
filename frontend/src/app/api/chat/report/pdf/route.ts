@@ -10,7 +10,7 @@ import { LOGO_B64 } from './logos';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
-export const maxDuration = 120;
+export const maxDuration = 180;
 
 const log = createLogger('api/chat/report/pdf');
 const BACKEND = (process.env.BACKEND_URL ?? 'http://localhost:8000').replace(/\/$/, '');
@@ -36,12 +36,16 @@ export async function POST(req: NextRequest) {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(bodyObj),
-      signal: AbortSignal.timeout(115_000),
+      signal: AbortSignal.timeout(165_000),
     });
   } catch (err) {
     log.error('Backend unreachable or timed out: %s', err);
-    done(502, 'backend unreachable');
-    return NextResponse.json({ error: 'Backend unavailable' }, { status: 502 });
+    const timedOut = err instanceof Error && (err.name === 'TimeoutError' || err.name === 'AbortError');
+    done(timedOut ? 504 : 502, timedOut ? 'backend timeout' : 'backend unreachable');
+    return NextResponse.json({ error: timedOut
+      ? 'PDF generation took too long. The report is ready; please retry the PDF export in a moment.'
+      : 'The report service is temporarily unavailable. Please retry the PDF export.'
+    }, { status: timedOut ? 504 : 502 });
   }
 
   if (!upstream.ok) {

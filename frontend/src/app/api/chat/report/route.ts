@@ -48,7 +48,11 @@ export async function POST(req: NextRequest) {
     log.warn('Non-JSON response from backend (%d): %s', upstream.status, text.slice(0, 120));
     done(upstream.status, 'non-json upstream');
     return NextResponse.json(
-      { error: `Backend returned ${upstream.status}: ${text.slice(0, 200)}` },
+      { error: upstream.status === 503
+        ? 'The report service is temporarily overloaded. Please retry in a moment.'
+        : upstream.status === 504
+          ? 'Report generation timed out. Please retry in a moment.'
+          : `Backend returned ${upstream.status}: ${text.slice(0, 200)}` },
       { status: upstream.status },
     );
   }

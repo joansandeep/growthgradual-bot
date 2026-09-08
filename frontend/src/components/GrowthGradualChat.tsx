@@ -144,7 +144,13 @@ function saveConversations(convs: Conversation[]) {
 
 // ─── Markdown renderer ────────────────────────────────────────────────────────
 function renderMd(text: string): string {
+  // Escape raw report/source text before creating our own renderer markup.
+  // LLM output is untrusted input; raw HTML/JS must never reach
+  // dangerouslySetInnerHTML.
   return text
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
     // Normalize line endings, strip trailing spaces, and collapse runs of 3+
     // blank lines (common in LLM output) down to a single blank line so we
     // don't end up stacking extra empty paragraphs / gaps before tables etc.
@@ -580,6 +586,56 @@ function ChartBlock({ spec }: { spec: ChartSpec }) {
   );
 }
 
+// ─── Presentation helpers ─────────────────────────────────────────────────────
+type PresentationSection = {
+  title?: string;
+  section_type?: string;
+  layout?: string;
+  density?: string;
+  emphasis?: string;
+  order?: number;
+  blocks?: Array<{ kind?: string }>;
+};
+
+type ReportPresentation = {
+  domain?: string;
+  cover?: { enabled?: boolean; treatment?: string };
+  executive_summary?: { placement?: string };
+  sections?: PresentationSection[];
+  default_layout?: string;
+  default_density?: string;
+};
+
+function getReportPresentation(rd?: ReportData): ReportPresentation | null {
+  const p = rd?.presentation;
+  return p && typeof p === 'object' ? p as ReportPresentation : null;
+}
+
+function normalizeSectionTitle(value: unknown): string {
+  return String(value ?? '')
+    .replace(/^\s*\d+[.)]\s*/, '')
+    .trim()
+    .toLowerCase();
+}
+
+function presentationSectionFor(title: string, presentation: ReportPresentation | null): PresentationSection | null {
+  const wanted = normalizeSectionTitle(title);
+  if (!wanted || !presentation?.sections?.length) return null;
+  return presentation.sections.find((s) => normalizeSectionTitle(s.title) === wanted) ?? null;
+}
+
+function presentationClass(section: PresentationSection | null, presentation: ReportPresentation | null): string {
+  const safe = (v: unknown, fallback: string) => String(v ?? fallback).toLowerCase().replace(/[^a-z0-9_-]+/g, '_');
+  return [
+    'report-section-shell',
+    `report-domain-${safe(presentation?.domain, 'generic')}`,
+    `report-layout-${safe(section?.layout, presentation?.default_layout || 'single_column')}`,
+    `report-density-${safe(section?.density, presentation?.default_density || 'standard')}`,
+    `report-emphasis-${safe(section?.emphasis, 'normal')}`,
+    `report-type-${safe(section?.section_type, 'narrative')}`,
+  ].join(' ');
+}
+
 // ─── Report Panel ─────────────────────────────────────────────────────────────
 // ─── Email Modal ──────────────────────────────────────────────────────────────
 function EmailModal({ onClose, onSend, sending, result, defaultSubject }: {
@@ -967,71 +1023,110 @@ function ReportPanel({ msg, question, hasPriorContext, onGenerate }: { msg: Mess
           )}
         </div>
         {open && done && (
-          <div className="report-body">
+          <div className={`report-body report-body--${String(getReportPresentation(rd)?.domain || 'generic').toLowerCase().replace(/[^a-z0-9_-]+/g, '_')}`}>
             <div className="report-content">
-              {rd.keyStats.length > 0 && (
-                <div className="key-stats-row">
-                  {rd.keyStats.map((s,i) => (
-                    <div key={i} className="key-stat-card">
-                      <div className="key-stat-label">{s.label}</div>
-                      <div className="key-stat-value">{s.value}</div>
-                      {s.change && <div className={`key-stat-change ${s.change.startsWith('+') ? 'pos' : s.change.startsWith('-') ? 'neg' : ''}`}>{s.change}</div>}
-                    </div>
-                  ))}
-                </div>
-              )}
-              {/* Render report text with charts + web images interleaved at [CHART_n] / [WEB_IMG_n] placeholders */}
-              {(rd.charts.length > 0 || (rd.images?.length ?? 0) > 0)
-                ? (() => {
-                    // Split on both placeholder kinds in one pass — with 2 capture
-                    // groups, String.split yields [text, kind, num, text, kind, num, …]
-                    const parts = rd.report.split(/\[(CHART|WEB_IMG)_(\d+)\]/gi);
-                    const elements: React.ReactNode[] = [];
-                    for (let i = 0; i < parts.length; i += 3) {
-                      const text = parts[i];
-                      if (text && text.trim()) {
-                        elements.push(<div key={`t-${i}`} dangerouslySetInnerHTML={{ __html: renderMd(text) }}/>);
-                      }
-                      const kind = parts[i + 1];
-                      const num = parts[i + 2];
-                      if (kind && num !== undefined) {
-                        const n = parseInt(num, 10) - 1;
-                        if (kind.toUpperCase() === 'CHART') {
-                          const spec = rd.charts[n];
-                          if (spec) elements.push(<div key={`c-${i}`} className="inline-report-chart"><ChartBlock spec={spec}/></div>);
-                        } else {
-                          const img = rd.images?.[n];
-                          if (img) elements.push(
-                            <figure key={`img-${i}`} className="inline-report-image">
-                              <img src={proxyImg(img.url)} alt={img.caption ?? ''} loading="lazy" />
-                              {img.caption ? <figcaption>{img.caption}</figcaption> : null}
-                            </figure>
-                          );
-                        }
-                      }
-                    }
-                    // Fallback: any charts/images the model didn't place a placeholder for
-                    rd.charts.forEach((c, ci) => {
-                      const placeholderRe = new RegExp(`\\[CHART_${ci + 1}\\]`, 'i');
-                      if (!placeholderRe.test(rd.report)) {
-                        elements.push(<div key={`fb-c-${ci}`} className="inline-report-chart"><ChartBlock spec={c}/></div>);
-                      }
-                    });
-                    (rd.images ?? []).forEach((img, ii) => {
-                      const placeholderRe = new RegExp(`\\[WEB_IMG_${ii + 1}\\]`, 'i');
-                      if (!placeholderRe.test(rd.report)) {
-                        elements.push(
-                          <figure key={`fb-img-${ii}`} className="inline-report-image">
-                              <img src={proxyImg(img.url)} alt={img.caption ?? ''} loading="lazy" />
+              {(() => {
+                const presentation = getReportPresentation(rd);
+                const hasMetricSection = !!presentation?.sections?.some((section) =>
+                  section.section_type === 'metrics_dashboard' ||
+                  (section.blocks ?? []).some((b) => b?.kind === 'metrics')
+                );
+                const metricPlacement = presentation?.sections?.find((section) => section.section_type === 'metrics_dashboard')?.order;
+                const metricClass = [
+                  'key-stats-row',
+                  hasMetricSection ? 'key-stats--planned' : 'key-stats--fallback',
+                  `key-stats--${String(presentation?.domain || 'generic').toLowerCase().replace(/[^a-z0-9_-]+/g, '_')}`,
+                ].join(' ');
+
+                const metrics = (rd.keyStats ?? []).slice(0, hasMetricSection || !presentation ? 12 : 6);
+                const renderStats = metrics.length > 0 && (hasMetricSection || !presentation);
+
+                const renderRichText = (rawText: string, prefix: string) => {
+                  if (!rawText.trim()) return null;
+                  const parts = (rd.charts.length > 0 || (rd.images?.length ?? 0) > 0)
+                    ? rawText.split(/\[(CHART|WEB_IMG)_(\d+)\]/gi)
+                    : [rawText];
+                  const elements: React.ReactNode[] = [];
+                  for (let i = 0; i < parts.length; i += 3) {
+                    const text = parts[i];
+                    if (text && text.trim()) elements.push(<div key={`${prefix}-t-${i}`} dangerouslySetInnerHTML={{ __html: renderMd(text) }} />);
+                    const kind = parts[i + 1];
+                    const num = parts[i + 2];
+                    if (kind && num !== undefined) {
+                      const n = parseInt(num, 10) - 1;
+                      if (kind.toUpperCase() === 'CHART') {
+                        const spec = rd.charts[n];
+                        if (spec) elements.push(<div key={`${prefix}-c-${i}`} className="inline-report-chart"><ChartBlock spec={spec}/></div>);
+                      } else {
+                        const img = rd.images?.[n];
+                        if (img) elements.push(
+                          <figure key={`${prefix}-img-${i}`} className="inline-report-image">
+                            <img src={proxyImg(img.url)} alt={img.caption ?? ''} loading="lazy" />
                             {img.caption ? <figcaption>{img.caption}</figcaption> : null}
                           </figure>
                         );
                       }
-                    });
-                    return <>{elements}</>;
-                  })()
-                : <div dangerouslySetInnerHTML={{ __html: renderMd(rd.report) }}/>
-              }
+                    }
+                  }
+                  return <>{elements}</>;
+                };
+
+                const split = rd.report.split(/^(#{1,3})\s+(.+)$/gm);
+                const sectionNodes: React.ReactNode[] = [];
+                if (split.length === 1) {
+                  sectionNodes.push(<div key="report-prose" className={presentationClass(null, presentation)}>{renderRichText(rd.report, 'report')}</div>);
+                } else {
+                  // split() yields preamble, marker, heading, body ...; build
+                  // one renderer-controlled shell per actual report heading.
+                  if (split[0]?.trim()) sectionNodes.push(<div key="report-preamble" className={presentationClass(null, presentation)}>{renderRichText(split[0], 'pre')}</div>);
+                  for (let i = 1; i + 2 < split.length; i += 3) {
+                    const level = split[i];
+                    const heading = split[i + 1] ?? '';
+                    const body = split[i + 2] ?? '';
+                    const section = presentationSectionFor(heading, presentation);
+                    const shellClass = `${presentationClass(section, presentation)} report-heading-level-${level.length}`;
+                    sectionNodes.push(
+                      <section key={`report-section-${i}`} className={shellClass}>
+                        {renderRichText(`${'#'.repeat(level.length)} ${heading}\n\n${body}`, `sec-${i}`)}
+                      </section>
+                    );
+                  }
+                }
+
+                // Preserve any chart/image that the writer forgot to place in
+                // the markdown. They are appended once, after the planned
+                // sections, rather than being forced into a fixed location.
+                const mentionedCharts = new Set(Array.from(rd.report.matchAll(/\[CHART_(\d+)\]/gi)).map((m) => Number(m[1]) - 1));
+                const mentionedImages = new Set(Array.from(rd.report.matchAll(/\[WEB_IMG_(\d+)\]/gi)).map((m) => Number(m[1]) - 1));
+                rd.charts.forEach((spec, i) => {
+                  if (!mentionedCharts.has(i)) sectionNodes.push(<div key={`fallback-chart-${i}`} className="inline-report-chart report-unplanned-visual"><ChartBlock spec={spec}/></div>);
+                });
+                (rd.images ?? []).forEach((img, i) => {
+                  if (!mentionedImages.has(i)) sectionNodes.push(
+                    <figure key={`fallback-image-${i}`} className="inline-report-image report-unplanned-visual">
+                      <img src={proxyImg(img.url)} alt={img.caption ?? ''} loading="lazy" />
+                      {img.caption ? <figcaption>{img.caption}</figcaption> : null}
+                    </figure>
+                  );
+                });
+
+                if (renderStats) {
+                  const statsNode = (
+                    <div key="presentation-metrics" className={metricClass} data-metric-order={metricPlacement ?? ''}>
+                      {metrics.map((s, i) => (
+                        <div key={i} className="key-stat-card">
+                          <div className="key-stat-label">{s.label}</div>
+                          <div className="key-stat-value">{s.value}</div>
+                          {s.change && <div className={`key-stat-change ${s.change.startsWith('+') ? 'pos' : s.change.startsWith('-') ? 'neg' : ''}`}>{s.change}</div>}
+                        </div>
+                      ))}
+                    </div>
+                  );
+                  const insertAt = typeof metricPlacement === 'number' ? Math.max(0, Math.min(metricPlacement, sectionNodes.length)) : 0;
+                  sectionNodes.splice(insertAt, 0, statsNode);
+                }
+                return <>{sectionNodes}</>;
+              })()}
               {(rd.sources?.length ?? 0) > 0 && (
                 <section className="report-sources" aria-label="Complete data sources">
                   <h2>Complete Data Sources <span>{rd.sources?.length}</span></h2>
@@ -2676,9 +2771,31 @@ export default function GrowthGradualChat() {
         .report-sources a,.report-source-provided{display:block;margin-top:4px;font-size:10px;color:#0d4f3c;text-decoration:none;overflow-wrap:anywhere;}
         .report-sources a:hover{text-decoration:underline;}
 
+        .report-body--scientific .report-section-shell { font-family: 'DM Sans', sans-serif; }
+        .report-body--scientific .report-section-shell.report-type-findings, .report-body--scientific .report-section-shell.report-type-evidence { padding: 10px 12px; background: #f4f7fb; border-left: 3px solid #64748b; border-radius: 0 8px 8px 0; }
+        .report-body--regulatory .report-section-shell.report-type-compliance, .report-body--regulatory .report-section-shell.report-type-risk_assessment { padding-left: 14px; border-left: 4px solid #334155; }
+        .report-body--comparison .report-section-shell.report-type-comparison { background: #f8fafc; padding: 10px; border: 1px solid #dfe4ee; border-radius: 10px; }
+        .report-body--financial .report-section-shell.report-type-financials { background: linear-gradient(90deg,rgba(255,255,255,.96),rgba(248,250,252,.8)); padding: 10px; border-radius: 10px; }
+
+        .report-section-shell { margin: 0 0 clamp(12px,1.8vh,22px); }
+        .report-section-shell.report-density-sparse { max-width: 88%; }
+        .report-section-shell.report-density-dense { margin-bottom: 9px; }
+        .report-section-shell.report-layout-two_column { column-count: 2; column-gap: 22px; }
+        .report-section-shell.report-layout-two_column > * { break-inside: avoid; }
+        .report-section-shell.report-layout-sidebar_main { border-left: 3px solid #cfd8e8; padding-left: 12px; }
+        .report-section-shell.report-layout-grid { background: rgba(255,255,255,.45); border: 1px solid #e2e6f0; border-radius: 10px; padding: 10px; }
+        .report-section-shell.report-emphasis-high { border-top: 2px solid #aeb8d0; padding-top: 7px; }
+        .report-section-shell.report-emphasis-critical { border-left: 4px solid #b91c1c; padding-left: 10px; }
+        .report-section-shell.report-type-timeline .md-h1, .report-section-shell.report-type-timeline .md-h2 { letter-spacing: .01em; }
+        .report-section-shell.report-type-comparison.report-layout-two_column { column-rule: 1px solid #dfe4ee; }
+
         /* Charts */
         .charts-grid { display:grid;grid-template-columns:repeat(auto-fit,minmax(min(240px,100%),1fr));gap:clamp(8px,1.2vw,16px);margin-bottom:clamp(10px,1.5vh,20px); }
-        .key-stats-row { display:flex;gap:clamp(6px,.8vw,12px);flex-wrap:wrap;margin-bottom:clamp(10px,1.5vh,18px); }
+        .key-stats-row { display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:8px;margin:0 0 clamp(12px,1.5vh,18px); }
+        .key-stats--fallback { opacity:.96; }
+        .key-stats--scientific { grid-template-columns:repeat(auto-fit,minmax(150px,1fr)); }
+        .key-stats--regulatory { grid-template-columns:repeat(auto-fit,minmax(170px,1fr)); }
+        .key-stats--comparison { grid-template-columns:repeat(auto-fit,minmax(145px,1fr)); }
         .key-stat-card {
           background:#fff;border:1px solid #e2e6f0;border-radius:10px;
           padding:clamp(8px,1.2vh,14px) clamp(10px,1.4vw,18px);min-width:80px;flex:1;
@@ -2856,6 +2973,7 @@ export default function GrowthGradualChat() {
           .key-stat-value { font-size: 14px; }
           .charts-grid { grid-template-columns: 1fr; }
           .report-body { padding: 10px; }
+          .report-section-shell.report-layout-two_column { column-count: 1; }
         }
 
         /* ── Medium phone (481–767px) ───────────────────────────────────── */
