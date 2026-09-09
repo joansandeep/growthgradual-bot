@@ -3969,7 +3969,21 @@ def _presentation_section_from_plan(sec: dict, order: int) -> dict:
     else:
         section_type = SectionType.NARRATIVE
 
-    blocks = []
+    # Choose a renderer-independent layout from the section's actual semantic
+    # role and requested content format. This is a recovery bridge for cases
+    # where the model omitted a complete presentation section; it is not a
+    # financial/regulatory/scientific template.
+    if section_type in (SectionType.COMPARISON, SectionType.FINANCIALS):
+        layout = LayoutVariant.TWO_COLUMN.value
+    elif section_type in (SectionType.TIMELINE, SectionType.RISK_ASSESSMENT, SectionType.METRICS_DASHBOARD):
+        layout = LayoutVariant.GRID.value
+    elif section_type in (SectionType.COMPLIANCE, SectionType.METHODOLOGY):
+        layout = LayoutVariant.SIDEBAR_MAIN.value
+    elif fmt == "mixed":
+        layout = LayoutVariant.TWO_COLUMN.value
+    else:
+        layout = LayoutVariant.SINGLE_COLUMN.value
+
     if fmt == "chart":
         blocks = [{"kind": "chart"}]
     elif fmt == "table":
@@ -3981,10 +3995,7 @@ def _presentation_section_from_plan(sec: dict, order: int) -> dict:
     else:
         blocks = [{"kind": "prose"}]
 
-    layout = LayoutVariant.SINGLE_COLUMN.value
-    if fmt == "mixed":
-        layout = LayoutVariant.TWO_COLUMN.value
-    density = ContentDensity.DENSE.value if fmt in {"table", "chart", "mixed"} else ContentDensity.STANDARD.value
+    density = ContentDensity.DENSE.value if fmt in {"table", "chart", "mixed"} or section_type in {SectionType.METRICS_DASHBOARD, SectionType.COMPARISON} else ContentDensity.STANDARD.value
     return {
         "id": re.sub(r"[^a-z0-9_-]+", "-", heading.lower()).strip("-") or f"section-{order}",
         "title": heading,

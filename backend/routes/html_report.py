@@ -778,9 +778,10 @@ def _render_image_block(image: dict, idx: int) -> str:
 
 
 def _markdown_to_html(md: str, charts: list, images: list, theme: dict | None = None) -> str:
+    """Small safe Markdown renderer with native tables/charts/images."""
     lines = md.replace("\r\n", "\n").split("\n")
     out: list[str] = []
-    list_mode: str | None = None  # "ul" | "ol" | None
+    list_mode: str | None = None
     para_buf: list[str] = []
     reveal_counter = 0
 
@@ -799,77 +800,76 @@ def _markdown_to_html(md: str, charts: list, images: list, theme: dict | None = 
             out.append(f"</{list_mode}>")
             list_mode = None
 
-    for raw_line in lines:
+    def is_table_start(i: int) -> bool:
+        if i + 1 >= len(lines):
+            return False
+        a = lines[i].strip(); b = lines[i + 1].strip()
+        return a.startswith("|") and a.endswith("|") and re.match(r"^\|?\s*:?-{3,}:?\s*(?:\|\s*:?-{3,}:?\s*)+\|?$", b) is not None
+
+    i = 0
+    while i < len(lines):
+        raw_line = lines[i]
         line = raw_line.rstrip()
         stripped = line.strip()
 
         chart_m = _CHART_RE.match(stripped)
         webimg_m = _WEBIMG_RE.match(stripped)
-
         if chart_m:
-            flush_para(); close_list()
-            n = int(chart_m.group(1))
-            if 1 <= n <= len(charts):
-                out.append(_render_chart_block(charts[n - 1], n, theme))
-            continue
-
+            flush_para(); close_list(); n = int(chart_m.group(1))
+            if 1 <= n <= len(charts): out.append(_render_chart_block(charts[n - 1], n, theme))
+            i += 1; continue
         if webimg_m:
+            flush_para(); close_list(); n = int(webimg_m.group(1))
+            if 1 <= n <= len(images): out.append(_render_image_block(images[n - 1], n))
+            i += 1; continue
+
+        if is_table_start(i):
             flush_para(); close_list()
-            n = int(webimg_m.group(1))
-            if 1 <= n <= len(images):
-                out.append(_render_image_block(images[n - 1], n))
+            rows = []
+            # Header + separator + following pipe rows.
+            rows.append(lines[i].strip())
+            i += 2
+            while i < len(lines):
+                candidate = lines[i].strip()
+                if not (candidate.startswith("|") and candidate.endswith("|")):
+                    break
+                rows.append(candidate); i += 1
+            def cells(row: str):
+                return [c.strip() for c in row.strip("|").split("|")]
+            heads = cells(rows[0])
+            thead = "".join(f"<th>{_inline_md(c)}</th>" for c in heads)
+            body_rows = []
+            for row in rows[1:]:
+                vals = cells(row)
+                body_rows.append("<tr>" + "".join(f"<td>{_inline_md(vals[k] if k < len(vals) else '')}</td>" for k in range(len(heads))) + "</tr>")
+            out.append('<div class="gg-table-wrap gg-block"><div class="gg-table-scroll"><table class="gg-table"><thead><tr>' + thead + '</tr></thead><tbody>' + ''.join(body_rows) + '</tbody></table></div></div>')
             continue
 
         if not stripped:
-            flush_para(); close_list()
-            continue
-
+            flush_para(); close_list(); i += 1; continue
         if stripped.startswith("### "):
-            flush_para(); close_list()
-            out.append(f'<h3 class="gg-reveal" data-reveal>{_inline_md(stripped[4:])}</h3>')
-            continue
+            flush_para(); close_list(); out.append(f'<h3 class="gg-reveal" data-reveal>{_inline_md(stripped[4:])}</h3>'); i += 1; continue
         if stripped.startswith("## "):
-            flush_para(); close_list()
-            out.append(f'<h2 class="gg-reveal gg-section-h2" data-reveal>{_inline_md(stripped[3:])}</h2>')
-            continue
+            flush_para(); close_list(); out.append(f'<h2 class="gg-reveal gg-section-h2" data-reveal>{_inline_md(stripped[3:])}</h2>'); i += 1; continue
         if stripped.startswith("# "):
-            flush_para(); close_list()
-            out.append(f'<h1 class="gg-reveal" data-reveal>{_inline_md(stripped[2:])}</h1>')
-            continue
-
+            flush_para(); close_list(); out.append(f'<h1 class="gg-reveal" data-reveal>{_inline_md(stripped[2:])}</h1>'); i += 1; continue
         if stripped.startswith("> "):
-            flush_para(); close_list()
-            out.append(f'<blockquote class="gg-reveal gg-pullquote" data-reveal>{_inline_md(stripped[2:])}</blockquote>')
-            continue
-
+            flush_para(); close_list(); out.append(f'<blockquote class="gg-reveal gg-pullquote" data-reveal>{_inline_md(stripped[2:])}</blockquote>'); i += 1; continue
         if stripped in ("---", "***", "___"):
-            flush_para(); close_list()
-            out.append('<hr class="gg-divider" />')
-            continue
+            flush_para(); close_list(); out.append('<hr class="gg-divider" />'); i += 1; continue
 
         bullet_m = re.match(r"^[-•*]\s+(.*)$", stripped)
         numbered_m = re.match(r"^\d+[.)]\s+(.*)$", stripped)
-
         if bullet_m:
             flush_para()
-            if list_mode != "ul":
-                close_list()
-                out.append('<ul class="gg-reveal gg-list" data-reveal>')
-                list_mode = "ul"
-            out.append(f"<li>{_inline_md(bullet_m.group(1))}</li>")
-            continue
-
+            if list_mode != "ul": close_list(); out.append('<ul class="gg-reveal gg-list" data-reveal>'); list_mode = "ul"
+            out.append(f"<li>{_inline_md(bullet_m.group(1))}</li>"); i += 1; continue
         if numbered_m:
             flush_para()
-            if list_mode != "ol":
-                close_list()
-                out.append('<ol class="gg-reveal gg-list" data-reveal>')
-                list_mode = "ol"
-            out.append(f"<li>{_inline_md(numbered_m.group(1))}</li>")
-            continue
+            if list_mode != "ol": close_list(); out.append('<ol class="gg-reveal gg-list" data-reveal>'); list_mode = "ol"
+            out.append(f"<li>{_inline_md(numbered_m.group(1))}</li>"); i += 1; continue
 
-        close_list()
-        para_buf.append(stripped)
+        close_list(); para_buf.append(stripped); i += 1
 
     flush_para(); close_list()
     return "\n".join(out)
@@ -1029,7 +1029,11 @@ main {{ width: min(var(--content-max), calc(100% - 48px)); margin: 0 auto; paddi
 .gg-summary-card--critical {{ border-left: 5px solid var(--negative); }}
 .gg-summary-heading {{ margin: 0 0 14px; font-size: 24px; }}
 
-.gg-report-sections {{ display: flex; flex-direction: column; gap: 30px; }}
+.gg-report-sections {{ display: flex; flex-direction: column; gap: 26px; }}
+.gg-composition--grid .gg-report-sections {{ gap: 18px; }}
+.gg-composition--two_column .gg-report-sections {{ max-width: 1080px; }}
+.gg-composition--sidebar_main .gg-report-sections {{ max-width: 1080px; }}
+
 .gg-section {{ scroll-margin-top: 24px; }}
 .gg-section--full_bleed {{ width: 100vw; margin-left: calc(50% - 50vw); padding: 42px max(24px, calc((100vw - var(--content-max)) / 2)); background: var(--paper-alt); }}
 .gg-section--sidebar_main {{ display: grid; grid-template-columns: minmax(180px, .26fr) minmax(0, 1fr); gap: 30px; align-items: start; }}
@@ -1045,7 +1049,11 @@ main {{ width: min(var(--content-max), calc(100% - 48px)); margin: 0 auto; paddi
 .gg-section[data-density="sparse"] {{ padding-top: 14px; padding-bottom: 14px; }}
 .gg-section[data-density="dense"] {{ font-size: 15px; }}
 .gg-section[data-density="dense"] p {{ font-size: 15px; }}
-.gg-section[data-density="dense"] .gg-block {{ margin-bottom: 14px; }}
+''.gg-section[data-density="dense"] .gg-block {{ margin-bottom: 14px; }}
+.gg-composition--hybrid .gg-section + .gg-section {{ border-top: 1px solid var(--rule); padding-top: 24px; }}
+.gg-section[data-emphasis="critical"] {{ background: color-mix(in srgb, var(--negative) 5%, transparent); padding: 16px; border-radius: 10px; }}
+.gg-section[data-section-type="comparison"] .gg-table-wrap, .gg-section[data-section-type="financials"] .gg-table-wrap {{ overflow: auto; }}
+.gg-section[data-section-type="timeline"] .gg-section-body, .gg-section[data-section-type="findings"] .gg-section-body {{ max-width: 82ch; }}
 
 .gg-block {{ min-width: 0; break-inside: avoid; }}
 .gg-block--emphasis-high {{ border-left: 3px solid var(--accent); padding-left: 18px; }}
@@ -1101,10 +1109,12 @@ main {{ width: min(var(--content-max), calc(100% - 48px)); margin: 0 auto; paddi
 
 .gg-reveal {{ opacity: 0; transform: translateY(12px); transition: opacity .5s ease, transform .5s ease; transition-delay: var(--d, 0ms); }}
 .gg-reveal.gg-visible {{ opacity: 1; transform: translateY(0); }}
-.gg-sources {{ margin-top: 48px; padding: 26px; border: 1px solid var(--rule); background: var(--paper-alt); }}
+.gg-sources {{ margin-top: 36px; padding: 22px; border: 1px solid var(--rule); background: var(--paper-alt); }}
+.gg-sources, .gg-source-card {{ break-inside: auto; }}
+
 .gg-sources h2 {{ margin-top: 0; }}
 .gg-sources-intro {{ color: var(--muted); font-size: 13px; }}
-.gg-sources-grid {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 10px; }}
+.gg-sources-grid {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 8px; }}
 .gg-source-card {{ display: grid; grid-template-columns: 28px minmax(0, 1fr); gap: 10px; padding: 12px; border: 1px solid var(--rule); background: var(--paper); break-inside: avoid; }}
 .gg-source-number {{ width: 24px; height: 24px; display: grid; place-items: center; border: 1px solid var(--accent); border-radius: 50%; color: var(--accent); font: 700 11px var(--font-heading); }}
 .gg-source-title {{ color: var(--ink); font: 600 13px var(--font-heading); line-height: 1.35; overflow-wrap: anywhere; }}
@@ -1425,6 +1435,24 @@ def _render_evidence_block(block: dict) -> str:
     )
 
 
+def _render_bullets_block(block: dict) -> str:
+    items = block.get("items") or block.get("bullets") or []
+    if not items:
+        return ""
+    lis = []
+    for item in items[:200]:
+        if isinstance(item, dict):
+            text = item.get("text") or item.get("label") or item.get("body") or ""
+        else:
+            text = item
+        text = html.escape(str(text))
+        if text:
+            lis.append(f'<li>{text}</li>')
+    if not lis:
+        return ""
+    return '<div class="gg-block gg-bullets"><ul class="gg-list">' + "".join(lis) + '</ul></div>'
+
+
 def _render_chart_spec_block(block: dict, idx: int, theme: dict | None = None) -> str:
     chart_type = str(block.get("chart_type") or "line")
     labels = block.get("x_labels") or []
@@ -1456,6 +1484,8 @@ def _render_structured_blocks(blocks: list, charts: list, key_stats: list, theme
                 html_block = _render_key_stats(key_stats)
         elif kind == "prose" and raw.get("body"):
             html_block = f'<div class="gg-block">{_markdown_to_html(str(raw.get("body")), charts, [], theme)}</div>'
+        elif kind == "bullets":
+            html_block = _render_bullets_block(raw)
         elif kind == "table":
             html_block = _render_table_block(raw)
         elif kind == "timeline":
@@ -1569,6 +1599,11 @@ def build_html_report(report: str, title: str, question: str, summary: str,
     if warnings:
         log.info("HTML report: presentation normalization: %s", warnings)
     spec_dict = spec.to_dict()
+    # Presentation is the composition contract: derive only a small set of
+    # renderer-controlled classes from the validated schema. No domain template
+    # is selected here, and no arbitrary CSS can enter from the LLM.
+    selected_layouts = {str(x.get("layout") or "single_column") for x in spec_dict.get("sections") or []}
+    composition_class = "gg-composition--" + ("hybrid" if len(selected_layouts) > 1 else (next(iter(selected_layouts), "single_column")))
     safe_title = html.escape(title or question or "Research Report")
     safe_summary = html.escape(summary or "")
     date_str = datetime.now(timezone.utc).strftime("%d %B %Y")
@@ -1581,9 +1616,10 @@ def build_html_report(report: str, title: str, question: str, summary: str,
     exec_spec = spec_dict.get("executive_summary") or {}
     exec_placement = str(exec_spec.get("placement") or "none")
     exec_body = str(exec_spec.get("body") or summary or "").strip()
+    # Do not automatically inject KPIs into every executive summary. Metrics are
+    # a presentation choice now; only render them here when the validated plan
+    # explicitly places metric blocks in the executive summary.
     exec_metrics = exec_spec.get("key_metrics") or []
-    if not exec_metrics and exec_placement != "none" and key_stats:
-        exec_metrics = [{"label": s.get("label", ""), "value": s.get("value", ""), "change_pct": None, "trend": "unknown"} for s in key_stats[:10] if isinstance(s, dict)]
 
     summary_html = ""
     if exec_placement != "none" and exec_body:
@@ -1614,10 +1650,8 @@ def build_html_report(report: str, title: str, question: str, summary: str,
         if section_type == "timeline" and not blocks_meaningful:
             # Markdown remains the content source; presentation controls the arrangement.
             pass
-        if section_type == "risk_assessment" and "gg-risk" not in body_html:
-            body_html = f'<div class="gg-block gg-callout gg-callout--warning"><p>Risk-focused presentation for this section.</p></div>{body_html}'
         body_sections.append(
-            f'<section id="{html.escape(str(plan.get("id") or f"section-{idx + 1}"), quote=True)}" class="gg-section gg-reveal gg-section--{html.escape(layout, quote=True)} gg-section--{html.escape(emphasis, quote=True)}" data-layout="{html.escape(layout, quote=True)}" data-density="{html.escape(density, quote=True)}" data-emphasis="{html.escape(emphasis, quote=True)}" data-section-type="{html.escape(section_type, quote=True)}" data-reveal>'
+            f'<section id="{html.escape(str(plan.get("id") or f"section-{idx + 1}"), quote=True)}" class="gg-section gg-reveal gg-section--{html.escape(layout, quote=True)} gg-section--{html.escape(emphasis, quote=True)} gg-section-type--{html.escape(section_type, quote=True)}" data-layout="{html.escape(layout, quote=True)}" data-density="{html.escape(density, quote=True)}" data-emphasis="{html.escape(emphasis, quote=True)}" data-section-type="{html.escape(section_type, quote=True)}" data-reveal>'
             f'<div class="gg-section-heading"><h2>{section_title}</h2></div>'
             f'<div class="gg-section-body gg-section-body--{html.escape(layout, quote=True)}">{body_html}</div></section>'
         )
@@ -1654,7 +1688,7 @@ def build_html_report(report: str, title: str, question: str, summary: str,
 </head>
 <body>
 {cover_html}
-<main>
+<main class="{composition_class}">
   {opening_html}
   <div class="gg-report-sections">{"".join(body_sections)}</div>
   {closing_summary}

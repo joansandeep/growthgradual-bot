@@ -16,22 +16,19 @@ export async function POST(req: NextRequest) {
   const body = await req.arrayBuffer();
 
   let upstream: Response;
-  const fetchReport = () => fetch(`${BACKEND}/api/chat/report`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body,
-    // Keep a hard upper bound below the platform route limit.
-    signal: AbortSignal.timeout(170_000),
-  });
   try {
-    upstream = await fetchReport();
-    // A cold-start/transient upstream 502/503 is worth one immediate retry.
-    // Do not retry 504/timeouts because those usually represent a genuinely
-    // long report job and a second full attempt would make the UX worse.
-    if (upstream.status === 502 || upstream.status === 503) {
-      await new Promise(r => setTimeout(r, 800));
-      upstream = await fetchReport();
-    }
+    upstream = await fetch(`${BACKEND}/api/chat/report`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body,
+      // Bound this explicitly to just under maxDuration so we always return
+      // a clean JSON error in-band. Without this, a slow upstream (Gemini
+      // retry cascade running past the platform's own gateway/function
+      // timeout) gets its connection killed uncleanly — the fetch never
+      // resolves through our try/catch, and the caller can end up treating
+      // whatever partial/empty response comes back as a "successful" report.
+      signal: AbortSignal.timeout(170_000),
+    });
   } catch (err) {
     const timedOut = err instanceof Error && (err.name === 'TimeoutError' || err.name === 'AbortError');
     log.error('Backend unreachable or timed out: %s', err);

@@ -31,18 +31,13 @@ export async function POST(req: NextRequest) {
   bodyObj.logoB64 = LOGO_B64;
 
   let upstream: Response;
-  const fetchPdf = () => fetch(`${BACKEND}/api/chat/report/pdf`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(bodyObj),
-    signal: AbortSignal.timeout(165_000),
-  });
   try {
-    upstream = await fetchPdf();
-    if (upstream.status === 502 || upstream.status === 503) {
-      await new Promise(r => setTimeout(r, 800));
-      upstream = await fetchPdf();
-    }
+    upstream = await fetch(`${BACKEND}/api/chat/report/pdf`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(bodyObj),
+      signal: AbortSignal.timeout(165_000),
+    });
   } catch (err) {
     log.error('Backend unreachable or timed out: %s', err);
     const timedOut = err instanceof Error && (err.name === 'TimeoutError' || err.name === 'AbortError');

@@ -126,53 +126,41 @@ function loadConversations(): Conversation[] {
   try { return JSON.parse(localStorage.getItem(STORAGE_KEY) ?? '[]'); } catch { return []; }
 }
 function saveConversations(convs: Conversation[]) {
-  if (typeof window === 'undefined') return;
-
-  // Persist the useful conversation/report state, but never persist transient
-  // loading flags or raw base64 attachment payloads. The latter can easily
-  // exhaust localStorage and make the whole history save fail.
+  if (typeof window === 'undefined') return false;
   const cleaned = convs.slice(0, 50).map(c => ({
     ...c,
     messages: c.messages.map(m => {
-      const reportData = m.reportData
-        ? { ...m.reportData, fileImages: undefined, sourceDocuments: undefined }
-        : undefined;
-      return {
-        ...m,
-        reportLoading: false,
-        reportFiles: undefined,
-        reportData,
-      };
+      const { reportLoading, reportFiles, ...rest } = m;
+      const rd = rest.reportData;
+      if (rd) {
+        // Keep report text and presentation metadata, but never persist large
+        // binary payloads that can overflow localStorage.
+        const safeRd = {
+          ...rd,
+          fileImages: undefined,
+          sourceDocuments: undefined,
+          images: (rd.images || []).slice(0, 6),
+        };
+        return { ...rest, reportLoading: false, reportData: safeRd };
+      }
+      return { ...rest, reportLoading: false };
     }),
   }));
-
-  try {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(cleaned));
-    return;
-  } catch (err) {
-    console.warn('[history] full conversation save failed; retrying compact form', err);
+  const attempts = [
+    cleaned,
+    cleaned.map(c => ({ ...c, messages: c.messages.slice(-80) })),
+    cleaned.map(c => ({ ...c, messages: c.messages.slice(-40).map(m => ({ ...m, sources: undefined, inlineCharts: undefined })) })),
+  ];
+  for (const payload of attempts) {
+    try {
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(payload));
+      return true;
+    } catch (e) {
+      try { localStorage.removeItem(STORAGE_KEY); } catch { /* ignore */ }
+      console.warn('[history] localStorage save failed; retrying with compact history', e);
+    }
   }
-
-  // Quota-safe fallback: keep recent conversations and the text/report state,
-  // but remove optional visual/source payloads that are expensive to persist.
-  try {
-    const compact = cleaned.slice(0, 20).map(c => ({
-      ...c,
-      messages: c.messages.map(m => ({
-        ...m,
-        sources: undefined,
-        inlineCharts: undefined,
-        reportData: m.reportData
-          ? { ...m.reportData, images: [], charts: [], fileImages: undefined, sourceDocuments: undefined, sources: [] }
-          : undefined,
-      })),
-    }));
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(compact));
-  } catch (err) {
-    // Never throw from persistence: the live in-memory chat must remain usable
-    // even when browser storage is unavailable or quota is exhausted.
-    console.warn('[history] compact conversation save also failed', err);
-  }
+  return false;
 }
 
 // ─── Markdown renderer ────────────────────────────────────────────────────────
@@ -1068,7 +1056,6 @@ function ReportPanel({ msg, question, hasPriorContext, onGenerate }: { msg: Mess
                 const metricClass = [
                   'key-stats-row',
                   hasMetricSection ? 'key-stats--planned' : 'key-stats--fallback',
-                  `key-stats--${String(presentation?.domain || 'generic').toLowerCase().replace(/[^a-z0-9_-]+/g, '_')}`,
                 ].join(' ');
 
                 const metrics = (rd.keyStats ?? []).slice(0, hasMetricSection || !presentation ? 12 : 6);
@@ -1532,7 +1519,14 @@ export default function GrowthGradualChat() {
   const abortRef       = useRef<AbortController | null>(null);
   const historyRef     = useRef<{ role:string; content:string }[]>([]);
   const initializedRef = useRef(false); // guard against React Strict Mode double-mount
-  const historyHydratedRef = useRef(false); // do not persist until initial history load completes
+  const messagesRef = useRef<Message[]>([]);
+  const activeIdRef = useRef<string | null>(null);
+  const conversationsRef = useRef<Conversation[]>([]);
+  const hydratedHistoryRef = useRef(false);
+
+  useEffect(() => { messagesRef.current = messages; }, [messages]);
+  useEffect(() => { activeIdRef.current = activeId; }, [activeId]);
+  useEffect(() => { conversationsRef.current = conversations; }, [conversations]);
 
   // ── File processing helper ─────────────────────────────────────────────────
   const addFiles = useCallback(async (fileList: File[]) => {
@@ -1707,61 +1701,74 @@ export default function GrowthGradualChat() {
     // No preventDefault for plain text — browser handles the paste natively.
   }, [addFiles]);
 
-  // Load conversations from localStorage on mount — guarded against Strict Mode double-invoke
+  // Load conversations from localStorage on mount — guarded against Strict Mode double-invoke.
   useEffect(() => {
     if (initializedRef.current) return;
     initializedRef.current = true;
     const saved = loadConversations();
     setConversations(saved);
-    historyHydratedRef.current = true;
+    conversationsRef.current = saved;
+    hydratedHistoryRef.current = true;
   }, []);
 
   useEffect(() => {
+    messagesRef.current = messages;
     bottomRef.current?.scrollIntoView({ behavior:'smooth' });
+    // Persist the current conversation directly from messages. This is the
+    // critical path for the history bug: report messages and async report
+    // updates may change messages without changing the conversations array.
+    if (!hydratedHistoryRef.current || !messages.length) return;
+    const currentId = activeIdRef.current;
+    const id = currentId || uid();
+    if (!currentId) {
+      activeIdRef.current = id;
+      setActiveId(id);
+    }
+    const firstUser = messages.find(m => m.role === 'user');
+    const title = firstUser?.text?.trim().slice(0, 80) || 'New conversation';
+    const existing = conversationsRef.current;
+    const next = existing.some(c => c.id === id)
+      ? existing.map(c => c.id === id ? { ...c, title, messages, ts: c.ts || Date.now() } : c)
+      : [{ id, title, messages, ts: Date.now() }, ...existing];
+    conversationsRef.current = next;
+    setConversations(next);
+    saveConversations(next);
   }, [messages]);
 
-  // Keep the sidebar history synchronized with the live message stream.
-  // Report generation/editing updates `messages` asynchronously and used to
-  // bypass the older end-of-send conversation save, which is why completed
-  // reports could disappear from history after generation/reload.
+  // Save whenever the conversation list changes as a secondary durability path.
   useEffect(() => {
-    if (!historyHydratedRef.current || messages.length === 0) return;
-    const firstUser = messages.find(m => m.role === 'user' && m.text?.trim());
-    if (!firstUser) return;
-    const title = firstUser.text.length > 46 ? firstUser.text.slice(0, 46) + '…' : firstUser.text;
-    setConversations(prev => {
-      if (activeId) {
-        const idx = prev.findIndex(c => c.id === activeId);
-        if (idx >= 0) {
-          const next = prev.slice();
-          next[idx] = { ...next[idx], title, messages, ts: Date.now() };
-          return next;
-        }
-      }
-      const id = activeId || uid();
-      if (!activeId) setActiveId(id);
-      return [{ id, title, messages, ts: Date.now() }, ...prev.filter(c => c.id !== id)];
-    });
-  }, [messages, activeId]);
-
-  // Save whenever conversations change — deduplicate by id before persisting
-  useEffect(() => {
-    if (!conversations.length) return;
-    const seen = new Set<string>();
-    const deduped = conversations.filter(c => {
-      if (seen.has(c.id)) return false;
-      seen.add(c.id);
-      return true;
-    });
-    saveConversations(deduped);
-    // If duplicates were found, fix state too
-    if (deduped.length !== conversations.length) {
-      setConversations(deduped);
-    }
+    conversationsRef.current = conversations;
+    if (!hydratedHistoryRef.current || !conversations.length) return;
+    saveConversations(conversations);
   }, [conversations]);
+
+  // Persist one last snapshot when the tab is being closed/refreshed.
+  useEffect(() => {
+    const onBeforeUnload = () => {
+      const msgs = messagesRef.current;
+      if (!msgs.length) return;
+      const id = activeIdRef.current || uid();
+      const base = conversationsRef.current.filter(c => c.id !== id);
+      const firstUser = msgs.find(m => m.role === 'user');
+      base.unshift({ id, title: firstUser?.text?.trim().slice(0, 80) || 'Conversation', messages: msgs, ts: Date.now() });
+      saveConversations(base);
+    };
+    window.addEventListener('beforeunload', onBeforeUnload);
+    return () => window.removeEventListener('beforeunload', onBeforeUnload);
+  }, []);
 
   // New chat
   const startNewChat = useCallback(() => {
+    const msgs = messagesRef.current;
+    const currentId = activeIdRef.current;
+    if (msgs.length && currentId) {
+      const updated = conversationsRef.current.some(c => c.id === currentId)
+        ? conversationsRef.current.map(c => c.id === currentId ? { ...c, messages: msgs } : c)
+        : [{ id: currentId, title: msgs.find(m => m.role === 'user')?.text?.trim().slice(0, 80) || 'Conversation', messages: msgs, ts: Date.now() }, ...conversationsRef.current];
+      conversationsRef.current = updated;
+      setConversations(updated);
+      saveConversations(updated);
+    }
     abortRef.current?.abort();
     setMessages([]);
     setActiveId(null);
@@ -1783,6 +1790,8 @@ export default function GrowthGradualChat() {
     const cleanedMessages = conv.messages.map(m =>
       m.reportLoading ? { ...m, reportLoading: false } : m
     );
+    messagesRef.current = cleanedMessages;
+    activeIdRef.current = conv.id;
     setMessages(cleanedMessages);
     setActiveId(conv.id);
     historyRef.current = conv.messages.map(m => ({ role: m.role, content: m.text }));
@@ -2179,7 +2188,24 @@ export default function GrowthGradualChat() {
       }
       // ── End follow-up generation ───────────────────────────────────────────
 
-;
+      // Persist conversation
+      const title = q.length > 46 ? q.slice(0,46)+'…' : q;
+      setMessages(prev => {
+        const final = prev;
+        setConversations(convPrev => {
+          if (activeId) {
+            return convPrev.map(c => c.id === activeId ? { ...c, messages:final, ts:Date.now() } : c);
+          } else {
+            // Guard: don't add if a conv with this title was just created (Strict Mode double-fire)
+            const alreadyExists = convPrev.some(c => c.title === title && Date.now() - c.ts < 2000);
+            if (alreadyExists) return convPrev;
+            const newConv: Conversation = { id:uid(), title, messages:final, ts:Date.now() };
+            setActiveId(newConv.id);
+            return [newConv, ...convPrev];
+          }
+        });
+        return final;
+      });
     } catch(e:unknown) {
       setSearching(false);
       setStatusMsg('');
@@ -2813,13 +2839,14 @@ export default function GrowthGradualChat() {
         .report-sources a,.report-source-provided{display:block;margin-top:4px;font-size:10px;color:#0d4f3c;text-decoration:none;overflow-wrap:anywhere;}
         .report-sources a:hover{text-decoration:underline;}
 
-        .report-body--scientific .report-section-shell { font-family: 'DM Sans', sans-serif; }
-        .report-body--scientific .report-section-shell.report-type-findings, .report-body--scientific .report-section-shell.report-type-evidence { padding: 10px 12px; background: #f4f7fb; border-left: 3px solid #64748b; border-radius: 0 8px 8px 0; }
-        .report-body--regulatory .report-section-shell.report-type-compliance, .report-body--regulatory .report-section-shell.report-type-risk_assessment { padding-left: 14px; border-left: 4px solid #334155; }
-        .report-body--comparison .report-section-shell.report-type-comparison { background: #f8fafc; padding: 10px; border: 1px solid #dfe4ee; border-radius: 10px; }
-        .report-body--financial .report-section-shell.report-type-financials { background: linear-gradient(90deg,rgba(255,255,255,.96),rgba(248,250,252,.8)); padding: 10px; border-radius: 10px; }
 
         .report-section-shell { margin: 0 0 clamp(12px,1.8vh,22px); }
+        .report-section-shell.report-layout-grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(180px,1fr)); gap:10px; }
+        .report-section-shell.report-layout-two_column { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:18px; }
+        .report-section-shell.report-layout-sidebar_main { display:grid; grid-template-columns:minmax(120px,.28fr) minmax(0,1fr); gap:16px; }
+        .report-section-shell.report-density-dense { font-size:.96em; }
+        .report-section-shell.report-density-sparse { max-width:90%; }
+        .report-section-shell.report-emphasis-critical { border-left:4px solid currentColor; padding-left:10px; }
         .report-section-shell.report-density-sparse { max-width: 88%; }
         .report-section-shell.report-density-dense { margin-bottom: 9px; }
         .report-section-shell.report-layout-two_column { column-count: 2; column-gap: 22px; }

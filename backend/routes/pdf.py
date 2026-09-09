@@ -3526,13 +3526,34 @@ def _strip_non_printing_runtime(html_doc: str) -> str:
 .gg-chart-canvas-box { min-height: 280px; }
 .gg-figure img { break-inside: avoid; max-height: 480px; }
 .gg-table-wrap, .gg-callout, .gg-risk, .gg-metric, .gg-pdf-chart-fallback { break-inside: avoid; }
-.gg-stats-grid, .gg-metrics { grid-template-columns: repeat(3, minmax(0, 1fr)) !important; gap: 8px !important; }
 .gg-section { break-before: auto; }
-.gg-footer { display: none !important; }
-.gg-sources[data-source-placement="appendix"] { break-before: page; page-break-before: always; }
 </style>
 """
     return html_doc.replace("</head>", print_css + "</head>", 1)
+
+
+def _trim_trailing_blank_pages(pdf_bytes: bytes) -> bytes:
+    """Remove trailing pages that contain only the generated page footer or whitespace."""
+    try:
+        from pypdf import PdfReader, PdfWriter
+        reader = PdfReader(io.BytesIO(pdf_bytes))
+        pages = list(reader.pages)
+        while len(pages) > 1:
+            text = (pages[-1].extract_text() or "").strip()
+            normalized = re.sub(r"\s+", " ", text).strip().lower()
+            if not normalized or normalized in {"growth gradual", "growth gradual research intelligence"} or normalized.startswith("growth gradual | "):
+                pages.pop()
+            else:
+                break
+        if len(pages) == len(reader.pages):
+            return pdf_bytes
+        writer = PdfWriter()
+        for page in pages:
+            writer.add_page(page)
+        out = io.BytesIO(); writer.write(out)
+        return out.getvalue()
+    except Exception:
+        return pdf_bytes
 
 
 def _pdf_with_chromium(html_doc: str) -> bytes:
@@ -3605,11 +3626,11 @@ def build_pdf(report: str, title: str, question: str, summary: str,
     # a browser runtime. Chromium remains a fallback for deployments that have
     # the browser available, preserving the HTML/CSS composition faithfully.
     try:
-        return _pdf_with_weasyprint(html_doc)
+        return _trim_trailing_blank_pages(_pdf_with_weasyprint(html_doc))
     except Exception as exc:
         log.warning("PDF: WeasyPrint unavailable/failed; trying Chromium fallback: %s", exc)
         try:
-            return _pdf_with_chromium(html_doc)
+            return _trim_trailing_blank_pages(_pdf_with_chromium(html_doc))
         except Exception as chrome_exc:
             log.error("PDF: dynamic HTML-to-PDF failed: weasyprint=%s chromium=%s", exc, chrome_exc)
             # Preserve a usable legacy export as a last resort for older
@@ -3706,67 +3727,54 @@ async def generate_pdf(request: Request):
 
     log.info("PDF: generating — title=%r  charts=%d  keyStats=%d", title[:60], len(charts), len(key_stats))
 
-    # Charts arriving from the report step already carry chart["datawrapper"]
-    # (id/embedUrl/publicUrl/pngUrl) but not the PNG bytes — fetch those now
-    # so we can embed real Datawrapper renders in the PDF. Any chart that
-    # doesn't have a "datawrapper" block yet (e.g. PDF requested standalone)
-    # gets published on the fly. Failures just fall back to the hand-drawn
-    # renderer in _draw_chart.
+    # PDF chart rendering is intentionally offline-first. The HTML renderer already
+    # carries the validated chart specification, and this module can draw charts
+    # natively/SVG when PNG bytes are unavailable. Publishing/fetching Datawrapper
+    # images during export added 30-120s of avoidable latency and was a major cause
+    # of the frontend's "Backend unavailable" export failures. Only decode PNG
+    # bytes that were already supplied with the report payload.
     async def _hydrate_charts(chs: list) -> list:
-        needs_publish = [ch for ch in chs if not ch.get("datawrapper")]
-        if needs_publish:
-            await attach_datawrapper_charts(needs_publish, fetch_png_bytes=False)
-
-        async with httpx.AsyncClient(timeout=120.0) as client:
-            async def _one(ch):
-                dw = ch.get("datawrapper")
-                if not dw:
-                    return
-                # pngBytes may arrive as a base64 string (survived JSON serialization
-                # round-trip through the frontend) — decode it back to bytes.
-                existing = dw.get("pngBytes")
-                if existing:
-                    if isinstance(existing, str):
-                        try:
-                            import base64 as _b64
-                            decoded = _b64.b64decode(existing)
-                            if decoded[:4] == b"\x89PNG":
-                                dw["pngBytes"] = decoded
-                                return  # valid PNG bytes decoded from base64 — done
-                        except Exception as e:
-                            log.debug("PDF: chart pngBytes base64 decode failed, will re-fetch (%s)", e)
-                        dw["pngBytes"] = None  # invalid base64 — re-fetch below
-                    elif isinstance(existing, (bytes, bytearray)) and existing[:4] == b"\x89PNG":
-                        return  # already valid raw bytes — skip re-fetch
+        n_png = 0
+        for ch in chs or []:
+            if not isinstance(ch, dict):
+                continue
+            dw = ch.get("datawrapper")
+            if not isinstance(dw, dict):
+                continue
+            existing = dw.get("pngBytes")
+            if isinstance(existing, str):
+                try:
+                    decoded = base64.b64decode(existing, validate=True)
+                    if decoded[:4] == b"\x89PNG":
+                        dw["pngBytes"] = decoded
+                        n_png += 1
                     else:
                         dw["pngBytes"] = None
-
-                png = await fetch_png(client, dw.get("id", ""), dw.get("pngUrl", ""))
-                if png:
-                    dw["pngBytes"] = png
-                    log.info("PDF: fetched DW PNG for %r (%d bytes)", ch.get("title", "?"), len(png))
-                else:
-                    log.warning("PDF: DW PNG unavailable for %r — native renderer will be used", ch.get("title", "?"))
-            await asyncio.gather(*[_one(ch) for ch in chs])
-
-        n_png = sum(1 for ch in chs if isinstance((ch.get("datawrapper") or {}).get("pngBytes"), (bytes, bytearray)))
-        log.info("PDF: %d/%d charts have DW PNG; %d use native renderer", n_png, len(chs), len(chs) - n_png)
+                except Exception:
+                    dw["pngBytes"] = None
+            elif isinstance(existing, (bytes, bytearray)) and bytes(existing[:4]) == b"\x89PNG":
+                dw["pngBytes"] = bytes(existing)
+                n_png += 1
+            elif existing is not None:
+                dw["pngBytes"] = None
+        native = max(0, len(chs or []) - n_png)
+        log.info("PDF: offline chart hydration — %d/%d supplied PNGs; %d using native/SVG renderer", n_png, len(chs or []), native)
         return chs
 
     try:
         charts = await _hydrate_charts(charts)
     except Exception as exc:
-        log.warning("PDF: Datawrapper hydration failed, falling back to drawn charts: %s", exc)
+        log.warning("PDF: chart preparation failed, falling back to native charts: %s", exc)
 
     # The report step only returns {url, caption} for selected web images —
     # fetch the actual bytes now, right before rendering, same pattern as the
     # Datawrapper PNG hydration above. Each image fetch is independent and
     # failures are skipped rather than failing the whole PDF — a missing
     # photo just means one fewer [WEB_IMG_n] renders, nothing else degrades.
-    async def _fetch_web_images(imgs: list, max_count: int = 6, max_bytes: int = 6_000_000) -> list[dict | None]:
+    async def _fetch_web_images(imgs: list, max_count: int = 3, max_bytes: int = 4_000_000) -> list[dict | None]:
         if not imgs:
             return []
-        sem = asyncio.Semaphore(4)
+        sem = asyncio.Semaphore(3)
         out: list[dict | None] = [None] * min(len(imgs), max_count)
 
         async def _one(i: int, info: dict):
@@ -3793,7 +3801,7 @@ async def generate_pdf(request: Request):
                 return
             async with sem:
                 try:
-                    async with httpx.AsyncClient(timeout=15.0, follow_redirects=True) as client:
+                    async with httpx.AsyncClient(timeout=8.0, follow_redirects=True) as client:
                         resp = await client.get(url, headers={
                             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
                             "Accept": "image/webp,image/apng,image/*,*/*;q=0.8",
