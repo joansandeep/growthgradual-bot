@@ -127,19 +127,52 @@ function loadConversations(): Conversation[] {
 }
 function saveConversations(convs: Conversation[]) {
   if (typeof window === 'undefined') return;
-  // Strip reportLoading flag before persisting — a loading state in a saved conversation
-  // would re-trigger the report spinner with no active fetch on reload.
-  // Also drop reportFiles (raw base64 attachments) — keeping these out of
-  // localStorage avoids bloating it; reportEligible/reportQuestion are kept
-  // so the "Generate Report" button still works after a reload (just
-  // without the original attachments).
+
+  // Persist the useful conversation/report state, but never persist transient
+  // loading flags or raw base64 attachment payloads. The latter can easily
+  // exhaust localStorage and make the whole history save fail.
   const cleaned = convs.slice(0, 50).map(c => ({
     ...c,
-    messages: c.messages.map(m => (m.reportLoading || m.reportFiles)
-      ? { ...m, reportLoading: false, reportFiles: undefined }
-      : m),
+    messages: c.messages.map(m => {
+      const reportData = m.reportData
+        ? { ...m.reportData, fileImages: undefined, sourceDocuments: undefined }
+        : undefined;
+      return {
+        ...m,
+        reportLoading: false,
+        reportFiles: undefined,
+        reportData,
+      };
+    }),
   }));
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(cleaned));
+
+  try {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(cleaned));
+    return;
+  } catch (err) {
+    console.warn('[history] full conversation save failed; retrying compact form', err);
+  }
+
+  // Quota-safe fallback: keep recent conversations and the text/report state,
+  // but remove optional visual/source payloads that are expensive to persist.
+  try {
+    const compact = cleaned.slice(0, 20).map(c => ({
+      ...c,
+      messages: c.messages.map(m => ({
+        ...m,
+        sources: undefined,
+        inlineCharts: undefined,
+        reportData: m.reportData
+          ? { ...m.reportData, images: [], charts: [], fileImages: undefined, sourceDocuments: undefined, sources: [] }
+          : undefined,
+      })),
+    }));
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(compact));
+  } catch (err) {
+    // Never throw from persistence: the live in-memory chat must remain usable
+    // even when browser storage is unavailable or quota is exhausted.
+    console.warn('[history] compact conversation save also failed', err);
+  }
 }
 
 // ─── Markdown renderer ────────────────────────────────────────────────────────
@@ -1499,6 +1532,7 @@ export default function GrowthGradualChat() {
   const abortRef       = useRef<AbortController | null>(null);
   const historyRef     = useRef<{ role:string; content:string }[]>([]);
   const initializedRef = useRef(false); // guard against React Strict Mode double-mount
+  const historyHydratedRef = useRef(false); // do not persist until initial history load completes
 
   // ── File processing helper ─────────────────────────────────────────────────
   const addFiles = useCallback(async (fileList: File[]) => {
@@ -1679,11 +1713,36 @@ export default function GrowthGradualChat() {
     initializedRef.current = true;
     const saved = loadConversations();
     setConversations(saved);
+    historyHydratedRef.current = true;
   }, []);
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior:'smooth' });
   }, [messages]);
+
+  // Keep the sidebar history synchronized with the live message stream.
+  // Report generation/editing updates `messages` asynchronously and used to
+  // bypass the older end-of-send conversation save, which is why completed
+  // reports could disappear from history after generation/reload.
+  useEffect(() => {
+    if (!historyHydratedRef.current || messages.length === 0) return;
+    const firstUser = messages.find(m => m.role === 'user' && m.text?.trim());
+    if (!firstUser) return;
+    const title = firstUser.text.length > 46 ? firstUser.text.slice(0, 46) + '…' : firstUser.text;
+    setConversations(prev => {
+      if (activeId) {
+        const idx = prev.findIndex(c => c.id === activeId);
+        if (idx >= 0) {
+          const next = prev.slice();
+          next[idx] = { ...next[idx], title, messages, ts: Date.now() };
+          return next;
+        }
+      }
+      const id = activeId || uid();
+      if (!activeId) setActiveId(id);
+      return [{ id, title, messages, ts: Date.now() }, ...prev.filter(c => c.id !== id)];
+    });
+  }, [messages, activeId]);
 
   // Save whenever conversations change — deduplicate by id before persisting
   useEffect(() => {
@@ -2120,24 +2179,7 @@ export default function GrowthGradualChat() {
       }
       // ── End follow-up generation ───────────────────────────────────────────
 
-      // Persist conversation
-      const title = q.length > 46 ? q.slice(0,46)+'…' : q;
-      setMessages(prev => {
-        const final = prev;
-        setConversations(convPrev => {
-          if (activeId) {
-            return convPrev.map(c => c.id === activeId ? { ...c, messages:final, ts:Date.now() } : c);
-          } else {
-            // Guard: don't add if a conv with this title was just created (Strict Mode double-fire)
-            const alreadyExists = convPrev.some(c => c.title === title && Date.now() - c.ts < 2000);
-            if (alreadyExists) return convPrev;
-            const newConv: Conversation = { id:uid(), title, messages:final, ts:Date.now() };
-            setActiveId(newConv.id);
-            return [newConv, ...convPrev];
-          }
-        });
-        return final;
-      });
+;
     } catch(e:unknown) {
       setSearching(false);
       setStatusMsg('');

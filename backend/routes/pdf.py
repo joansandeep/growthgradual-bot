@@ -3526,7 +3526,10 @@ def _strip_non_printing_runtime(html_doc: str) -> str:
 .gg-chart-canvas-box { min-height: 280px; }
 .gg-figure img { break-inside: avoid; max-height: 480px; }
 .gg-table-wrap, .gg-callout, .gg-risk, .gg-metric, .gg-pdf-chart-fallback { break-inside: avoid; }
+.gg-stats-grid, .gg-metrics { grid-template-columns: repeat(3, minmax(0, 1fr)) !important; gap: 8px !important; }
 .gg-section { break-before: auto; }
+.gg-footer { display: none !important; }
+.gg-sources[data-source-placement="appendix"] { break-before: page; page-break-before: always; }
 </style>
 """
     return html_doc.replace("</head>", print_css + "</head>", 1)
