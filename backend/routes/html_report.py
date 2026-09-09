@@ -139,7 +139,7 @@ def _render_chart_block(chart: dict, idx: int, theme: dict | None = None) -> str
     theme = theme or {}
     theme_gold = theme.get("accentColor") or BRAND_GOLD
     theme_navy = theme.get("primaryColor") or BRAND_NAVY
-    palette = [theme_gold, theme_navy, "#7fb3d5", "#c97b63", "#8e9aaf"]
+    palette = [theme_gold, theme_navy, theme.get("secondaryColor") or theme_navy, theme.get("mutedColor") or "#64748B", theme.get("surfaceAltColor") or theme_gold]
 
     if ctype == "scatter":
         # Scatter shares report.py's "two-series-sharing-labels" shape
@@ -965,6 +965,43 @@ def _google_font_link(font_family: str | None) -> str:
     return f'<link rel="preconnect" href="https://fonts.googleapis.com">\n<link rel="stylesheet" href="{html.escape(href)}">'
 
 
+def _merge_presentation_visual(theme: dict | None, presentation: object) -> dict:
+    """Merge the validated presentation visual tokens into renderer theme tokens.
+
+    Presentation visual choices take precedence over any legacy/separate theme
+    tokens. No domain mapping is performed here; the renderer only executes the
+    structured values selected upstream and validated by ReportPresentationSpec.
+    """
+    out = dict(theme or {}) if isinstance(theme, dict) else {}
+    if isinstance(presentation, ReportPresentationSpec):
+        visual = presentation.to_dict().get("visual") or {}
+    elif isinstance(presentation, dict):
+        visual = presentation.get("visual") or {}
+    else:
+        visual = {}
+    if not isinstance(visual, dict):
+        return out
+    mapping = {
+        "primary_color": "primaryColor",
+        "secondary_color": "secondaryColor",
+        "accent_color": "accentColor",
+        "surface_color": "surfaceColor",
+        "surface_alt_color": "surfaceAltColor",
+        "text_color": "textColor",
+        "muted_color": "mutedColor",
+        "border_color": "borderColor",
+        "mode": "visualMode",
+        "typography_scale": "typographyScale",
+        "shape_style": "shapeStyle",
+        "accent_strategy": "accentStrategy",
+        "chart_style": "chartStyle",
+    }
+    for src, dst in mapping.items():
+        value = visual.get(src)
+        if value not in (None, ""):
+            out[dst] = value
+    return out
+
 def _build_css(theme: dict | None) -> str:
     """Build a neutral renderer stylesheet.
 
@@ -993,16 +1030,21 @@ def _build_css(theme: dict | None) -> str:
         font_heading = "system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif"
     return f"""
 :root {{
-  --accent: {gold}; --accent-soft: {gold_light}; --ink: {ink}; --ink-soft: {ink_soft};
-  --paper: {paper}; --paper-alt: {paper_alt}; --rule: {rule}; --muted: {ink_soft};
+  --primary: {navy}; --accent: {gold}; --secondary: {theme.get("secondaryColor") or _shade_hex(gold, -0.10)}; --accent-soft: {gold_light};
+  --ink: {ink}; --ink-soft: {ink_soft}; --paper: {paper}; --paper-alt: {paper_alt}; --rule: {rule}; --muted: {ink_soft};
   --negative: #b42318; --positive: #147a4b; --font-body: {font_body}; --font-heading: {font_heading};
   --content-max: 1120px;
+  --radius: {"0px" if theme.get("shapeStyle") == "sharp" else "18px" if theme.get("shapeStyle") == "rounded" else "10px"};
+  --shadow: {"none" if theme.get("shapeStyle") == "sharp" else "0 10px 30px rgba(15, 23, 42, .08)"};
+  --title-scale: {"0.88" if theme.get("typographyScale") == "compact" else "1.16" if theme.get("typographyScale") == "dramatic" else "1"};
+  --panel-radius: var(--radius); --panel-shadow: var(--shadow);
 }}
 * {{ box-sizing: border-box; }}
 html {{ scroll-behavior: smooth; background: var(--paper); }}
 body {{ margin: 0; font-family: var(--font-body); color: var(--ink); background: var(--paper); line-height: 1.68; }}
 a {{ color: var(--accent); }}
 h1,h2,h3,h4 {{ font-family: var(--font-heading); color: var(--ink); line-height: 1.18; }}
+.gg-cover .gg-eyebrow, .gg-section--high .gg-section-heading, .gg-section--critical .gg-section-heading {{ border-color: var(--accent); }}
 p {{ font-size: 16px; color: var(--ink-soft); }}
 main {{ width: min(var(--content-max), calc(100% - 48px)); margin: 0 auto; padding: 34px 0 90px; }}
 
@@ -1011,20 +1053,20 @@ main {{ width: min(var(--content-max), calc(100% - 48px)); margin: 0 auto; paddi
 .gg-cover--minimal {{ padding: 20px 0 28px; }}
 .gg-cover--classic {{ text-align: center; padding: 96px 8% 86px; background: var(--paper-alt); border: 1px solid var(--rule); }}
 .gg-cover--classic .gg-title {{ max-width: 900px; margin-left: auto; margin-right: auto; }}
-.gg-cover--bold_banner {{ padding: 54px 56px; background: linear-gradient(135deg, var(--ink), var(--ink-soft)); color: #fff; border: 0; }}
+.gg-cover--bold_banner {{ padding: 54px 56px; background: linear-gradient(135deg, var(--ink), var(--secondary)); color: #fff; border: 0; }}
 .gg-cover--bold_banner .gg-eyebrow, .gg-cover--bold_banner .gg-title, .gg-cover--bold_banner .gg-summary, .gg-cover--bold_banner .gg-date {{ color: #fff; }}
 .gg-cover--data_driven {{ display: grid; grid-template-columns: minmax(0, 1.3fr) minmax(280px, .7fr); gap: 32px; align-items: end; padding: 48px 0; }}
 .gg-cover__aside {{ padding: 20px; border-left: 3px solid var(--accent); background: var(--paper-alt); }}
 .gg-cover__aside-label {{ margin: 0 0 8px; font: 700 11px var(--font-heading); letter-spacing: .08em; text-transform: uppercase; color: var(--accent); }}
 .gg-eyebrow {{ margin: 0 0 12px; font: 700 11px var(--font-heading); letter-spacing: .14em; text-transform: uppercase; color: var(--accent); }}
-.gg-title {{ margin: 0 0 16px; font-size: clamp(34px, 5vw, 62px); letter-spacing: -.025em; }}
+.gg-title {{ margin: 0 0 16px; font-size: calc(clamp(34px, 5vw, 62px) * var(--title-scale)); letter-spacing: -.025em; }}
 .gg-summary {{ max-width: 72ch; margin: 0; font-size: 18px; }}
 .gg-date {{ margin-top: 18px; color: var(--muted); font-size: 13px; }}
 
 .gg-summary-wrap {{ margin: 0 0 32px; }}
 .gg-summary-wrap--sidebar {{ display: grid; grid-template-columns: minmax(240px, .34fr) minmax(0, 1fr); gap: 28px; align-items: start; }}
 .gg-summary-wrap--end {{ margin-top: 42px; }}
-.gg-summary-card {{ padding: 26px 28px; border: 1px solid var(--rule); background: var(--paper-alt); }}
+.gg-summary-card {{ padding: 26px 28px; border: 1px solid var(--rule); background: var(--paper-alt); box-shadow: var(--shadow); border-radius: var(--radius); }}
 .gg-summary-card--high {{ border-left: 4px solid var(--accent); }}
 .gg-summary-card--critical {{ border-left: 5px solid var(--negative); }}
 .gg-summary-heading {{ margin: 0 0 14px; font-size: 24px; }}
@@ -1039,7 +1081,7 @@ main {{ width: min(var(--content-max), calc(100% - 48px)); margin: 0 auto; paddi
 .gg-section--sidebar_main {{ display: grid; grid-template-columns: minmax(180px, .26fr) minmax(0, 1fr); gap: 30px; align-items: start; }}
 .gg-section--sidebar_main .gg-section-heading {{ position: sticky; top: 20px; }}
 .gg-section-heading {{ margin-bottom: 18px; }}
-.gg-section-heading h2 {{ margin: 0; font-size: clamp(24px, 3vw, 34px); }}
+.gg-section-heading h2 {{ margin: 0; font-size: calc(clamp(24px, 3vw, 34px) * var(--title-scale)); }}
 .gg-section-heading p {{ margin: 8px 0 0; font-size: 13px; color: var(--muted); }}
 .gg-section--high .gg-section-heading {{ border-top: 3px solid var(--accent); padding-top: 14px; }}
 .gg-section--critical .gg-section-heading {{ border-top: 4px solid var(--negative); padding-top: 14px; }}
@@ -1077,6 +1119,13 @@ main {{ width: min(var(--content-max), calc(100% - 48px)); margin: 0 auto; paddi
 .gg-metric-label {{ margin-top: 5px; font: 600 11px var(--font-heading); color: var(--muted); text-transform: uppercase; letter-spacing: .05em; }}
 .gg-metric-change {{ margin-top: 5px; font-size: 12px; font-weight: 700; }}
 
+/* Model-selected visual direction: tokens above are the only inputs. */
+body.gg-visual--dark .gg-eyebrow, body.gg-visual--dark .gg-chart-title {{ color: var(--accent); }}
+body.gg-type-scale--compact .gg-section-heading h2 {{ letter-spacing: -.01em; }}
+body.gg-type-scale--dramatic .gg-section-heading h2 {{ letter-spacing: -.035em; }}
+body.gg-shape--sharp .gg-chart-wrap, body.gg-shape--sharp .gg-table-wrap, body.gg-shape--sharp .gg-callout, body.gg-shape--sharp .gg-summary-card, body.gg-shape--sharp .gg-metric, body.gg-shape--sharp .gg-stat-card, body.gg-shape--sharp .gg-source-card {{ border-radius: 0; }}
+body.gg-shape--rounded .gg-chart-wrap, body.gg-shape--rounded .gg-table-wrap, body.gg-shape--rounded .gg-callout, body.gg-shape--rounded .gg-summary-card, body.gg-shape--rounded .gg-metric, body.gg-shape--rounded .gg-stat-card, body.gg-shape--rounded .gg-source-card {{ border-radius: 18px; }}
+
 /* Legacy/stat-dashboard primitive used by metrics_dashboard sections. */
 .gg-stats-grid {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 12px; margin: 18px 0; }}
 .gg-stat-card {{ min-width: 0; padding: 14px 15px; border: 1px solid var(--rule); background: var(--paper); break-inside: avoid; }}
@@ -1098,7 +1147,7 @@ main {{ width: min(var(--content-max), calc(100% - 48px)); margin: 0 auto; paddi
 .gg-callout p {{ margin: 0; }}
 
 .gg-risk-grid {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 10px; margin: 18px 0; }}
-.gg-risk {{ padding: 14px; border: 1px solid var(--rule); background: var(--paper-alt); }}
+.gg-risk {{ padding: 14px; border: 1px solid var(--rule); background: var(--paper-alt); box-shadow: var(--shadow); border-radius: var(--radius); }}
 .gg-risk__name {{ font-weight: 700; }}
 .gg-risk__meta {{ margin-top: 5px; color: var(--muted); font-size: 12px; }}
 .gg-risk__mitigation {{ margin-top: 8px; font-size: 13px; color: var(--ink-soft); }}
@@ -1109,7 +1158,7 @@ main {{ width: min(var(--content-max), calc(100% - 48px)); margin: 0 auto; paddi
 
 .gg-reveal {{ opacity: 0; transform: translateY(12px); transition: opacity .5s ease, transform .5s ease; transition-delay: var(--d, 0ms); }}
 .gg-reveal.gg-visible {{ opacity: 1; transform: translateY(0); }}
-.gg-sources {{ margin-top: 36px; padding: 22px; border: 1px solid var(--rule); background: var(--paper-alt); }}
+.gg-sources {{ margin-top: 36px; padding: 22px; border: 1px solid var(--rule); background: var(--paper-alt); box-shadow: var(--shadow); border-radius: var(--radius); }}
 .gg-sources, .gg-source-card {{ break-inside: auto; }}
 
 .gg-sources h2 {{ margin-top: 0; }}
@@ -1599,15 +1648,19 @@ def build_html_report(report: str, title: str, question: str, summary: str,
     if warnings:
         log.info("HTML report: presentation normalization: %s", warnings)
     spec_dict = spec.to_dict()
-    # Presentation is the composition contract: derive only a small set of
-    # renderer-controlled classes from the validated schema. No domain template
-    # is selected here, and no arbitrary CSS can enter from the LLM.
+    # Presentation is the composition contract. Its validated visual direction
+    # is merged into legacy theme tokens so all renderer primitives can respond
+    # to the model-selected identity without domain-specific runtime rules.
     selected_layouts = {str(x.get("layout") or "single_column") for x in spec_dict.get("sections") or []}
     composition_class = "gg-composition--" + ("hybrid" if len(selected_layouts) > 1 else (next(iter(selected_layouts), "single_column")))
+    effective_theme = _merge_presentation_visual(theme, spec)
     safe_title = html.escape(title or question or "Research Report")
     safe_summary = html.escape(summary or "")
     date_str = datetime.now(timezone.utc).strftime("%d %B %Y")
-    css = _build_css(theme)
+    css = _build_css(effective_theme)
+    visual_mode = str((spec_dict.get("visual") or {}).get("mode") or "light")
+    visual_scale = str((spec_dict.get("visual") or {}).get("typography_scale") or "balanced")
+    visual_shape = str((spec_dict.get("visual") or {}).get("shape_style") or "soft")
     # Do not emit arbitrary theme.customCss from the LLM; only validated theme tokens are consumed.
     font_link = ""
     actual_sections = _split_report_into_sections(report)
@@ -1624,7 +1677,7 @@ def build_html_report(report: str, title: str, question: str, summary: str,
     summary_html = ""
     if exec_placement != "none" and exec_body:
         summary_cls = "gg-summary-wrap gg-summary-wrap--sidebar" if exec_placement == "sidebar" else "gg-summary-wrap--end" if exec_placement == "end_summary" else "gg-summary-wrap"
-        body = _markdown_to_html(exec_body, [], [], theme)
+        body = _markdown_to_html(exec_body, [], [], effective_theme)
         metrics = _render_metrics(exec_metrics)
         summary_html = f'<section class="{summary_cls}"><div class="gg-summary-card gg-summary-card--high"><h2 class="gg-summary-heading">{html.escape(str(exec_spec.get("heading") or "Executive Summary"))}</h2>{body}{metrics}</div></section>'
 
@@ -1637,14 +1690,14 @@ def build_html_report(report: str, title: str, question: str, summary: str,
         emphasis = str(plan.get("emphasis") or "normal")
         section_type = str(plan.get("section_type") or "narrative")
         body_raw = str(actual.get("body") or "").strip()
-        block_html, chart_cursor, blocks_meaningful = _render_structured_blocks(plan.get("blocks") or [], charts, key_stats, theme, chart_cursor)
+        block_html, chart_cursor, blocks_meaningful = _render_structured_blocks(plan.get("blocks") or [], charts, key_stats, effective_theme, chart_cursor)
         if not blocks_meaningful:
-            body_html = _markdown_to_html(body_raw, charts, images, theme) if body_raw else ""
+            body_html = _markdown_to_html(body_raw, charts, images, effective_theme) if body_raw else ""
         else:
             body_html = block_html
             # Keep generated markdown content as the source-of-truth when a structured layout is only metadata.
             if body_raw and not block_html.strip():
-                body_html = _markdown_to_html(body_raw, charts, images, theme)
+                body_html = _markdown_to_html(body_raw, charts, images, effective_theme)
         if section_type == "metrics_dashboard" and key_stats and "gg-metric" not in body_html:
             body_html = _render_key_stats(key_stats) + body_html
         if section_type == "timeline" and not blocks_meaningful:
@@ -1686,7 +1739,7 @@ def build_html_report(report: str, title: str, question: str, summary: str,
 {font_link}
 <style>{css}</style>
 </head>
-<body>
+<body class="gg-visual--{html.escape(visual_mode, quote=True)} gg-type-scale--{html.escape(visual_scale, quote=True)} gg-shape--{html.escape(visual_shape, quote=True)}">
 {cover_html}
 <main class="{composition_class}">
   {opening_html}

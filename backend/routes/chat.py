@@ -380,6 +380,21 @@ def classify_query(msg: str) -> str:
     m = msg.lower()
     if any(t in m for t in BUSINESS_OPS_OVERRIDE_TERMS):
         return "general"
+    # Research-domain signals must win before generic finance words like
+    # "market", "current", or "risk". This prevents scientific/regulatory
+    # questions from being sent to Tavily with finance routing/geo bias.
+    if any(t in m for t in (
+        "h5n1", "h5n5", "avian influenza", "influenza", "virology",
+        "genomic", "genomics", "pathogen", "epidemiology", "clinical trial",
+        "vaccine", "antiviral", "disease transmission", "scientific research",
+        "peer-reviewed", "medical evidence",
+    )):
+        return "general"
+    if any(t in m for t in (
+        "sebi", "rbi", "regulator", "regulatory", "compliance",
+        "circular", "notification", "law", "rule", "guideline",
+    )):
+        return "general"
     if any(t in m for t in STRONG_FINANCE_TERMS):
         return "finance"
     # No unambiguous market term present — fall back to the broad list, but
@@ -443,6 +458,20 @@ _FILLER_RE = re.compile(
     re.IGNORECASE,
 )
 
+# Report/search instruction prefixes should never leak into the actual web
+# query. Keep this deterministic so search remains useful even when the LLM
+# intent resolver is unavailable.
+_SEARCH_INSTRUCTION_PREFIX_RE = re.compile(
+    r"^\s*(?:please\s+)?(?:prepare|create|write|make|produce|provide|conduct|"
+    r"show(?:\s+me)?|tell(?:\s+me)?|give(?:\s+me)?|describe|explain|"
+    r"analy[sz]e|compare|research)\s+"
+    r"(?:(?:a|an|the)\s+)?"
+    r"(?:(?:deep|detailed|comprehensive|scientific|regulatory|financial|market|comparison|research)\s+)*"
+    r"(?:research\s+report|report|analysis|review|study|overview|breakdown|summary)"
+    r"\s*(?:on|about|of|for|regarding)?\s*",
+    re.IGNORECASE,
+)
+
 # Split "A and B" into two independent queries by default — EXCEPT when the
 # phrase ends in a word that ties both halves into one combined ask (a
 # comparison, or a shared trailing noun that describes both entities
@@ -486,8 +515,11 @@ _HISTORICAL_SUFFIX = " quarter-wise comparison historical data"
 
 
 def _clean_query_text(text: str) -> str:
-    """Strip filler words/phrases and collapse leftover whitespace/punctuation."""
-    cleaned = _FILLER_RE.sub(" ", text)
+    """Strip task instructions/filler and collapse leftover whitespace."""
+    cleaned = _SEARCH_INSTRUCTION_PREFIX_RE.sub("", text)
+    cleaned = _FILLER_RE.sub(" ", cleaned)
+    # The prefix may leave a polite/reporting fragment after the first pass.
+    cleaned = re.sub(r"^\s*(?:on|about|of|for|regarding)\s+", "", cleaned, flags=re.I)
     cleaned = re.sub(r"\s{2,}", " ", cleaned).strip(" .,:;-")
     return cleaned
 
@@ -748,7 +780,7 @@ COUNTRY_ALIASES: dict[str, list[str]] = {
 }
 
 
-def detect_country(query: str, default: str | None = "india") -> str | None:
+def detect_country(query: str, default: str | None = None) -> str | None:
     """
     explicit country mentioned   -> that country's Tavily value
     "global"/"world"/"worldwide" -> None (no country bias — search everything)
@@ -852,10 +884,27 @@ async def fetch_page_content(url: str, max_chars: int = 4000) -> str:
             clean = re.sub(r"\s{3,}", "\n", clean)
             for esc, rep in [("&amp;", "&"), ("&lt;", "<"), ("&gt;", ">"), ("&nbsp;", " ")]:
                 clean = clean.replace(esc, rep)
-            return clean.strip()[:max_chars]
+            text = clean.strip()[:max_chars]
+            # JS-heavy pages often return a shell with almost no useful text.
+            # Use Selenium only for thin/challenge pages and keep the fallback
+            # strictly bounded so normal HTTP search remains fast.
+            challenge_markers = ("enable javascript", "verify you are human", "checking your browser", "access denied")
+            if len(text) < 700 or any(m in text.lower() for m in challenge_markers):
+                try:
+                    from utils.selenium_fetch import fetch_js_page
+                    browser_text = await fetch_js_page(url, max_chars)
+                    if len(browser_text) > len(text):
+                        return browser_text
+                except Exception:
+                    pass
+            return text
     except Exception as exc:
         log.debug("fetch_page_content failed for %s: %s", url, exc)
-        return ""
+        try:
+            from utils.selenium_fetch import fetch_js_page
+            return await fetch_js_page(url, max_chars)
+        except Exception:
+            return ""
 
 
 _AI_OVERVIEW_PATTERNS = [
@@ -1050,15 +1099,21 @@ async def _tavily_one_call(
         return []
 
 
-async def _enrich_thin_results(results: list[dict]) -> list[dict]:
-    """Fetch full page content for results whose fullContent is still thin."""
+async def _enrich_thin_results(results: list[dict], max_fetch: int = 6) -> list[dict]:
+    """Fetch full page content for only the best thin results.
+
+    Capping browser/HTTP enrichment prevents a 15-result Tavily call from
+    turning into 15 extra network fetches (and many Selenium launches).
+    """
     async def _passthrough(val: str) -> str:
         return val
 
+    ranked = list(results)
+    fetch_indexes = [i for i, r in enumerate(ranked) if len(r.get("fullContent", "")) < 500][:max_fetch]
+    fetch_set = set(fetch_indexes)
     enrich_tasks = [
-        fetch_page_content(r["url"], 3000)
-        if len(r.get("fullContent", "")) < 500 else _passthrough(r.get("fullContent", ""))
-        for r in results
+        fetch_page_content(r["url"], 3000) if i in fetch_set else _passthrough(r.get("fullContent", ""))
+        for i, r in enumerate(ranked)
     ]
     extra_contents = await asyncio.gather(*enrich_tasks, return_exceptions=True)
     for i, r in enumerate(results):
@@ -1072,124 +1127,53 @@ async def tavily_search(
     query: str, max_results: int = 20, min_results: int = 10, images_out: list | None = None,
     historical_intent: bool = False, max_keys: int | None = None,
 ) -> list[dict]:
-    """
-    NOTE: min_results is accepted for call-site compatibility but no longer
-    changes behaviour — with the domain allow-list removed there's no
-    "trusted vs. general" tier to top up, so every configured key is always
-    queried. Kept as a parameter so existing callers don't need updating.
+    """Search Tavily with bounded key rotation rather than duplicate fan-out.
 
-    Multi-key fan-out search — every available Tavily key is queried in
-    parallel with the *same* query (no per-key domain restriction), results
-    are deduped by URL, and each result that isn't in the junk-domain
-    denylist (see _JUNK_DOMAIN_SUFFIXES) is kept and tagged
-    "trusted_source": True. What comes back is entirely a function of the
-    query itself — Tavily's relevance ranking (plus topic="finance" and
-    country biasing) decides which sites are relevant, rather than a fixed
-    curated list deciding it up front.
-
-    Falls back to the old single-key round-robin behaviour if only one key
-    is configured, or continues to the httpx fallback if the SDK path fails
-    entirely.
-
-    images_out: if provided, images Tavily found for this query (deduped by
-    the caller) are appended to it as {"url", "description"} dicts. Only the
-    callers that actually want images (report generation) need to pass this —
-    everyone else gets the exact same behaviour as before.
-
-    historical_intent: accepted for call-site compatibility. Results are no
-    longer dropped by age here — recency is now enforced upstream via
-    Tavily's `time_range` param (see _detect_recency_time_range) rather than
-    a fixed-age post-filter, so this flag no longer changes what comes back;
-    results are always sorted newest-first with unknown-date results kept.
+    Query diversity is the main source of search diversity. For a single query,
+    hammering every key with the exact same request adds cost and latency while
+    returning largely overlapping results. We therefore try one eligible key and
+    use another only as a fallback after a failure/throttle/empty response.
     """
     keys = get_tavily_keys()
     if not keys:
         log.warning("Tavily search skipped — no keys configured")
         return []
 
-    # Tavily hard-caps query length at 400 chars — truncate on a word boundary
     TAVILY_MAX_QUERY_LEN = 400
     if len(query) > TAVILY_MAX_QUERY_LEN:
-        truncated = query[:TAVILY_MAX_QUERY_LEN].rsplit(" ", 1)[0]
-        log.info("Tavily query truncated: %d → %d chars", len(query), len(truncated))
-        query = truncated
+        query = query[:TAVILY_MAX_QUERY_LEN].rsplit(" ", 1)[0]
 
     qtype = classify_query(query)
-    country = detect_country(query)
+    country = detect_country(query, default=("india" if qtype == "finance" else None))
     time_range = _detect_recency_time_range(query)
-    log.info("Tavily country resolved: %r (qtype=%s, time_range=%r)", country, qtype, time_range)
+    log.info("Tavily routing: qtype=%s country=%r time_range=%r", qtype, country, time_range)
     t0 = time.perf_counter()
 
-    if len(keys) > 1:
-        # Report generation can trigger several distinct search angles in one request.
-        # Fan-out across every configured key multiplies latency and cost without
-        # materially improving relevance when the query is identical. Callers that
-        # need a bounded report-time budget can cap the number of keys used per angle.
-        search_keys = keys[:max_keys] if max_keys and max_keys > 0 else keys
-        result_lists = await asyncio.gather(*[
-            _tavily_one_call(k, query, max_results, qtype, country, images_out, time_range)
-            for k in search_keys
-        ])
-
-        seen_urls: set[str] = set()
-        combined_results: list[dict] = []
-        for res in result_lists:
-            for r in res:
-                if r["url"] and r["url"] not in seen_urls:
-                    seen_urls.add(r["url"])
-                    r["trusted_source"] = True
-                    combined_results.append(r)
-
-        # Safety net: every key coming back with 0 results (all 200 OK, no
-        # 429/auth exceptions logged) means the query itself didn't match
-        # anything under the current country/topic narrowing — not that the
-        # keys or Tavily are down. Retrying the exact same call would just
-        # reproduce the same 0. Instead, retry once with country/topic
-        # dropped: that's strictly a widening of the candidate pool (still
-        # deduped, still freshness-filtered afterward), so it can only add
-        # sources, never mask a real "nothing exists for this" case. This
-        # is a fallback for genuinely-bad/over-narrow queries slipping
-        # through, not a substitute for fixing the query itself.
-        if not combined_results and (country or qtype == "finance"):
-            log.info(
-                "Tavily %d-key fan-out: 0 results for %r with country=%r qtype=%s — "
-                "retrying once with country/topic narrowing dropped",
-                len(search_keys), query[:60], country, qtype,
-            )
-            retry_lists = await asyncio.gather(*[
-                _tavily_one_call(k, query, max_results, "general", None, images_out, time_range)
-                for k in search_keys
-            ])
-            for res in retry_lists:
-                for r in res:
-                    if r["url"] and r["url"] not in seen_urls:
-                        seen_urls.add(r["url"])
-                        r["trusted_source"] = True
-                        combined_results.append(r)
-
-        combined = await _enrich_thin_results(combined_results)
-        combined = _sort_and_filter_by_freshness(combined, keep_old=historical_intent)
-        elapsed = (time.perf_counter() - t0) * 1000
-        log.info("Tavily %d-key fan-out done: %d results in %.0fms",
-                  len(search_keys), len(combined), elapsed)
-        return combined
-
-    # ── Fallback: only one key configured ────────────────────────────────
-    log.info("Tavily search (single-key): query=%r  type=%s  max_results=%d",
-              query[:60], qtype, max_results)
-
+    ordered = []
     for key in round_robin(keys):
+        if not is_rate_limited(key):
+            ordered.append(key)
+    if not ordered:
+        ordered = keys[:]
+    limit = max_keys if max_keys and max_keys > 0 else min(len(ordered), 2)
+    ordered = ordered[:limit]
+
+    for idx, key in enumerate(ordered):
         results = await _tavily_one_call(key, query, max_results, qtype, country, images_out, time_range)
+        if not results and (country or qtype == "finance"):
+            results = await _tavily_one_call(key, query, max_results, "general", None, images_out, time_range)
         if results:
-            results = await _enrich_thin_results(results)
+            results = await _enrich_thin_results(results, max_fetch=6)
             results = _sort_and_filter_by_freshness(results, keep_old=historical_intent)
             elapsed = (time.perf_counter() - t0) * 1000
-            log.info("Tavily fallback done: %d results in %.0fms", len(results), elapsed)
+            log.info("Tavily key-rotation succeeded: key=%d/%d results=%d in %.0fms", idx + 1, len(ordered), len(results), elapsed)
             return results
 
-    log.error("Tavily: all keys exhausted or failed — trying httpx fallback")
-    fallback_results = await _tavily_search_httpx_fallback(query, max_results, qtype, images_out, time_range)
-    return _sort_and_filter_by_freshness(fallback_results, keep_old=historical_intent)
+    log.warning("Tavily keys yielded no usable results — trying HTTP fallback once")
+    fallback_results = await _tavily_search_httpx_fallback(query, max_results, qtype, images_out, time_range, country)
+    fallback_results = _sort_and_filter_by_freshness(fallback_results, keep_old=historical_intent)
+    log.info("Tavily HTTP fallback returned %d results", len(fallback_results))
+    return fallback_results
 
 
 async def tavily_search_multi(

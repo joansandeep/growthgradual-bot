@@ -252,7 +252,7 @@ Respond with EXACTLY this shape:
   "theme": { "primaryColor": "<hex>", "accentColor": "<hex>", "toneNote": "<short label describing this report's visual direction>", "fontFamily": "<OPTIONAL real Google Fonts family name that fits an explicitly requested style, e.g. 'Fredoka', 'Comic Neue', 'Space Grotesk', 'Playfair Display', 'JetBrains Mono'>", "customCss": "<OPTIONAL extra CSS rules for an explicitly requested rich visual treatment. Plain CSS rules only; no <style>, @import, url(), or javascript:>", "richStyleNeeded": <true only when an explicitly requested visual treatment cannot be represented by a static PDF> }
 }
 
-THEME — There is NO fixed report theme. Return a valid "theme" object for EVERY report.
+THEME — There is NO fixed report theme. Return a valid "theme" object for EVERY report. When a planner "presentation.visual" object is present, treat it as the authoritative visual decision for THIS report and keep the final theme visually consistent with it; do not invent a conflicting second palette.
 Choose a restrained, high-contrast editorial palette that suits THIS report's subject and audience;
 do not fall back to a single house navy/gold or a memorised style recipe. If the user explicitly
 asks for a visual style, mood, color scheme, or tone (e.g. "make it comical", "dark theme",
@@ -1656,10 +1656,24 @@ async def fetch_page_content(url: str, max_chars: int = 6000) -> str:
                 joined = "\n".join(chart_snippets[:3])[:1500]
                 chart_ctx = f"\n[CHART DATA FOUND ON PAGE]:\n{joined}\n"
 
-            return clean[: max_chars - len(chart_ctx)] + chart_ctx
+            text = clean[: max_chars - len(chart_ctx)] + chart_ctx
+            challenge_markers = ("enable javascript", "verify you are human", "checking your browser", "access denied", "just a moment")
+            if len(text.strip()) < 700 or any(m in text.lower() for m in challenge_markers):
+                try:
+                    from utils.selenium_fetch import fetch_js_page
+                    browser_text = await fetch_js_page(url, max_chars)
+                    if len(browser_text) > len(text):
+                        return browser_text
+                except Exception:
+                    pass
+            return text
     except Exception as exc:
         log.debug("fetch_page_content failed for %s: %s", url, exc)
-        return ""
+        try:
+            from utils.selenium_fetch import fetch_js_page
+            return await fetch_js_page(url, max_chars)
+        except Exception:
+            return ""
 
 
 def _extract_inline_chart_jsons(report_text: str, existing_charts: list) -> tuple[str, list]:
@@ -2914,12 +2928,16 @@ def _augment_query_for_historical_data(query: str) -> str:
 # done: 0 results" incident this was written to fix. Now strips both the
 # verb AND the following noun-phrase/preposition in one pass.
 _LEADING_INSTRUCTION_RE = re.compile(
-    r"^(?:please\s+)?(?:can you\s+|could you\s+)?"
-    r"(?:show me|tell me|give me|walk me through|explain|analyze|analyse|"
-    r"what(?:'s| is| are)|how(?:'s| is| are)|describe)\s+"
+    r"^\s*(?:please\s+)?(?:can you\s+|could you\s+)?"
+    r"(?:show\s+me|tell\s+me|give\s+me|walk\s+me\s+through|"
+    r"explain|analyze|analyse|prepare|create|write|make|produce|provide|"
+    r"conduct|research|describe|what(?:'s|\s+is|\s+are)|how(?:'s|\s+is|\s+are))\s+"
     r"(?:(?:a|an|the)\s+)?"
-    r"(?:research\s+report|report|analysis|breakdown|summary|overview|"
-    r"information|details?)\s*(?:on|about|of|for|regarding)?\s*",
+    r"(?:(?:deep|detailed|comprehensive|scientific|regulatory|financial|"
+    r"market|comparison|research)\s+)*"
+    r"(?:research\s+report|report|analysis|review|study|overview|"
+    r"breakdown|summary|information|details?)\s*"
+    r"(?:on|about|of|for|regarding)\s*",
     re.IGNORECASE,
 )
 
@@ -3214,6 +3232,18 @@ async def _build_multi_angle_search_queries(
     cleaned_question = _TRAILING_TIME_PHRASE_RE.sub(
         "", _LEADING_INSTRUCTION_RE.sub("", question)
     ).strip() or question
+    # Cover imperative report prompts that the generic leading regex may not
+    # consume when an adjective (scientific/regulatory/comparison/financial)
+    # appears between the verb and the word "report". Search should receive
+    # the subject, never the task instruction.
+    cleaned_question = re.sub(
+        r"^\s*(?:please\s+)?(?:prepare|create|write|make|produce|provide|conduct)\s+"
+        r"(?:(?:a|an|the)\s+)?"
+        r"(?:(?:deep|detailed|comprehensive|scientific|regulatory|financial|market|comparison|research)\s+)*"
+        r"(?:research\s+report|report|analysis|review|study|overview|breakdown|summary)"
+        r"\s*(?:on|about|of|for|regarding)\s+",
+        "", cleaned_question, flags=re.IGNORECASE,
+    ).strip() or cleaned_question
 
     # If a separate intent-resolution pass already ran (see utils.intent),
     # it resolved follow-ups and picked evidence kinds generically for THIS
@@ -3837,6 +3867,21 @@ Respond with this shape:
   "notes": "<optional cross-cutting guidance for the writer>",
   "presentation": {
     "domain": "financial" | "regulatory" | "scientific" | "company_analysis" | "market_news" | "comparison" | "generic",
+    "visual": {
+      "mode": "light" | "dark" | "editorial" | "technical" | "immersive" | "split",
+      "primary_color": "#RRGGBB",
+      "secondary_color": "#RRGGBB",
+      "accent_color": "#RRGGBB",
+      "surface_color": "#RRGGBB",
+      "surface_alt_color": "#RRGGBB",
+      "text_color": "#RRGGBB",
+      "muted_color": "#RRGGBB",
+      "border_color": "#RRGGBB",
+      "typography_scale": "compact" | "balanced" | "dramatic",
+      "shape_style": "sharp" | "soft" | "rounded",
+      "accent_strategy": "single" | "duotone" | "contrast" | "monochrome",
+      "chart_style": "minimal" | "editorial" | "technical" | "bold"
+    },
     "cover": {
       "enabled": true | false,
       "title": "<plain-text title treatment guidance>",
@@ -3892,12 +3937,18 @@ HOW TO DECIDE — DATA FIRST, NEVER A TEMPLATE:
 12. Use the requested depth to control breadth, but do not turn depth into a fixed visual template. Keep the existing section-count guidance below as a planning aid only.
 13. Two requests on similar subjects should still be allowed to produce different presentation plans when their register, depth, intent, evidence, or available data differs.
 14. ALWAYS return a valid "presentation" object. It is the composition contract for this report. Never omit it; when uncertain, choose the safest composition supported by the request and source preview.
+15. Choose the "visual" object for THIS report from the actual topic, audience, evidence character, register/tone, available media, and selected composition. Do not use a domain-to-palette mapping and do not assume a universal Growth Gradual palette.
+16. The visual colors, mode, typography scale, shape style, accent strategy, and chart style are deliberate model decisions for this report. They must form a coherent professional, print-readable identity and may differ between reports even within the same broad domain.
+17. Never reuse a prior report's visual identity merely because the domain label matches.
+18. The visual object is structured data only. Never emit HTML, CSS, JavaScript, arbitrary stylesheet rules, or markup.
+19. Do not use color to imply evidence certainty.
+
 
 SECTION PLANNING GUIDANCE:
-15. There is NO default section list and NO required section. An executive summary, overview, risks, recommendations, or conclusion belongs only when this request and evidence justify it.
-16. Match the per-section "format" to the data shape, not habit. A ranked metric series may fit a chart; four or more mixed-type fields may fit a table; a short qualitative finding may fit prose/bullets; a data-poor section should not be forced into a chart.
-17. If the source preview is empty or mostly irrelevant, plan fewer sections and favor prose/bullets rather than invented visuals.
-18. Number of sections should fit the requested depth — but the existing writer has a hard minimum-length floor. Unless the user explicitly asks for something short, avoid under-planning a substantive report; use the existing guidance of brief 2-4 sections, standard 7-10, detailed 9-12, comprehensive 11-14+ as flexible ranges, not rigid templates.
+20. There is NO default section list and NO required section. An executive summary, overview, risks, recommendations, or conclusion belongs only when this request and evidence justify it.
+21. Match the per-section "format" to the data shape, not habit. A ranked metric series may fit a chart; four or more mixed-type fields may fit a table; a short qualitative finding may fit prose/bullets; a data-poor section should not be forced into a chart.
+22. If the source preview is empty or mostly irrelevant, plan fewer sections and favor prose/bullets rather than invented visuals.
+23. Number of sections should fit the requested depth — but the existing writer has a hard minimum-length floor. Unless the user explicitly asks for something short, avoid under-planning a substantive report; use the existing guidance of brief 2-4 sections, standard 7-10, detailed 9-12, comprehensive 11-14+ as flexible ranges, not rigid templates.
 
 Never invent facts, numbers, sources, or data. Your job is to decide the structure and presentation from the evidence available to you."""
 

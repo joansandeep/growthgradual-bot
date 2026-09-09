@@ -26,8 +26,8 @@ Design goals
    sections/blocks/layouts -- no schema changes needed per domain.
 
 This module is intentionally standalone (no third-party dependencies, no
-imports from the rest of the codebase) so it can be adopted incrementally.
-It is NOT wired into the report planner or any renderer yet.
+imports from the rest of the codebase). Visual direction is structured data only;
+renderers translate it into controlled styles. The planner may select it per report.
 """
 
 from __future__ import annotations
@@ -779,6 +779,134 @@ class ReportSection:
         )
 
 
+
+# ---------------------------------------------------------------------------
+# Visual direction (structured, renderer-independent; model-selected)
+# ---------------------------------------------------------------------------
+
+
+_HEX_COLOR_RE = re.compile(r"^#[0-9a-fA-F]{6}$")
+
+
+class VisualMode(str, Enum):
+    LIGHT = "light"
+    DARK = "dark"
+    EDITORIAL = "editorial"
+    TECHNICAL = "technical"
+    IMMERSIVE = "immersive"
+    SPLIT = "split"
+
+
+class TypographyScale(str, Enum):
+    COMPACT = "compact"
+    BALANCED = "balanced"
+    DRAMATIC = "dramatic"
+
+
+class ShapeStyle(str, Enum):
+    SHARP = "sharp"
+    SOFT = "soft"
+    ROUNDED = "rounded"
+
+
+class AccentStrategy(str, Enum):
+    SINGLE = "single"
+    DUOTONE = "duotone"
+    CONTRAST = "contrast"
+    MONOCHROME = "monochrome"
+
+
+class ChartVisualStyle(str, Enum):
+    MINIMAL = "minimal"
+    EDITORIAL = "editorial"
+    TECHNICAL = "technical"
+    BOLD = "bold"
+
+
+_HEX_COLOR_RE = re.compile(r"^#[0-9a-fA-F]{6}$")
+
+def _hex_rgb(value: str) -> tuple[int, int, int]:
+    value = value.lstrip("#")
+    return int(value[0:2], 16), int(value[2:4], 16), int(value[4:6], 16)
+
+def _relative_luminance(value: str) -> float:
+    r, g, b = _hex_rgb(value)
+    def c(x: int) -> float:
+        q = x / 255.0
+        return q / 12.92 if q <= 0.04045 else ((q + 0.055) / 1.055) ** 2.4
+    return 0.2126*c(r) + 0.7152*c(g) + 0.0722*c(b)
+
+def _contrast_ratio(a: str, b: str) -> float:
+    la, lb = _relative_luminance(a), _relative_luminance(b)
+    hi, lo = max(la, lb), min(la, lb)
+    return (hi + 0.05) / (lo + 0.05)
+
+@dataclass
+class VisualSpec:
+    """Structured visual direction selected for THIS report by the planner.
+
+    No HTML/CSS/JS is accepted here. Renderers translate these tokens into
+    their own controlled styles. The planner is free to choose colors/styles
+    per request; there are no domain-to-palette runtime rules.
+    """
+
+    mode: VisualMode = VisualMode.LIGHT
+    primary_color: str = "#17324D"
+    secondary_color: str = "#3E6B8A"
+    accent_color: str = "#C98A2B"
+    surface_color: str = "#F7F9FB"
+    surface_alt_color: str = "#EEF3F7"
+    text_color: str = "#17324D"
+    muted_color: str = "#64748B"
+    border_color: str = "#D7E0E8"
+    typography_scale: TypographyScale = TypographyScale.BALANCED
+    shape_style: ShapeStyle = ShapeStyle.SOFT
+    accent_strategy: AccentStrategy = AccentStrategy.DUOTONE
+    chart_style: ChartVisualStyle = ChartVisualStyle.EDITORIAL
+
+    @staticmethod
+    def from_dict(data: Optional[Dict[str, Any]], warnings: List[str]) -> "VisualSpec":
+        data = data or {}
+        # Small helper keeps malformed model-selected colors safe.
+        def color(name: str, default: str) -> str:
+            value = str(data.get(name) or "").strip()
+            if _HEX_COLOR_RE.match(value):
+                return value
+            if value:
+                warnings.append(f"visual.{name}: invalid hex color; using safe default")
+            return default
+
+        spec = VisualSpec(
+            mode=_coerce_enum(VisualMode, data.get("mode"), VisualMode.LIGHT, warnings, "visual.mode"),
+            primary_color=color("primary_color", "#17324D"),
+            secondary_color=color("secondary_color", "#3E6B8A"),
+            accent_color=color("accent_color", "#C98A2B"),
+            surface_color=color("surface_color", "#F7F9FB"),
+            surface_alt_color=color("surface_alt_color", "#EEF3F7"),
+            text_color=color("text_color", "#17324D"),
+            muted_color=color("muted_color", "#64748B"),
+            border_color=color("border_color", "#D7E0E8"),
+            typography_scale=_coerce_enum(
+                TypographyScale, data.get("typography_scale"), TypographyScale.BALANCED, warnings, "visual.typography_scale"
+            ),
+            shape_style=_coerce_enum(
+                ShapeStyle, data.get("shape_style"), ShapeStyle.SOFT, warnings, "visual.shape_style"
+            ),
+            accent_strategy=_coerce_enum(
+                AccentStrategy, data.get("accent_strategy"), AccentStrategy.DUOTONE, warnings, "visual.accent_strategy"
+            ),
+            chart_style=_coerce_enum(
+                ChartVisualStyle, data.get("chart_style"), ChartVisualStyle.EDITORIAL, warnings, "visual.chart_style"
+            ),
+        )
+        try:
+            if _contrast_ratio(spec.text_color, spec.surface_color) < 4.5:
+                warnings.append("visual.text_color/surface_color contrast is below 4.5; using a safe text color")
+                spec.text_color = "#17324D" if _contrast_ratio("#17324D", spec.surface_color) >= 4.5 else "#FFFFFF"
+        except Exception:
+            warnings.append("visual contrast check failed; keeping validated colors")
+        return spec
+
 # ---------------------------------------------------------------------------
 # Top-level spec
 # ---------------------------------------------------------------------------
@@ -793,6 +921,7 @@ class ReportPresentationSpec:
     executive_summary: ExecutiveSummarySpec = field(default_factory=ExecutiveSummarySpec)
     sections: List[ReportSection] = field(default_factory=list)
     source_appendix: SourceAppendixSpec = field(default_factory=SourceAppendixSpec)
+    visual: VisualSpec = field(default_factory=VisualSpec)
     default_layout: LayoutVariant = LayoutVariant.SINGLE_COLUMN
     default_density: ContentDensity = ContentDensity.STANDARD
 
@@ -816,6 +945,7 @@ class ReportPresentationSpec:
         cover = CoverSpec.from_dict(data.get("cover"), warnings)
         executive_summary = ExecutiveSummarySpec.from_dict(data.get("executive_summary"), warnings)
         source_appendix = SourceAppendixSpec.from_dict(data.get("source_appendix"), warnings)
+        visual = VisualSpec.from_dict(data.get("visual"), warnings)
         default_layout = _coerce_enum(
             LayoutVariant, data.get("default_layout"), LayoutVariant.SINGLE_COLUMN, warnings, "default_layout"
         )
@@ -856,6 +986,7 @@ class ReportPresentationSpec:
             executive_summary=executive_summary,
             sections=sections,
             source_appendix=source_appendix,
+            visual=visual,
             default_layout=default_layout,
             default_density=default_density,
         )
@@ -880,6 +1011,8 @@ class ReportPresentationSpec:
             issues.append("executive_summary must be an ExecutiveSummarySpec")
         if not isinstance(self.source_appendix, SourceAppendixSpec):
             issues.append("source_appendix must be a SourceAppendixSpec")
+        if not isinstance(self.visual, VisualSpec):
+            issues.append("visual must be a VisualSpec")
         if not isinstance(self.sections, list) or not self.sections:
             issues.append("sections must be a non-empty list")
         else:

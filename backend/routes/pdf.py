@@ -3615,6 +3615,8 @@ def build_pdf(report: str, title: str, question: str, summary: str,
             offset = file_start
             report = re.sub(r"\[(?:FILE_IMG|PAGE_IMG)_(\d+)\]", lambda m: f"[WEB_IMG_{offset + int(m.group(1))}]", report or "")
 
+    # build_html_report merges the validated presentation visual direction into
+    # renderer tokens. The explicit theme remains for backward compatibility.
     html_doc = build_html_report(
         report or "", title or "", question or "Research Report", summary or "",
         key_stats or [], charts or [], images, safe_theme, sources, presentation,
