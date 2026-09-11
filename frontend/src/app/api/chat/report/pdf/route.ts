@@ -10,7 +10,7 @@ import { LOGO_B64 } from './logos';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
-export const maxDuration = 120;
+export const maxDuration = 180;
 
 const log = createLogger('api/chat/report/pdf');
 const BACKEND = (process.env.BACKEND_URL ?? 'http://localhost:8000').replace(/\/$/, '');
@@ -49,48 +49,33 @@ export async function POST(req: NextRequest) {
   }
 
   if (!upstream.ok) {
-    const contentType = (upstream.headers.get('content-type') ?? '').toLowerCase();
     const raw = await upstream.text();
-    const trimmed = raw.trim();
-    const looksLikeHtml = /<!doctype\s+html|<html[\s>]|<head[\s>]/i.test(trimmed) || contentType.includes('text/html');
+    const contentType = (upstream.headers.get('content-type') ?? '').toLowerCase();
+    // Never surface HTML/framework error pages or giant CSS/font payloads to the
+    // report UI. Only accept a small JSON error envelope from the backend.
     let message = `PDF generation failed (HTTP ${upstream.status}).`;
-
-    // Hosting/framework layers can return a complete HTML error page. Never
-    // surface that document in the report UI; convert it to one safe sentence.
-    if (looksLikeHtml) {
-      message = upstream.status >= 500
-        ? 'The PDF service returned a server error. Please retry the PDF export.'
-        : `PDF generation failed (HTTP ${upstream.status}).`;
-    } else {
+    if (contentType.includes('application/json')) {
       try {
-        const parsed = JSON.parse(trimmed);
+        const parsed = JSON.parse(raw);
         if (parsed && typeof parsed === 'object' && typeof (parsed as any).error === 'string' && (parsed as any).error.trim()) {
-          message = (parsed as any).error;
-        } else if (trimmed) {
-          message = trimmed.slice(0, 500);
+          message = String((parsed as any).error).slice(0, 500);
         }
-      } catch {
-        if (trimmed) message = trimmed.slice(0, 500);
-      }
+      } catch { /* keep generic message */ }
     }
-
-    log.error('PDF generation failed upstream: HTTP %d (%s) — %s', upstream.status, contentType || 'unknown', looksLikeHtml ? '<html error page suppressed>' : trimmed.slice(0, 120));
+    log.error('PDF generation failed upstream: HTTP %d — %s', upstream.status, raw.slice(0, 160));
     done(upstream.status, 'upstream error');
     return NextResponse.json({ error: message }, { status: upstream.status });
   }
 
-  const contentType = (upstream.headers.get('content-type') ?? '').toLowerCase();
   const pdfBuffer = await upstream.arrayBuffer();
-  const pdfBytes = new Uint8Array(pdfBuffer);
-  const signature = new TextDecoder().decode(pdfBytes.slice(0, 5));
-  if (!contentType.includes('application/pdf') || signature !== '%PDF-') {
-    // A 2xx response can still be a framework/edge HTML page. Do not let it
-    // masquerade as a PDF download.
-    log.error('PDF upstream returned non-PDF success response: content-type=%s signature=%s bytes=%d', contentType || 'unknown', signature, pdfBytes.length);
-    done(502, 'non-pdf upstream response');
-    return NextResponse.json({ error: 'The PDF service returned an unexpected response. Please retry the PDF export.' }, { status: 502 });
+  const contentType = (upstream.headers.get('content-type') ?? '').toLowerCase();
+  const header = new Uint8Array(pdfBuffer.slice(0, 5));
+  const pdfMagic = header.length === 5 && header[0] === 0x25 && header[1] === 0x50 && header[2] === 0x44 && header[3] === 0x46 && header[4] === 0x2d;
+  if (!contentType.includes('application/pdf') || !pdfMagic) {
+    log.error('PDF upstream returned a non-PDF success response: content-type=%s bytes=%d', contentType, pdfBuffer.byteLength);
+    done(502, 'invalid pdf response');
+    return NextResponse.json({ error: 'The PDF service returned an invalid document. Please retry the PDF export.' }, { status: 502 });
   }
-
   const dateStr = new Date().toISOString().slice(0, 10);
   done(200, `${(pdfBuffer.byteLength / 1024).toFixed(1)} KB`);
   return new NextResponse(pdfBuffer, {

@@ -21,6 +21,8 @@ def main() -> None:
     assert "auto-fill" not in low
     assert "color-mix(" not in low
     assert "box-shadow:" not in low
+    assert "@font-face" not in low
+    assert "<link" not in low
     print("PASS: print CSS sanitizer removes browser-only constructs")
 
 

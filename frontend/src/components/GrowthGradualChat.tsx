@@ -838,31 +838,14 @@ function ReportPanel({ msg, question, hasPriorContext, onGenerate }: { msg: Mess
         let message = `PDF generation failed (HTTP ${res.status}).`;
         try {
           const body = await res.json();
-          if (typeof body?.error === 'string' && body.error.trim()) message = body.error;
-        } catch { /* non-JSON upstream error */ }
+          if (typeof body?.error === 'string' && body.error.trim()) message = body.error.slice(0, 500);
+        } catch { /* never display raw HTML/framework pages */ }
         setArtifactError(message);
         return;
       }
       const contentType = (res.headers.get('Content-Type') ?? '').toLowerCase();
       if (!contentType.includes('application/pdf')) {
-        let message = 'The PDF service returned an unexpected response.';
-        try {
-          const body = await res.text();
-          const trimmed = body.trim();
-          if (/<!doctype\s+html|<html[\s>]|<head[\s>]/i.test(trimmed) || contentType.includes('text/html')) {
-            message = 'The PDF service returned a server error. Please retry the PDF export.';
-          } else if (trimmed) {
-            try {
-              const parsed = JSON.parse(trimmed);
-              message = typeof parsed?.error === 'string' && parsed.error.trim()
-                ? parsed.error
-                : trimmed.slice(0, 500);
-            } catch {
-              message = trimmed.slice(0, 500);
-            }
-          }
-        } catch { /* ignore */ }
-        setArtifactError(message);
+        setArtifactError('The PDF service returned an invalid document. Please retry the PDF export.');
         return;
       }
       const blob = await res.blob();

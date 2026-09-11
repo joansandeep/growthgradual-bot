@@ -3452,168 +3452,216 @@ def _replace_chart_runtime_with_svg(html_doc: str) -> str:
     )
     return html_doc
 
-def _strip_non_printing_runtime(html_doc: str, theme: dict | None = None) -> str:
-    """Convert the browser-oriented report HTML into a strict PDF-safe document.
+def _strip_non_printing_runtime(html_doc: str, theme: dict | None = None, presentation: object = None, fast_mode: bool = False) -> str:
+    """Compile browser-oriented report HTML into a small, self-contained print document.
 
-    The HTML renderer is intentionally richer than a print engine. WeasyPrint
-    68 is reliable when it receives conventional CSS, but it can emit noisy
-    warnings (and in some complex layouts hit internal box-tree failures) on
-    constructs such as ``clamp()``, ``min()``, ``minmax(auto-fit, ...)``,
-    ``color-mix()``, sticky positioning, and variable-backed shadows.
+    Important: the browser report CSS is *not* fed to WeasyPrint. The previous
+    implementation tried to sanitize a large browser stylesheet with regexes;
+    even after removing unsupported declarations, the full selector tree could
+    still make a heavy report expensive to lay out. It also left opportunities
+    for a stray resource to be fetched by the print engine.
 
-    This function therefore compiles the dynamic report theme/layout into a
-    conservative print dialect before the PDF engine sees it. The model still
-    decides the visual identity; this layer merely guarantees that the chosen
-    identity is expressed with print-safe CSS instead of silently falling back
-    to the old ReportLab renderer.
+    This compiler deliberately removes all source ``<style>``/``<link>`` blocks
+    and emits one conservative print stylesheet derived from the model-selected
+    presentation visual tokens. The report therefore stays genuinely dynamic
+    without carrying browser-only CSS into the PDF engine.
     """
-    theme = theme or {}
+    theme = theme if isinstance(theme, dict) else {}
 
-    def _strip_media_blocks(doc: str) -> str:
-        # Remove browser-only media blocks. The print overrides below are the
-        # only media-specific rules that the PDF pass needs.
-        pos = 0
-        while True:
-            low = doc.lower()
-            found = []
-            for token in ('@media screen', '@media (max-width', '@media print'):
-                idx = low.find(token, pos)
-                if idx >= 0:
-                    found.append(idx)
-            if not found:
-                return doc
-            idx = min(found)
-            brace = doc.find('{', idx)
-            if brace < 0:
-                return doc
-            depth = 0
-            end_idx = None
-            for j in range(brace, len(doc)):
-                if doc[j] == '{':
-                    depth += 1
-                elif doc[j] == '}':
-                    depth -= 1
-                    if depth == 0:
-                        end_idx = j + 1
-                        break
-            if end_idx is None:
-                return doc
-            doc = doc[:idx] + doc[end_idx:]
-            pos = idx
+    # Pull the structured visual direction selected by the planner/model. No
+    # domain-to-palette mapping happens here.
+    visual = {}
+    cover = {}
+    try:
+        from utils.presentation_schema import ReportPresentationSpec
+        if isinstance(presentation, ReportPresentationSpec):
+            d = presentation.to_dict()
+        elif isinstance(presentation, dict):
+            d = presentation
+        else:
+            d = {}
+        visual = d.get("visual") if isinstance(d.get("visual"), dict) else {}
+        cover = d.get("cover") if isinstance(d.get("cover"), dict) else {}
+    except Exception:
+        d = presentation if isinstance(presentation, dict) else {}
+        visual = d.get("visual") if isinstance(d.get("visual"), dict) else {}
+        cover = d.get("cover") if isinstance(d.get("cover"), dict) else {}
 
-    html_doc = _strip_media_blocks(html_doc)
+    def _hex(value: object, fallback: str) -> str:
+        v = str(value or "").strip()
+        return v if re.fullmatch(r"#[0-9A-Fa-f]{6}", v) else fallback
 
-    # PDF export is offline-first (see the chart-hydration comment above) —
-    # a live fetch of Google Fonts here defeated that guarantee. WeasyPrint
-    # has no built-in timeout on <link rel="stylesheet"> fetches, so a slow
-    # or unreachable fonts.googleapis.com/fonts.gstatic.com round-trip could
-    # block the request (and, since build_pdf runs synchronously in the
-    # async route, the whole event loop) for many minutes. Strip the remote
-    # font link entirely; the print CSS below already falls back to
-    # system-ui/sans-serif, which renders instantly and is indistinguishable
-    # at print sizes for 99% of themes.
-    html_doc = re.sub(
-        r'<link[^>]+href=["\']https?://fonts\.googleapis\.com[^"\']*["\'][^>]*>\s*',
-        '', html_doc, flags=re.IGNORECASE,
-    )
-    html_doc = re.sub(
-        r'<link[^>]+rel=["\']preconnect["\'][^>]+href=["\']https?://fonts\.(?:googleapis|gstatic)\.com["\'][^>]*>\s*',
-        '', html_doc, flags=re.IGNORECASE,
-    )
+    primary = _hex(visual.get("primary_color") or theme.get("primaryColor"), "#17324D")
+    secondary = _hex(visual.get("secondary_color"), primary)
+    accent = _hex(visual.get("accent_color") or theme.get("accentColor"), "#C98A2B")
+    surface = _hex(visual.get("surface_color"), "#F7F9FB")
+    surface_alt = _hex(visual.get("surface_alt_color"), "#EEF3F7")
+    text = _hex(visual.get("text_color"), "#17324D")
+    muted = _hex(visual.get("muted_color"), "#64748B")
+    border = _hex(visual.get("border_color"), "#D7E0E8")
 
-    # Print-safe replacements. Keep them deliberately simple so WeasyPrint's
-    # parser does not have to evaluate modern viewport/math functions.
-    html_doc = re.sub(
-        r'font-size:\s*calc\(clamp\([^)]*\)\s*\*\s*var\(--title-scale\)\)',
-        'font-size: 34px', html_doc, flags=re.IGNORECASE,
-    )
-    html_doc = re.sub(r'font-size:\s*clamp\([^;{}]+\)', 'font-size: 34px', html_doc, flags=re.IGNORECASE)
-    html_doc = re.sub(
-        r'width:\s*min\(var\(--content-max\),\s*calc\(100%\s*-\s*48px\)\)',
-        'width: 100%; max-width: 1120px', html_doc, flags=re.IGNORECASE,
-    )
-    html_doc = re.sub(r'width:\s*min\([^;{}]+\)', 'width: 100%', html_doc, flags=re.IGNORECASE)
-    html_doc = re.sub(r'max-width:\s*min\([^;{}]+\)', 'max-width: 1120px', html_doc, flags=re.IGNORECASE)
-    html_doc = re.sub(r'margin-left:\s*calc\(50%\s*-\s*50vw\)', 'margin-left: 0', html_doc, flags=re.IGNORECASE)
-    html_doc = re.sub(r'width:\s*100vw', 'width: 100%', html_doc, flags=re.IGNORECASE)
-    html_doc = re.sub(r'position:\s*sticky', 'position: static', html_doc, flags=re.IGNORECASE)
-    html_doc = re.sub(r'overflow-x:\s*auto', 'overflow: visible', html_doc, flags=re.IGNORECASE)
-    html_doc = re.sub(r'place-items:\s*center', 'align-items: center; justify-content: center', html_doc, flags=re.IGNORECASE)
-    html_doc = re.sub(r'color-mix\([^;{}]+\)', 'var(--paper-alt)', html_doc, flags=re.IGNORECASE)
-    html_doc = re.sub(
-        r'repeat\(\s*auto-(?:fit|fill)\s*,\s*minmax\([^)]*\)\s*\)',
-        'repeat(3, minmax(0, 1fr))', html_doc, flags=re.IGNORECASE,
-    )
-    # WeasyPrint 68 can parse normal fixed shadows but does not reliably resolve
-    # custom-property shadows. Keep the report's card treatment but use a safe
-    # non-shadow representation for print.
-    html_doc = re.sub(r'box-shadow\s*:[^;}]+;?', '', html_doc, flags=re.IGNORECASE)
-    html_doc = re.sub(r'\sloading=["\']lazy["\']', '', html_doc, flags=re.IGNORECASE)
-    html_doc = re.sub(r'print-color-adjust\s*:\s*exact\s*!?important?;?', '', html_doc, flags=re.IGNORECASE)
-    html_doc = re.sub(r'-webkit-print-color-adjust\s*:\s*exact\s*!?important?;?', '', html_doc, flags=re.IGNORECASE)
+    mode = str(visual.get("mode") or "light")
+    shape = str(visual.get("shape_style") or "soft")
+    card = str(visual.get("card_style") or "outlined")
+    spacing = str(visual.get("spacing_scale") or "balanced")
+    scale = str(visual.get("typography_scale") or "balanced")
+    rule = str(visual.get("section_rule") or "hairline")
+    align = str(visual.get("title_alignment") or "left")
+    background = str(visual.get("background_treatment") or "plain")
 
-    def _materialize_count(m):
+    # Keep a compact, renderer-safe font choice. The model can still influence
+    # the visual direction through the structured tokens without bringing in a
+    # network font or a complex webfont stylesheet.
+    font_stack = "system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif"
+    heading_font = font_stack
+    requested_font = str(theme.get("fontFamily") or "").strip()
+    if requested_font and re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9 _-]{0,40}", requested_font):
+        # Use the requested family only as a local-font preference. Never fetch it.
+        font_stack = f"'{requested_font}', {font_stack}"
+        heading_font = font_stack
+
+    dark = mode == "dark"
+    paper = "#0F1720" if dark else surface
+    paper_alt = "#17232E" if dark else surface_alt
+    body_text = "#F4F7FA" if dark else text
+    body_muted = "#C1CBD5" if dark else muted
+    card_bg = "#13212C" if dark else (surface_alt if card == "filled" else "#FFFFFF")
+    line = "#344454" if dark else border
+
+    radius = {"sharp": "0", "soft": "8px", "rounded": "16px"}.get(shape, "8px")
+    pad = {"compact": "10px", "balanced": "14px", "airy": "20px"}.get(spacing, "14px")
+    title_size = {"compact": "26pt", "balanced": "30pt", "dramatic": "36pt"}.get(scale, "30pt")
+    section_size = {"compact": "16pt", "balanced": "18pt", "dramatic": "21pt"}.get(scale, "18pt")
+    gap = {"compact": "10px", "balanced": "16px", "airy": "24px"}.get(spacing, "16px")
+    # Heavy research PDFs (many charts/sources) use a deliberately simpler
+    # dynamic print profile. It preserves the model-selected palette, typography
+    # scale, shape, card treatment, section rules and section structure while
+    # avoiding layout constructs that can become disproportionately expensive
+    # for long documents on small Render instances.
+    two_col_css = "column-count: 1;" if fast_mode else "column-count: 2; column-gap: 14mm;"
+    metric_css = "display: block;" if fast_mode else "display: grid; grid-template-columns: repeat(3, 1fr);"
+    risk_css = "display: block;" if fast_mode else "display: grid; grid-template-columns: repeat(2, 1fr);"
+    source_css = "grid-template-columns: 1fr;"
+
+    # Banded/tinted background remains report-specific, but is expressed with
+    # simple solid colors only so the print engine has no gradient/image work.
+    body_bg = paper_alt if background == "tinted" else paper
+    if background == "banded":
+        body_bg = paper
+
+    # Remove all browser stylesheets and scripts. Static SVG charts and data URI
+    # images are kept; remote images are converted to empty placeholders so
+    # WeasyPrint has nothing external to fetch.
+    doc = re.sub(r'<link\b[^>]*>', '', html_doc, flags=re.IGNORECASE)
+    doc = re.sub(r'<style\b[^>]*>.*?</style\s*>', '', doc, flags=re.IGNORECASE | re.DOTALL)
+    doc = re.sub(r'<script\b[^>]*>.*?</script\s*>', '', doc, flags=re.IGNORECASE | re.DOTALL)
+
+    def _img_repl(m):
         attrs = m.group(1)
-        target = m.group(2)
-        try:
-            value = float(target)
-            rendered = str(int(value)) if value.is_integer() else str(value)
-        except Exception:
-            rendered = target
-        return f'<span class="gg-count"{attrs}>{rendered}</span>'
+        srcm = re.search(r'\bsrc=["\'](.*?)["\']', attrs, flags=re.IGNORECASE | re.DOTALL)
+        src = (srcm.group(1).strip() if srcm else "")
+        if src.lower().startswith(("data:image/", "data:image/svg+xml")):
+            return m.group(0)
+        if re.match(r"https?://", src, flags=re.IGNORECASE):
+            return '<div class="gg-figure gg-figure--missing"><span>Image unavailable for offline PDF</span></div>'
+        if not src:
+            return '<div class="gg-figure gg-figure--missing"><span>Image unavailable for offline PDF</span></div>'
+        # Relative filesystem paths are not trusted here; inline them upstream.
+        return '<div class="gg-figure gg-figure--missing"><span>Image unavailable for offline PDF</span></div>'
 
-    html_doc = re.sub(
-        r'<span class="gg-count"([^>]*)data-count-target="([^"]+)"[^>]*>0</span>',
-        _materialize_count, html_doc,
-    )
+    doc = re.sub(r'<img\b([^>]*)>', _img_repl, doc, flags=re.IGNORECASE | re.DOTALL)
+    # Remove any remaining CSS url()/imports that could have arrived through a
+    # surviving inline style attribute or malformed model text.
+    doc = re.sub(r'url\(\s*["\']?https?://[^)\s"\']+["\']?\s*\)', 'none', doc, flags=re.IGNORECASE)
+    doc = re.sub(r'@import[^;]+;?', '', doc, flags=re.IGNORECASE)
 
-    # No JS/browser runtime is required once Chart.js has been converted to
-    # static SVG. Remove scripts only after chart hydration.
-    html_doc = re.sub(r'<script>.*?</script>', '', html_doc, flags=re.DOTALL)
+    title_treatment = str(cover.get("title_treatment") or "classic")
+    title_bg = primary if dark or title_treatment in ("bold_banner", "data_driven") else paper_alt
+    title_fg = "#FFFFFF" if dark or title_bg != paper_alt else body_text
+    title_align = "center" if align == "center" or title_treatment == "classic" else "left"
 
-    # Explicit print CSS uses only conservative, renderer-supported features.
-    print_css = """
-<style id="gg-pdf-print-overrides">
-@page { size: A4; margin: 14mm 12mm 18mm 12mm; @bottom-center { content: "Growth Gradual | " counter(page); font-family: system-ui, sans-serif; font-size: 8pt; color: #808894; } }
-* { animation: none !important; transition: none !important; caret-color: transparent !important; }
-html, body { background: var(--paper, #ffffff) !important; }
-body { font-size: 10.5pt; line-height: 1.48; overflow-wrap: anywhere; }
-p, .gg-list { font-size: 10.5pt; line-height: 1.48; }
-h1 { break-after: avoid; }
-h2, h3, h4 { break-after: avoid; }
-p { orphans: 3; widows: 3; }
-main, .gg-cover { width: 100% !important; max-width: 1120px !important; margin-left: 0 !important; margin-right: 0 !important; }
-main { padding: 18px 0 38px; }
-.gg-cover { margin-top: 0; }
-.gg-title { font-size: 30pt !important; line-height: 1.08; }
-.gg-summary { font-size: 12pt; line-height: 1.5; }
-.gg-summary-card { padding: 16px 18px; }
-.gg-report-sections { gap: 18px; }
-.gg-section { break-inside: auto; }
-.gg-section-heading { break-inside: avoid; break-after: avoid; margin-bottom: 10px; }
-.gg-section-heading h2 { font-size: 18pt !important; line-height: 1.15; }
-.gg-section--full_bleed { width: 100% !important; margin-left: 0 !important; padding-left: 0; padding-right: 0; }
-.gg-section-body--two_column { columns: 2; column-gap: 24px; }
-.gg-chart-wrap, .gg-table-wrap { margin: 12px 0; padding: 10px 12px; }
-.gg-chart-canvas-box { height: 220px; min-height: 0; }
-.gg-pdf-chart-fallback { width: 100% !important; max-width: 100% !important; overflow: hidden; }
-.gg-pdf-chart-fallback svg { width: 100% !important; height: auto !important; max-width: 100% !important; display: block; }
-.gg-table-scroll { overflow: visible; width: 100%; }
-.gg-table { width: 100%; table-layout: fixed; font-size: 9.2pt; }
-.gg-table th { padding: 6px 7px; font-size: 9pt; overflow-wrap: anywhere; }
-.gg-table td { padding: 6px 7px; font-size: 9pt; overflow-wrap: anywhere; }
-.gg-metrics, .gg-stats-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; margin: 12px 0; }
-.gg-timeline-item { grid-template-columns: 86px minmax(0, 1fr); gap: 10px; padding: 10px 0; }
-.gg-risk-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; margin: 12px 0; }
-.gg-sources-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 6px; }
-.gg-sources[data-source-placement="appendix"] { break-before: page; }
-.gg-source-card { grid-template-columns: 18px minmax(0, 1fr); gap: 6px; padding: 7px; }
-.gg-figure img { break-inside: avoid; max-height: 480px; }
-.gg-table-wrap, .gg-callout, .gg-risk, .gg-metric, .gg-pdf-chart-fallback { break-inside: avoid; }
-[data-reveal] { opacity: 1 !important; transform: none !important; visibility: visible !important; }
+    # A deliberately small CSS compiler. All values are validated/derived above,
+    # so the model still controls the visual identity without controlling raw CSS.
+    compiled = f"""
+<style id="gg-pdf-compiled">
+@page {{ size: A4; margin: 13mm 12mm 17mm 12mm; @bottom-center {{ content: \"Growth Gradual | \" counter(page); font-family: {font_stack}; font-size: 8pt; color: {body_muted}; }} }}
+* {{ box-sizing: border-box; }}
+html, body {{ margin: 0; padding: 0; background: {body_bg}; color: {body_text}; font-family: {font_stack}; }}
+body {{ font-size: 10.3pt; line-height: 1.48; overflow-wrap: anywhere; }}
+main {{ width: 100%; max-width: 178mm; margin: 0 auto; }}
+.gg-cover {{ margin: 0 0 16px; padding: 22px; min-height: 190mm; background: {title_bg}; color: {title_fg}; border-radius: {radius}; border: 1px solid {line}; break-after: page; }}
+.gg-cover, .gg-cover * {{ color: inherit; }}
+.gg-cover__aside {{ border-top: 2px solid {accent}; margin-top: 18px; padding-top: 12px; }}
+.gg-eyebrow {{ color: {accent} !important; font-weight: 700; letter-spacing: .12em; text-transform: uppercase; font-size: 8.5pt; }}
+.gg-title {{ font-family: {heading_font}; font-size: {title_size}; line-height: 1.08; text-align: {title_align}; margin: 16px 0 12px; }}
+.gg-summary-card {{ padding: {pad}; border: 1px solid {line}; background: {card_bg}; border-radius: {radius}; }}
+.gg-summary-heading {{ font-size: 13pt; font-weight: 700; margin-bottom: 8px; }}
+.gg-summary {{ font-size: 11.5pt; line-height: 1.52; }}
+.gg-report-sections {{ display: block; }}
+.gg-section {{ margin: 0 0 {gap}; padding: {pad}; background: {card_bg}; border: 1px solid {line}; border-radius: {radius}; break-inside: auto; }}
+.gg-section-heading {{ margin-bottom: 10px; break-after: avoid; }}
+.gg-section-heading h2, .gg-section-h2 {{ margin: 0; font-family: {heading_font}; font-size: {section_size}; line-height: 1.15; color: {primary}; }}
+.gg-section-rule--hairline .gg-section-heading {{ border-bottom: 1px solid {line}; padding-bottom: 7px; }}
+.gg-section-rule--accent_bar .gg-section-heading {{ border-left: 4px solid {accent}; padding-left: 9px; }}
+.gg-section-rule--panel .gg-section-heading {{ background: {paper_alt}; padding: 8px 10px; border-radius: {radius}; }}
+.gg-section--critical, .gg-section--high {{ border-left: 4px solid {accent}; }}
+.gg-section-body {{ min-width: 0; }}
+.gg-section-body--two_column {{ {two_col_css} }}
+.gg-section-body--two_column > * {{ break-inside: avoid-column; }}
+.gg-block, .gg-list, p {{ margin-top: 0; margin-bottom: 8px; }}
+.gg-list {{ padding-left: 18px; }}
+.gg-divider {{ border-top: 1px solid {line}; margin: 10px 0; }}
+.gg-pullquote, .gg-callout {{ padding: {pad}; border-left: 4px solid {accent}; background: {paper_alt}; border-radius: {radius}; break-inside: avoid; }}
+.gg-metrics, .gg-stats-grid {{ {metric_css} gap: 8px; margin: 10px 0; }}
+.gg-metric, .gg-stat-card {{ display: inline-block; vertical-align: top; width: 31%; padding: {pad}; margin: 0 1% 8px 0; background: {card_bg}; border: 1px solid {line}; border-radius: {radius}; break-inside: avoid; }}
+.gg-metric-value, .gg-stat-value {{ font-size: 17pt; font-weight: 750; color: {primary}; line-height: 1.1; }}
+.gg-metric-label, .gg-stat-label {{ font-size: 8pt; color: {body_muted}; line-height: 1.2; }}
+.gg-metric-change, .gg-stat-change {{ font-size: 8.5pt; color: {accent}; }}
+.gg-chart-wrap, .gg-table-wrap {{ margin: 10px 0; padding: 9px; background: {card_bg}; border: 1px solid {line}; border-radius: {radius}; break-inside: avoid; }}
+.gg-chart-title {{ font-size: 10.5pt; font-weight: 700; color: {primary}; margin-bottom: 6px; }}
+.gg-chart-canvas-box {{ height: 220px; }}
+.gg-pdf-chart-fallback {{ width: 100%; max-width: 100%; overflow: hidden; break-inside: avoid; }}
+.gg-pdf-chart-fallback svg {{ display: block; width: 100%; height: auto; max-width: 100%; }}
+.gg-table-scroll {{ width: 100%; }}
+.gg-table {{ width: 100%; border-collapse: collapse; table-layout: fixed; font-size: 8.8pt; }}
+.gg-table th {{ background: {primary}; color: #FFFFFF; font-weight: 700; padding: 6px; border: 1px solid {line}; }}
+.gg-table td {{ padding: 6px; border: 1px solid {line}; vertical-align: top; overflow-wrap: anywhere; }}
+.gg-table tr:nth-child(even) td {{ background: {paper_alt}; }}
+.gg-timeline {{ margin: 8px 0; }}
+.gg-timeline-item {{ display: grid; grid-template-columns: 72px 1fr; gap: 10px; padding: 8px 0; border-bottom: 1px solid {line}; break-inside: avoid; }}
+.gg-timeline-date {{ color: {accent}; font-weight: 700; }}
+.gg-timeline-title {{ font-weight: 700; color: {primary}; }}
+.gg-risk-grid {{ {risk_css} }}
+.gg-risk {{ padding: 9px; background: {card_bg}; border: 1px solid {line}; border-radius: {radius}; break-inside: avoid; }}
+.gg-risk__name {{ font-weight: 700; color: {primary}; }}
+.gg-risk__meta, .gg-risk__mitigation {{ color: {body_muted}; font-size: 8.8pt; }}
+.gg-figure {{ margin: 10px 0; break-inside: avoid; }}
+.gg-figure img {{ display: block; width: 100%; max-width: 100%; max-height: 480px; object-fit: contain; }}
+.gg-figure--missing {{ padding: 14px; border: 1px dashed {line}; color: {body_muted}; background: {paper_alt}; text-align: center; border-radius: {radius}; }}
+.gg-sources {{ margin-top: 18px; padding: 12px; background: {card_bg}; border: 1px solid {line}; border-radius: {radius}; break-before: page; }}
+.gg-sources-grid {{ display: grid; {source_css} gap: 6px; }}
+.gg-source-card {{ display: grid; grid-template-columns: 18px 1fr; gap: 6px; padding: 7px; background: {paper_alt}; border: 1px solid {line}; border-radius: {radius}; break-inside: avoid; }}
+.gg-source-number {{ background: {accent}; color: #FFFFFF; border-radius: 50%; width: 18px; height: 18px; display: block; text-align: center; line-height: 18px; font-size: 8pt; font-weight: 700; }}
+.gg-source-title {{ font-weight: 700; color: {primary}; font-size: 8.8pt; line-height: 1.22; }}
+.gg-source-meta, .gg-source-link {{ color: {body_muted}; font-size: 7.7pt; }}
+.gg-footer {{ padding-top: 10px; color: {body_muted}; font-size: 8pt; }}
+[data-reveal] {{ opacity: 1 !important; transform: none !important; visibility: visible !important; }}
+.gg-metric, .gg-stat-card {{ max-width: 100%; }}
+.gg-rule--none .gg-section-heading {{ border-bottom: none !important; border-left: none !important; }}
+.gg-rule--hairline .gg-section-heading {{ border-bottom: 1px solid {line}; }}
+.gg-rule--accent_bar .gg-section-heading {{ border-left: 4px solid {accent}; }}
+.gg-align--center .gg-section-heading {{ text-align: center; }}
+.gg-bg--tinted {{ background: {paper_alt}; }}
+.gg-bg--banded .gg-cover {{ border-radius: {radius}; }}
 </style>
 """
-    return html_doc.replace("</head>", print_css + "</head>", 1)
+
+    # Ensure the DOM receives the structured rule token even though the original
+    # browser stylesheet has been removed.
+    if f'class="' in doc:
+        doc = doc.replace('gg-report-sections', f'gg-report-sections gg-rule--{re.sub(r"[^a-z_]+", "", rule)}', 1)
+
+    return re.sub(r'</head\s*>', compiled + '</head>', doc, count=1, flags=re.IGNORECASE) if re.search(r'</head\s*>', doc, flags=re.IGNORECASE) else compiled + doc
 
 def _trim_trailing_blank_pages(pdf_bytes: bytes) -> bytes:
     """Remove trailing pages that contain only the generated page footer or whitespace."""
@@ -3643,7 +3691,7 @@ def _pdf_with_chromium(html_doc: str) -> bytes:
     import shutil
     import subprocess
     import tempfile
-    chrome = shutil.which("chromium") or shutil.which("chromium-browser") or shutil.which("google-chrome")
+    chrome = (shutil.which("chromium") or shutil.which("chromium-browser") or shutil.which("google-chrome") or next((p for p in ("/usr/bin/chromium", "/usr/bin/chromium-browser", "/usr/bin/google-chrome", "/opt/render/project/.chrome/chrome") if os.path.exists(p)), None))
     if not chrome:
         raise RuntimeError("Chromium/Chrome is not available")
     with tempfile.TemporaryDirectory(prefix="gg_pdf_") as td:
@@ -3658,69 +3706,41 @@ def _pdf_with_chromium(html_doc: str) -> bytes:
         return data
 
 
-
-def _finalize_strict_offline_pdf_html(html_doc: str) -> str:
-    """Compile the already-dynamic report into a fully self-contained PDF document.
-
-    This is intentionally the *only* HTML form sent to WeasyPrint. The browser
-    report can use dynamic assets, but PDF export must never discover a new
-    network dependency during layout. Any remote stylesheet, image, font,
-    script, iframe, CSS @import or CSS url(http...) is removed. Data URIs and
-    local/inline content are preserved.
-    """
-    doc = str(html_doc or "")
-    # Remove external stylesheets/imports. Inline CSS is retained.
-    doc = re.sub(
-        r'<link\b[^>]*href=["\']https?://[^"\']+["\'][^>]*>',
-        '', doc, flags=re.IGNORECASE,
-    )
-    doc = re.sub(r'@import\s+(?:url\()?[^;]+;?', '', doc, flags=re.IGNORECASE)
-
-    # Remove remote media/embed/script references but preserve data URIs.
-    doc = re.sub(
-        r'<(?:script|iframe|frame|embed|object)\b[^>]*src=["\']https?://[^"\']+["\'][^>]*>.*?</(?:script|iframe|frame|embed|object)>',
-        '', doc, flags=re.IGNORECASE | re.DOTALL,
-    )
-    doc = re.sub(
-        r'<img\b([^>]*?)\bsrc=["\']https?://[^"\']+["\']([^>]*)>',
-        '<img\1\2>', doc, flags=re.IGNORECASE,
-    )
-    doc = re.sub(
-        r'<(?:source|video|audio|track)\b([^>]*?)\bsrc=["\']https?://[^"\']+["\']([^>]*)>',
-        '', doc, flags=re.IGNORECASE,
-    )
-    # CSS external images/fonts. Keep data:, cid:, and relative/local urls.
-    doc = re.sub(r'url\(\s*["\']?https?://[^)"\']+["\']?\s*\)', 'none', doc, flags=re.IGNORECASE)
-
-    # No browser runtime is necessary for the PDF path after chart SVG hydration.
-    doc = re.sub(r'<script\b[^>]*>.*?</script\s*>', '', doc, flags=re.IGNORECASE | re.DOTALL)
-    doc = re.sub(r'<noscript\b[^>]*>.*?</noscript\s*>', '', doc, flags=re.IGNORECASE | re.DOTALL)
-
-    # Avoid accidental base URL resolution to remote content.
-    doc = re.sub(r'<base\b[^>]*>', '', doc, flags=re.IGNORECASE)
-    return doc
-
 # Default WeasyPrint wall-clock budget, in seconds. Overridable via the
 # GG_PDF_WEASYPRINT_TIMEOUT_S env var so this can be tuned per-deployment
 # (Render instance size, box load, etc.) without a code change/redeploy.
 #
-# The strict PDF document is intentionally simpler than the browser report.
-# Healthy 9-chart renders complete well under this bound on the target
-# deployment. Because all remote resources are rejected, hitting the bound is
-# treated as a genuine pathological render rather than a normal slow network fetch.
-_WEASYPRINT_TIMEOUT_S_DEFAULT = 45.0
+# History: this started at 30s (too tight — killed genuine, complex-but-
+# healthy renders and silently downgraded them to a lower-fidelity fallback).
+# It was raised to 120s, but a real report (9 inline-SVG charts + big tables)
+# on this Render box still exceeded that — so 120s wasn't a safe assumption
+# either; this box's rendering speed for a heavy report is closer to, or
+# above, 2 minutes. 240s gives real headroom above the slowest run observed
+# so far while still bounding a genuine hang (e.g. a stray unreachable
+# network fetch that would otherwise block forever).
+_WEASYPRINT_TIMEOUT_S_DEFAULT = 20.0
 
 
 def _pdf_with_weasyprint(html_doc: str, timeout_s: float | None = None) -> bytes:
     """Run WeasyPrint with a hard wall-clock budget.
 
-    Run a self-contained, offline PDF document with a bounded wall-clock budget.
-    The HTML has already had remote resources stripped and the URL fetcher below
-    rejects HTTP(S), so a stray resource cannot turn into a multi-minute network hang.
-    The timeout remains a final guard for pathological layout/render failures.
+    Stripping the remote Google Fonts link (above) removes the one network
+    fetch we knew about, but WeasyPrint will still attempt any other
+    http(s) URL it finds in the document (a stray <img src> that wasn't
+    base64-inlined, etc.) with no timeout of its own. Running it in a
+    worker thread with a bounded .result() wait means a future stray
+    remote reference degrades to "fall through to Chromium/legacy" instead
+    of hanging the request — and, since generate_pdf now offloads this
+    whole call via asyncio.to_thread, a timeout here no longer blocks the
+    server's event loop for other requests either.
 
-    The budget is deliberately finite because the frontend proxy has its own
-    request ceiling. A healthy 9-chart report should finish far below it.
+    The budget is intentionally generous. A heavy report (many inline-SVG
+    charts, big tables, stat cards) is genuine CPU-bound layout work on a
+    modest Render box and can legitimately take well over a minute to
+    finish — a budget that's too tight gets killed here and silently
+    downgraded to the Chromium fallback (usually unavailable on this box)
+    and then the lower-fidelity legacy ReportLab renderer, discarding a
+    perfectly good WeasyPrint render for a worse one.
 
     Rather than guess a single "big enough" number again, the timeout is
     read from GG_PDF_WEASYPRINT_TIMEOUT_S at call time (falling back to
@@ -3741,24 +3761,18 @@ def _pdf_with_weasyprint(html_doc: str, timeout_s: float | None = None) -> bytes
 
     t_start = time.perf_counter()
 
-    def _render() -> bytes:
-        # WeasyPrint must not perform live HTTP(S) discovery while laying out a
-        # PDF. Any asset that belongs in the PDF is already inline/data-URI.
-        # Rejecting network requests here turns an accidental remote reference
-        # into a fast missing-asset condition instead of a 180-300s hang.
-        def _offline_url_fetcher(url: str, timeout: float = 0, **kwargs):
-            from weasyprint.urls import default_url_fetcher
-            parsed = urlparse(str(url or ''))
-            scheme = parsed.scheme.lower()
-            if scheme in {'http', 'https'}:
-                raise ValueError(f'PDF offline renderer blocked remote resource: {url}')
-            return default_url_fetcher(url, timeout=timeout, **kwargs)
+    def _offline_fetcher(url: str, *args, **kwargs):
+        # The PDF document must be fully self-contained. Data/file URLs are
+        # already inlined; any network URL is rejected immediately instead of
+        # allowing the print engine to wait on DNS/TLS/HTTP.
+        from weasyprint import default_url_fetcher
+        low = str(url or '').lower()
+        if low.startswith('data:') or low.startswith('file:'):
+            return default_url_fetcher(url)
+        raise ValueError(f'External resource blocked during offline PDF render: {url[:120]}')
 
-        return HTML(
-            string=html_doc,
-            base_url=str(Path.cwd()),
-            url_fetcher=_offline_url_fetcher,
-        ).write_pdf()
+    def _render() -> bytes:
+        return HTML(string=html_doc, base_url=str(Path.cwd()), url_fetcher=_offline_fetcher).write_pdf()
 
     def _log_late_completion(fut) -> None:
         # Fires even after we've given up waiting, purely for observability:
@@ -3837,28 +3851,30 @@ def build_pdf(report: str, title: str, question: str, summary: str,
         key_stats or [], charts or [], images, safe_theme, sources, presentation,
     )
     html_doc = _replace_chart_runtime_with_svg(html_doc)
-    html_doc = _strip_non_printing_runtime(html_doc, safe_theme)
-    # IMPORTANT: do not run a richer first-pass renderer and wait for a timeout
-    # before compiling a simpler PDF document. That was the source of the
-    # production 165-195s export path: the first pass consumed the whole proxy
-    # budget and only then the 9s strict pass succeeded. Compile the strict
-    # offline document first and render it once.
-    html_doc = _finalize_strict_offline_pdf_html(html_doc)
-
-    # WeasyPrint is the primary PDF renderer. The document is self-contained and
-    # the URL fetcher rejects HTTP(S), so it cannot hang on stray web assets.
-    # Chromium remains a fallback for deployments that have the browser available.
     try:
-        return _trim_trailing_blank_pages(_pdf_with_weasyprint(html_doc, timeout_s=45.0))
+        _source_count = len(normalise_source_manifest(sources))
+    except Exception:
+        _source_count = len(sources) if isinstance(sources, (list, tuple)) else 0
+    fast_print = len(charts or []) >= 6 or _source_count >= 20 or len((report or '')) >= 30000
+    if fast_print:
+        log.info('PDF: using fast dynamic print profile — charts=%d sources=%d report_chars=%d', len(charts or []), _source_count, len(report or ''))
+    html_doc = _strip_non_printing_runtime(html_doc, safe_theme, presentation, fast_mode=fast_print)
+
+    # WeasyPrint is preferred because it is deterministic and does not require
+    # a browser runtime. Chromium remains a fallback for deployments that have
+    # the browser available, preserving the HTML/CSS composition faithfully.
+    try:
+        return _trim_trailing_blank_pages(_pdf_with_weasyprint(html_doc))
     except Exception as exc:
         log.warning("PDF: WeasyPrint unavailable/failed; trying Chromium fallback: %s", exc)
         try:
             return _trim_trailing_blank_pages(_pdf_with_chromium(html_doc))
         except Exception as chrome_exc:
             log.error("PDF: dynamic HTML-to-PDF failed: weasyprint=%s chromium=%s", exc, chrome_exc)
-            # Preserve a usable legacy export as a last resort for older
-            # deployments without either print engine.
-            return _legacy_build_pdf(report, title, question, summary, key_stats, charts, logo_b64, file_images, web_images, safe_theme, sources)
+            # Never silently revert to the fixed legacy renderer. The product
+            # contract is now presentation-driven PDF output; returning a clean
+            # error is safer than returning a visually unrelated legacy report.
+            raise RuntimeError(f"Dynamic PDF rendering failed: {chrome_exc}") from chrome_exc
 
 
 # ─── Route ────────────────────────────────────────────────────────────────────
