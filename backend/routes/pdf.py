@@ -3658,7 +3658,22 @@ def _pdf_with_chromium(html_doc: str) -> bytes:
         return data
 
 
-def _pdf_with_weasyprint(html_doc: str, timeout_s: float = 120.0) -> bytes:
+# Default WeasyPrint wall-clock budget, in seconds. Overridable via the
+# GG_PDF_WEASYPRINT_TIMEOUT_S env var so this can be tuned per-deployment
+# (Render instance size, box load, etc.) without a code change/redeploy.
+#
+# History: this started at 30s (too tight — killed genuine, complex-but-
+# healthy renders and silently downgraded them to a lower-fidelity fallback).
+# It was raised to 120s, but a real report (9 inline-SVG charts + big tables)
+# on this Render box still exceeded that — so 120s wasn't a safe assumption
+# either; this box's rendering speed for a heavy report is closer to, or
+# above, 2 minutes. 240s gives real headroom above the slowest run observed
+# so far while still bounding a genuine hang (e.g. a stray unreachable
+# network fetch that would otherwise block forever).
+_WEASYPRINT_TIMEOUT_S_DEFAULT = 240.0
+
+
+def _pdf_with_weasyprint(html_doc: str, timeout_s: float | None = None) -> bytes:
     """Run WeasyPrint with a hard wall-clock budget.
 
     Stripping the remote Google Fonts link (above) removes the one network
@@ -3671,21 +3686,50 @@ def _pdf_with_weasyprint(html_doc: str, timeout_s: float = 120.0) -> bytes:
     whole call via asyncio.to_thread, a timeout here no longer blocks the
     server's event loop for other requests either.
 
-    The budget is intentionally generous (120s, not 30s). A heavy report
-    (many inline-SVG charts, big tables, stat cards) is genuine CPU-bound
-    layout work on a modest Render box and can legitimately take well
-    over 30s to finish — that used to get killed here and silently
-    downgraded to the Chromium fallback (usually unavailable) and then the
-    lower-fidelity legacy ReportLab renderer, discarding a perfectly good
-    WeasyPrint render for a worse one. 120s comfortably covers real,
-    complex reports while still catching an actual hang (e.g. a stray
-    unreachable network fetch that would otherwise block forever).
+    The budget is intentionally generous. A heavy report (many inline-SVG
+    charts, big tables, stat cards) is genuine CPU-bound layout work on a
+    modest Render box and can legitimately take well over a minute to
+    finish — a budget that's too tight gets killed here and silently
+    downgraded to the Chromium fallback (usually unavailable on this box)
+    and then the lower-fidelity legacy ReportLab renderer, discarding a
+    perfectly good WeasyPrint render for a worse one.
+
+    Rather than guess a single "big enough" number again, the timeout is
+    read from GG_PDF_WEASYPRINT_TIMEOUT_S at call time (falling back to
+    _WEASYPRINT_TIMEOUT_S_DEFAULT), so it can be raised from the Render
+    dashboard the moment a real report is found to exceed it — no redeploy
+    required. We also log how long an abandoned render *actually* took to
+    finish in the background, so the next tuning pass is based on measured
+    duration instead of another guess.
     """
     from concurrent.futures import ThreadPoolExecutor, TimeoutError as _FutureTimeout
     from weasyprint import HTML
 
+    if timeout_s is None:
+        try:
+            timeout_s = float(os.environ.get("GG_PDF_WEASYPRINT_TIMEOUT_S", "") or _WEASYPRINT_TIMEOUT_S_DEFAULT)
+        except ValueError:
+            timeout_s = _WEASYPRINT_TIMEOUT_S_DEFAULT
+
+    t_start = time.perf_counter()
+
     def _render() -> bytes:
         return HTML(string=html_doc, base_url=str(Path.cwd())).write_pdf()
+
+    def _log_late_completion(fut) -> None:
+        # Fires even after we've given up waiting, purely for observability:
+        # tells us whether an abandoned render was seconds or minutes past
+        # budget, which is exactly what's needed to pick the next timeout
+        # instead of doubling it blindly again.
+        elapsed = time.perf_counter() - t_start
+        if fut.exception() is not None:
+            log.info("PDF: abandoned WeasyPrint render failed after %.1fs: %s", elapsed, fut.exception())
+        else:
+            log.warning(
+                "PDF: abandoned WeasyPrint render actually finished after %.1fs "
+                "(budget was %.0fs) — the timeout is likely still too tight for this report size.",
+                elapsed, timeout_s,
+            )
 
     # Not using a `with` block deliberately: ThreadPoolExecutor.__exit__ calls
     # shutdown(wait=True), which would block on the very thread we're trying
@@ -3695,8 +3739,11 @@ def _pdf_with_weasyprint(html_doc: str, timeout_s: float = 120.0) -> bytes:
     pool = ThreadPoolExecutor(max_workers=1)
     future = pool.submit(_render)
     try:
-        return future.result(timeout=timeout_s)
+        result = future.result(timeout=timeout_s)
+        log.info("PDF: WeasyPrint render finished in %.1fs (budget %.0fs)", time.perf_counter() - t_start, timeout_s)
+        return result
     except _FutureTimeout:
+        future.add_done_callback(_log_late_completion)
         pool.shutdown(wait=False)
         raise RuntimeError(f"WeasyPrint exceeded {timeout_s:.0f}s budget (likely a stray network fetch)")
     finally:
