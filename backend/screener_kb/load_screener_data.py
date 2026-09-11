@@ -24,6 +24,7 @@ import re
 import sys
 import glob
 import logging
+from datetime import date, datetime
 
 import pandas as pd
 import psycopg2
@@ -91,13 +92,48 @@ def parse_company_info(df):
     }
 
 
-def parse_top_ratios(df):
+def parse_as_of_date(price_date_label, fallback=None):
+    """Parse Screener's price-date label into a source snapshot date.
+
+    Examples handled:
+      "11 Sep - close price"
+      "11 Sep 2026 - close price"
+      "29 Aug - close price"
+
+    When the year is omitted, use the fallback/current year and roll back one
+    year if the resulting date would be more than 31 days in the future.
+    """
+    fallback_date = fallback or date.today()
+    text = safe_str(price_date_label) or ""
+    m = re.search(r"(\d{1,2})\s+([A-Za-z]{3,9})(?:\s+(\d{4}))?", text)
+    if not m:
+        return fallback_date
+    day = int(m.group(1))
+    month_text = m.group(2)[:3].title()
+    year = int(m.group(3)) if m.group(3) else fallback_date.year
+    try:
+        parsed = datetime.strptime(f"{day} {month_text} {year}", "%d %b %Y").date()
+    except ValueError:
+        return fallback_date
+    if m.group(3) is None and parsed > fallback_date:
+        try:
+            parsed = parsed.replace(year=parsed.year - 1)
+        except ValueError:
+            pass
+    if parsed > fallback_date.replace(day=fallback_date.day):
+        # Protect against malformed/future source labels.
+        return fallback_date
+    return parsed
+
+
+def parse_top_ratios(df, as_of=None):
     out = []
     for _, r in df.iterrows():
         out.append({
             "metric": safe_str(r.get("Metric")),
             "raw_value": safe_str(r.get("Value")),
             "value": to_numeric(r.get("Numeric Value", r.get("Value"))),
+            "as_of": as_of or date.today(),
         })
     return out
 
@@ -280,7 +316,11 @@ def load_workbook(cur, path):
         log.warning("Skipping %s: no Company_Info sheet", path)
         return
 
-    ratios_rows = parse_top_ratios(sheets.get("Top_Ratios", pd.DataFrame())) if "Top_Ratios" in sheets else []
+    snapshot_date = parse_as_of_date(info.get("price_date_label"))
+    ratios_rows = parse_top_ratios(
+        sheets.get("Top_Ratios", pd.DataFrame()),
+        as_of=snapshot_date,
+    ) if "Top_Ratios" in sheets else []
     info["_ratios_lookup"] = {r["metric"]: r["value"] for r in ratios_rows if r["metric"]}
 
     company_id = upsert_company(cur, info, os.path.basename(path))
@@ -288,7 +328,7 @@ def load_workbook(cur, path):
         log.warning("Skipping %s: could not resolve ticker", path)
         return
 
-    bulk_upsert(cur, "ratios", ["metric", "raw_value", "value"], ratios_rows, company_id, ["metric", "as_of"])
+    bulk_upsert(cur, "ratios", ["metric", "raw_value", "value", "as_of"], ratios_rows, company_id, ["metric", "as_of"])
 
     financials_rows = []
     for sheet_name, statement in SHEET_MAP.items():

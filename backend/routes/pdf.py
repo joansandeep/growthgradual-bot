@@ -3407,7 +3407,7 @@ def _svg_chart_from_config(config: dict, width: int = 720, height: int = 320) ->
     )
 
 
-def _replace_chart_runtime_with_svg(html_doc: str) -> str:
+def _replace_chart_runtime_with_svg(html_doc: str, rasterize: bool = False) -> str:
     """Replace Chart.js canvas/script pairs with static SVGs for PDF output."""
     import json as _json
     import re as _re
@@ -3424,7 +3424,21 @@ def _replace_chart_runtime_with_svg(html_doc: str) -> str:
             continue
         try:
             config, _ = decoder.raw_decode(body[pm.end():])
-            replacements[pm.group(1)] = _svg_chart_from_config(config)
+            svg = _svg_chart_from_config(config)
+            if rasterize and '<svg' in svg.lower():
+                try:
+                    import cairosvg
+                    import base64
+                    svg_match = re.search(r'<svg\b.*?</svg>', svg, flags=re.IGNORECASE | re.DOTALL)
+                    svg_payload = svg_match.group(0) if svg_match else svg
+                    png = cairosvg.svg2png(bytestring=svg_payload.encode('utf-8'), output_width=1200)
+                    data_uri = 'data:image/png;base64,' + base64.b64encode(png).decode('ascii')
+                    replacements[pm.group(1)] = f'<div class="gg-pdf-chart-fallback gg-pdf-chart-raster"><img src="{data_uri}" alt="Chart" /></div>'
+                except Exception as raster_exc:
+                    log.warning("PDF: chart rasterization failed for %s; keeping SVG: %s", pm.group(1), raster_exc)
+                    replacements[pm.group(1)] = svg
+            else:
+                replacements[pm.group(1)] = svg
         except Exception as exc:
             log.warning("PDF: failed to parse chart runtime block %s: %s", pm.group(1), exc)
             replacements[pm.group(1)] = '<div class="gg-pdf-chart-fallback">Chart data could not be rendered.</div>'
@@ -3451,6 +3465,27 @@ def _replace_chart_runtime_with_svg(html_doc: str) -> str:
         count=1,
     )
     return html_doc
+
+def _materialize_countup_values_for_pdf(html_doc: str) -> str:
+    """Materialize JS count-up values before scripts are removed for PDF."""
+    pattern = re.compile(
+        r'<span\b(?P<attrs>[^>]*class=["\'][^"\']*\bgg-count\b[^"\']*["\'][^>]*data-count-target=["\'](?P<target>-?\d+(?:\.\d+)?)["\'][^>]*)>(?P<inner>.*?)</span>',
+        re.IGNORECASE | re.DOTALL,
+    )
+
+    def repl(m):
+        raw = m.group('target')
+        try:
+            num = float(raw)
+            decimals = len(raw.split('.', 1)[1]) if '.' in raw else 0
+            value = f"{num:,.{decimals}f}" if decimals else f"{int(round(num)):,}"
+        except Exception:
+            value = raw
+        attrs = m.group('attrs')
+        return '<span' + attrs + '>' + value + '</span>'
+
+    return pattern.sub(repl, html_doc)
+
 
 def _strip_non_printing_runtime(html_doc: str, theme: dict | None = None, presentation: object = None, fast_mode: bool = False) -> str:
     """Compile browser-oriented report HTML into a small, self-contained print document.
@@ -3549,10 +3584,18 @@ def _strip_non_printing_runtime(html_doc: str, theme: dict | None = None, presen
     if background == "banded":
         body_bg = paper
 
-    # Remove all browser stylesheets and scripts. Static SVG charts and data URI
-    # images are kept; remote images are converted to empty placeholders so
-    # WeasyPrint has nothing external to fetch.
+    # Materialize animated numeric values before removing JavaScript. Without
+    # this step, the browser starts every count-up card at literal 0 in a PDF.
+    html_doc = _materialize_countup_values_for_pdf(html_doc)
+
+    # Remove all browser stylesheets, scripts, and non-semantic inline styles.
+    # The compiled print stylesheet below is the only CSS that reaches the PDF
+    # engine.
     doc = re.sub(r'<link\b[^>]*>', '', html_doc, flags=re.IGNORECASE)
+    doc = re.sub(r'\sstyle=(?:"[^"]*"|\'[^\']*\')', '', doc, flags=re.IGNORECASE | re.DOTALL)
+    if fast_mode:
+        doc = re.sub(r'\sdata-[a-z0-9_-]+=(?:"[^"]*"|\'[^\']*\')', '', doc, flags=re.IGNORECASE)
+        doc = re.sub(r'\sid=(?:"[^"]*"|\'[^\']*\')', '', doc, flags=re.IGNORECASE)
     doc = re.sub(r'<style\b[^>]*>.*?</style\s*>', '', doc, flags=re.IGNORECASE | re.DOTALL)
     doc = re.sub(r'<script\b[^>]*>.*?</script\s*>', '', doc, flags=re.IGNORECASE | re.DOTALL)
 
@@ -3598,7 +3641,7 @@ main {{ width: 100%; max-width: 178mm; margin: 0 auto; }}
 .gg-summary-heading {{ font-size: 13pt; font-weight: 700; margin-bottom: 8px; }}
 .gg-summary {{ font-size: 11.5pt; line-height: 1.52; }}
 .gg-report-sections {{ display: block; }}
-.gg-section {{ margin: 0 0 {gap}; padding: {pad}; background: {card_bg}; border: 1px solid {line}; border-radius: {radius}; break-inside: auto; }}
+.gg-section {{ margin: 0 0 {gap}; padding: {pad}; background: {card_bg}; border: 1px solid {line}; border-radius: {radius}; break-inside: {"auto" if fast_mode else "avoid"}; }}
 .gg-section-heading {{ margin-bottom: 10px; break-after: avoid; }}
 .gg-section-heading h2, .gg-section-h2 {{ margin: 0; font-family: {heading_font}; font-size: {section_size}; line-height: 1.15; color: {primary}; }}
 .gg-section-rule--hairline .gg-section-heading {{ border-bottom: 1px solid {line}; padding-bottom: 7px; }}
@@ -3611,13 +3654,13 @@ main {{ width: 100%; max-width: 178mm; margin: 0 auto; }}
 .gg-block, .gg-list, p {{ margin-top: 0; margin-bottom: 8px; }}
 .gg-list {{ padding-left: 18px; }}
 .gg-divider {{ border-top: 1px solid {line}; margin: 10px 0; }}
-.gg-pullquote, .gg-callout {{ padding: {pad}; border-left: 4px solid {accent}; background: {paper_alt}; border-radius: {radius}; break-inside: avoid; }}
+.gg-pullquote, .gg-callout {{ padding: {pad}; border-left: 4px solid {accent}; background: {paper_alt}; border-radius: {radius}; break-inside: {"auto" if fast_mode else "avoid"}; }}
 .gg-metrics, .gg-stats-grid {{ {metric_css} gap: 8px; margin: 10px 0; }}
 .gg-metric, .gg-stat-card {{ display: inline-block; vertical-align: top; width: 31%; padding: {pad}; margin: 0 1% 8px 0; background: {card_bg}; border: 1px solid {line}; border-radius: {radius}; break-inside: avoid; }}
-.gg-metric-value, .gg-stat-value {{ font-size: 17pt; font-weight: 750; color: {primary}; line-height: 1.1; }}
+.gg-metric-value, .gg-stat-value {{ font-size: 17pt; font-weight: 700; color: {primary}; line-height: 1.1; }}
 .gg-metric-label, .gg-stat-label {{ font-size: 8pt; color: {body_muted}; line-height: 1.2; }}
 .gg-metric-change, .gg-stat-change {{ font-size: 8.5pt; color: {accent}; }}
-.gg-chart-wrap, .gg-table-wrap {{ margin: 10px 0; padding: 9px; background: {card_bg}; border: 1px solid {line}; border-radius: {radius}; break-inside: avoid; }}
+.gg-chart-wrap, .gg-table-wrap {{ margin: 10px 0; padding: 9px; background: {card_bg}; border: 1px solid {line}; border-radius: {radius}; break-inside: {"auto" if fast_mode else "avoid"}; }}
 .gg-chart-title {{ font-size: 10.5pt; font-weight: 700; color: {primary}; margin-bottom: 6px; }}
 .gg-chart-canvas-box {{ height: 220px; }}
 .gg-pdf-chart-fallback {{ width: 100%; max-width: 100%; overflow: hidden; break-inside: avoid; }}
@@ -3632,16 +3675,16 @@ main {{ width: 100%; max-width: 178mm; margin: 0 auto; }}
 .gg-timeline-date {{ color: {accent}; font-weight: 700; }}
 .gg-timeline-title {{ font-weight: 700; color: {primary}; }}
 .gg-risk-grid {{ {risk_css} }}
-.gg-risk {{ padding: 9px; background: {card_bg}; border: 1px solid {line}; border-radius: {radius}; break-inside: avoid; }}
+.gg-risk {{ padding: 9px; background: {card_bg}; border: 1px solid {line}; border-radius: {radius}; break-inside: {"auto" if fast_mode else "avoid"}; }}
 .gg-risk__name {{ font-weight: 700; color: {primary}; }}
 .gg-risk__meta, .gg-risk__mitigation {{ color: {body_muted}; font-size: 8.8pt; }}
-.gg-figure {{ margin: 10px 0; break-inside: avoid; }}
+.gg-figure {{ margin: 10px 0; break-inside: {"auto" if fast_mode else "avoid"}; }}
 .gg-figure img {{ display: block; width: 100%; max-width: 100%; max-height: 480px; object-fit: contain; }}
 .gg-figure--missing {{ padding: 14px; border: 1px dashed {line}; color: {body_muted}; background: {paper_alt}; text-align: center; border-radius: {radius}; }}
 .gg-sources {{ margin-top: 18px; padding: 12px; background: {card_bg}; border: 1px solid {line}; border-radius: {radius}; break-before: page; }}
 .gg-sources-grid {{ display: grid; {source_css} gap: 6px; }}
-.gg-source-card {{ display: grid; grid-template-columns: 18px 1fr; gap: 6px; padding: 7px; background: {paper_alt}; border: 1px solid {line}; border-radius: {radius}; break-inside: avoid; }}
-.gg-source-number {{ background: {accent}; color: #FFFFFF; border-radius: 50%; width: 18px; height: 18px; display: block; text-align: center; line-height: 18px; font-size: 8pt; font-weight: 700; }}
+.gg-source-card {{ display: {"block" if fast_mode else "grid"}; grid-template-columns: 18px 1fr; gap: 6px; padding: 7px; background: {paper_alt}; border: 1px solid {line}; border-radius: {radius}; break-inside: {"auto" if fast_mode else "avoid"}; }}
+.gg-source-number {{ background: {accent}; color: #FFFFFF; border-radius: 50%; width: 18px; height: 18px; display: {"inline-block" if fast_mode else "block"}; text-align: center; line-height: 18px; font-size: 8pt; font-weight: 700; }}
 .gg-source-title {{ font-weight: 700; color: {primary}; font-size: 8.8pt; line-height: 1.22; }}
 .gg-source-meta, .gg-source-link {{ color: {body_muted}; font-size: 7.7pt; }}
 .gg-footer {{ padding-top: 10px; color: {body_muted}; font-size: 8pt; }}
@@ -3697,8 +3740,12 @@ def _pdf_with_chromium(html_doc: str) -> bytes:
     with tempfile.TemporaryDirectory(prefix="gg_pdf_") as td:
         html_path=os.path.join(td,"report.html"); pdf_path=os.path.join(td,"report.pdf")
         Path(html_path).write_text(html_doc, encoding="utf-8")
-        cmd=[chrome,"--headless","--no-sandbox","--disable-gpu","--disable-dev-shm-usage","--allow-file-access-from-files","--print-to-pdf-no-header",f"--print-to-pdf={pdf_path}",f"file://{html_path}"]
-        proc=subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=20)
+        cmd=[chrome,"--headless","--no-sandbox","--disable-gpu","--disable-dev-shm-usage","--disable-extensions","--disable-background-networking","--disable-sync","--no-first-run","--no-default-browser-check","--allow-file-access-from-files","--print-to-pdf-no-header",f"--print-to-pdf={pdf_path}",f"file://{html_path}"]
+        try:
+            chrome_timeout = float(os.environ.get("GG_PDF_CHROMIUM_TIMEOUT_S", "45") or 45)
+        except ValueError:
+            chrome_timeout = 45.0
+        proc=subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=chrome_timeout)
         if proc.returncode!=0 or not os.path.exists(pdf_path):
             raise RuntimeError(proc.stderr.decode("utf-8","replace")[-1500:])
         data=Path(pdf_path).read_bytes()
@@ -3850,31 +3897,47 @@ def build_pdf(report: str, title: str, question: str, summary: str,
         report or "", title or "", question or "Research Report", summary or "",
         key_stats or [], charts or [], images, safe_theme, sources, presentation,
     )
-    html_doc = _replace_chart_runtime_with_svg(html_doc)
     try:
         _source_count = len(normalise_source_manifest(sources))
     except Exception:
         _source_count = len(sources) if isinstance(sources, (list, tuple)) else 0
     fast_print = len(charts or []) >= 6 or _source_count >= 20 or len((report or '')) >= 30000
+    # Raster charts for heavy PDFs. Complex inline SVG trees are significantly
+    # more expensive for WeasyPrint on small CPU instances than equivalent PNGs.
+    html_doc = _replace_chart_runtime_with_svg(html_doc, rasterize=fast_print)
     if fast_print:
         log.info('PDF: using fast dynamic print profile — charts=%d sources=%d report_chars=%d', len(charts or []), _source_count, len(report or ''))
     html_doc = _strip_non_printing_runtime(html_doc, safe_theme, presentation, fast_mode=fast_print)
 
-    # WeasyPrint is preferred because it is deterministic and does not require
-    # a browser runtime. Chromium remains a fallback for deployments that have
-    # the browser available, preserving the HTML/CSS composition faithfully.
-    try:
-        return _trim_trailing_blank_pages(_pdf_with_weasyprint(html_doc))
-    except Exception as exc:
-        log.warning("PDF: WeasyPrint unavailable/failed; trying Chromium fallback: %s", exc)
+    # Heavy reports are rendered with Chromium first when it is available.
+    # Chromium is substantially faster than WeasyPrint on the small Render
+    # instances used by this deployment, while still consuming the exact same
+    # compiled dynamic print HTML/CSS. WeasyPrint remains the deterministic
+    # fallback for environments without a browser.
+    prefer_chromium = fast_print and os.environ.get("GG_PDF_RENDER_ENGINE", "weasyprint").lower() == "chromium"
+    attempts = []
+    if prefer_chromium:
+        attempts.append(("chromium", _pdf_with_chromium))
+        attempts.append(("weasyprint", _pdf_with_weasyprint))
+    else:
+        attempts.append(("weasyprint", _pdf_with_weasyprint))
+        attempts.append(("chromium", _pdf_with_chromium))
+
+    errors = []
+    for engine, renderer in attempts:
         try:
-            return _trim_trailing_blank_pages(_pdf_with_chromium(html_doc))
-        except Exception as chrome_exc:
-            log.error("PDF: dynamic HTML-to-PDF failed: weasyprint=%s chromium=%s", exc, chrome_exc)
-            # Never silently revert to the fixed legacy renderer. The product
-            # contract is now presentation-driven PDF output; returning a clean
-            # error is safer than returning a visually unrelated legacy report.
-            raise RuntimeError(f"Dynamic PDF rendering failed: {chrome_exc}") from chrome_exc
+            t_engine = time.perf_counter()
+            pdf_bytes = renderer(html_doc)
+            log.info("PDF: %s render succeeded in %.1fs", engine, time.perf_counter() - t_engine)
+            return _trim_trailing_blank_pages(pdf_bytes)
+        except Exception as exc:
+            errors.append(f"{engine}={exc}")
+            log.warning("PDF: %s render failed: %s", engine, exc)
+
+    # Never silently revert to the fixed legacy renderer. The product contract
+    # is presentation-driven PDF output; returning a clean error is safer than
+    # returning a visually unrelated legacy report.
+    raise RuntimeError("Dynamic PDF rendering failed: " + " | ".join(errors))
 
 
 # ─── Route ────────────────────────────────────────────────────────────────────

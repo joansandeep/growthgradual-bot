@@ -12,4 +12,20 @@ services:
       - key: GEMINI_API_KEY
         sync: false
       - key: LOGO_B64
-        sync: false   # optional: base64-encoded logo image bytes
+        sync: false
+      - key: GG_PDF_RENDER_ENGINE
+        value: auto
+      - key: DATABASE_URL
+        sync: false
+
+  - type: cron
+    name: growth-gradual-screener-daily
+    runtime: python
+    buildCommand: pip install -r requirements.txt
+    startCommand: python jobs/update_screener_daily.py --mode daily --from-db
+    schedule: "30 6 * * *"
+    envVars:
+      - key: DATABASE_URL
+        sync: false
+      - key: SCREENER_UPDATE_WORKERS
+        value: "2"

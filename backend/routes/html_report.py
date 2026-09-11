@@ -1735,6 +1735,7 @@ def build_html_report(report: str, title: str, question: str, summary: str,
 
     body_sections = []
     chart_cursor = 0
+    key_stats_rendered = False
     for idx, (plan, actual) in enumerate(matches):
         section_title = html.escape(str(plan.get("title") or actual.get("title") or f"Section {idx + 1}"))
         layout = str(plan.get("layout") or spec_dict.get("default_layout") or "single_column")
@@ -1750,8 +1751,9 @@ def build_html_report(report: str, title: str, question: str, summary: str,
             # Keep generated markdown content as the source-of-truth when a structured layout is only metadata.
             if body_raw and not block_html.strip():
                 body_html = _markdown_to_html(body_raw, charts, images, effective_theme)
-        if section_type == "metrics_dashboard" and key_stats and "gg-metric" not in body_html:
+        if section_type == "metrics_dashboard" and key_stats and not key_stats_rendered and "gg-metric" not in body_html:
             body_html = _render_key_stats(key_stats) + body_html
+            key_stats_rendered = True
         if section_type == "timeline" and not blocks_meaningful:
             # Markdown remains the content source; presentation controls the arrangement.
             pass

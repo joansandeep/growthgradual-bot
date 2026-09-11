@@ -1,6 +1,8 @@
 -- Screener.in fundamentals knowledge base — Supabase/Postgres schema
 -- Run this once in the Supabase SQL editor (or via psql) before running the loader.
+
 create extension if not exists vector;
+
 create table if not exists companies (
     id              bigint generated always as identity primary key,
     ticker          text unique not null,
@@ -17,6 +19,7 @@ create table if not exists companies (
     source_file     text,
     updated_at      timestamptz default now()
 );
+
 create table if not exists ratios (                -- Top_Ratios: point-in-time snapshot
     company_id  bigint references companies(id) on delete cascade,
     metric      text,
@@ -25,6 +28,7 @@ create table if not exists ratios (                -- Top_Ratios: point-in-time 
     as_of       date default current_date,
     primary key (company_id, metric, as_of)
 );
+
 create table if not exists financials (             -- P&L / Balance Sheet / Cash Flow / Ratios(history) / Quarterly, melted long
     company_id  bigint references companies(id) on delete cascade,
     statement   text,            -- 'Quarterly' | 'Annual P&L' | 'Balance Sheet' | 'Cash Flow' | 'Annual Ratios'
@@ -34,6 +38,7 @@ create table if not exists financials (             -- P&L / Balance Sheet / Cas
     value       numeric,
     primary key (company_id, statement, period, line_item)
 );
+
 create table if not exists growth_cagr (
     company_id  bigint references companies(id) on delete cascade,
     metric      text,            -- 'Compounded Sales Growth', 'Return on Equity', etc.
@@ -42,6 +47,7 @@ create table if not exists growth_cagr (
     value       numeric,
     primary key (company_id, metric, period)
 );
+
 create table if not exists shareholding (
     company_id  bigint references companies(id) on delete cascade,
     frequency   text,            -- 'Quarterly' | 'Yearly'
@@ -51,6 +57,7 @@ create table if not exists shareholding (
     value       numeric,
     primary key (company_id, frequency, holder_type, period)
 );
+
 create table if not exists peers (
     company_id  bigint references companies(id) on delete cascade,
     peer_name   text,
@@ -58,6 +65,7 @@ create table if not exists peers (
     row_num     int,
     primary key (company_id, row_num)
 );
+
 create table if not exists pros_cons (
     company_id  bigint references companies(id) on delete cascade,
     kind        text check (kind in ('Pros','Cons')),
@@ -65,6 +73,7 @@ create table if not exists pros_cons (
     row_num     int,
     primary key (company_id, row_num)
 );
+
 create table if not exists documents (
     company_id  bigint references companies(id) on delete cascade,
     title       text,
@@ -72,32 +81,31 @@ create table if not exists documents (
     row_num     int,
     primary key (company_id, row_num)
 );
+
 -- Semantic layer for the chatbot / RAG
 create table if not exists company_summaries (
     company_id  bigint references companies(id) on delete cascade primary key,
     summary     text,
     embedding   vector(1536)     -- match the dimension of whatever model rag_engine._embed() uses
 );
+
 create index if not exists idx_financials_company on financials(company_id);
 create index if not exists idx_ratios_company on ratios(company_id);
 create index if not exists idx_summaries_embedding on company_summaries
     using ivfflat (embedding vector_cosine_ops);
-alter table companies         enable row level security;
-alter table ratios            enable row level security;
-alter table financials        enable row level security;
-alter table growth_cagr       enable row level security;
-alter table shareholding      enable row level security;
-alter table peers             enable row level security;
-alter table pros_cons         enable row level security;
-alter table documents         enable row level security;
-alter table company_summaries enable row level security;
 
-create policy "public read" on companies         for select using (true);
-create policy "public read" on ratios            for select using (true);
-create policy "public read" on financials        for select using (true);
-create policy "public read" on growth_cagr       for select using (true);
-create policy "public read" on shareholding      for select using (true);
-create policy "public read" on peers             for select using (true);
-create policy "public read" on pros_cons         for select using (true);
-create policy "public read" on documents         for select using (true);
-create policy "public read" on company_summaries for select using (true);
+-- Daily/cron refresh audit trail. The stock-data updater uses this table
+-- instead of relying on a local filesystem, which is ephemeral on Render cron jobs.
+create table if not exists stock_data_update_runs (
+    run_id           bigint generated always as identity primary key,
+    started_at       timestamptz not null default now(),
+    finished_at      timestamptz,
+    mode             text not null,
+    selected_count   integer not null default 0,
+    succeeded_count  integer not null default 0,
+    failed_count     integer not null default 0,
+    status           text not null default 'running',
+    notes            text
+);
+create index if not exists idx_stock_update_runs_started_at
+    on stock_data_update_runs(started_at desc);
