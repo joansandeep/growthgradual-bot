@@ -3503,6 +3503,24 @@ def _strip_non_printing_runtime(html_doc: str, theme: dict | None = None) -> str
 
     html_doc = _strip_media_blocks(html_doc)
 
+    # PDF export is offline-first (see the chart-hydration comment above) —
+    # a live fetch of Google Fonts here defeated that guarantee. WeasyPrint
+    # has no built-in timeout on <link rel="stylesheet"> fetches, so a slow
+    # or unreachable fonts.googleapis.com/fonts.gstatic.com round-trip could
+    # block the request (and, since build_pdf runs synchronously in the
+    # async route, the whole event loop) for many minutes. Strip the remote
+    # font link entirely; the print CSS below already falls back to
+    # system-ui/sans-serif, which renders instantly and is indistinguishable
+    # at print sizes for 99% of themes.
+    html_doc = re.sub(
+        r'<link[^>]+href=["\']https?://fonts\.googleapis\.com[^"\']*["\'][^>]*>\s*',
+        '', html_doc, flags=re.IGNORECASE,
+    )
+    html_doc = re.sub(
+        r'<link[^>]+rel=["\']preconnect["\'][^>]+href=["\']https?://fonts\.(?:googleapis|gstatic)\.com["\'][^>]*>\s*',
+        '', html_doc, flags=re.IGNORECASE,
+    )
+
     # Print-safe replacements. Keep them deliberately simple so WeasyPrint's
     # parser does not have to evaluate modern viewport/math functions.
     html_doc = re.sub(
@@ -3640,9 +3658,40 @@ def _pdf_with_chromium(html_doc: str) -> bytes:
         return data
 
 
-def _pdf_with_weasyprint(html_doc: str) -> bytes:
+def _pdf_with_weasyprint(html_doc: str, timeout_s: float = 30.0) -> bytes:
+    """Run WeasyPrint with a hard wall-clock budget.
+
+    Stripping the remote Google Fonts link (above) removes the one network
+    fetch we knew about, but WeasyPrint will still attempt any other
+    http(s) URL it finds in the document (a stray <img src> that wasn't
+    base64-inlined, etc.) with no timeout of its own. Running it in a
+    worker thread with a bounded .result() wait means a future stray
+    remote reference degrades to "fall through to Chromium/legacy" instead
+    of hanging the request — and, since generate_pdf now offloads this
+    whole call via asyncio.to_thread, a timeout here no longer blocks the
+    server's event loop for other requests either.
+    """
+    from concurrent.futures import ThreadPoolExecutor, TimeoutError as _FutureTimeout
     from weasyprint import HTML
-    return HTML(string=html_doc, base_url=str(Path.cwd())).write_pdf()
+
+    def _render() -> bytes:
+        return HTML(string=html_doc, base_url=str(Path.cwd())).write_pdf()
+
+    # Not using a `with` block deliberately: ThreadPoolExecutor.__exit__ calls
+    # shutdown(wait=True), which would block on the very thread we're trying
+    # to time out. shutdown(wait=False) lets a stuck worker leak/finish in
+    # the background (harmless — it's pure CPU/IO, not holding shared state)
+    # while this call returns to the caller promptly.
+    pool = ThreadPoolExecutor(max_workers=1)
+    future = pool.submit(_render)
+    try:
+        return future.result(timeout=timeout_s)
+    except _FutureTimeout:
+        pool.shutdown(wait=False)
+        raise RuntimeError(f"WeasyPrint exceeded {timeout_s:.0f}s budget (likely a stray network fetch)")
+    finally:
+        if future.done():
+            pool.shutdown(wait=False)
 
 
 def build_pdf(report: str, title: str, question: str, summary: str,
@@ -3942,7 +3991,16 @@ async def generate_pdf(request: Request):
         log.info("PDF: injected fallback [WEB_IMG_n] placeholders")
 
     try:
-        pdf_bytes = build_pdf(report, title, question, summary, key_stats, charts, logo_b64, file_images, web_images, theme, sources, presentation)
+        # build_pdf is a synchronous, CPU/IO-bound call (WeasyPrint layout +
+        # rendering). Calling it directly here would block this whole async
+        # route on the single event loop thread — which is exactly what let
+        # a single slow export make /ping and every other in-flight request
+        # stall too. asyncio.to_thread moves it off the loop so a slow (or,
+        # now, timed-out) export only slows down its own request.
+        pdf_bytes = await asyncio.to_thread(
+            build_pdf, report, title, question, summary, key_stats, charts,
+            logo_b64, file_images, web_images, theme, sources, presentation,
+        )
     except Exception as e:
         log.error("PDF: build_pdf failed: %s", e)
         return JSONResponse({"error": f"Failed to generate PDF: {e}"}, status_code=500)
