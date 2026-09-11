@@ -3658,7 +3658,7 @@ def _pdf_with_chromium(html_doc: str) -> bytes:
         return data
 
 
-def _pdf_with_weasyprint(html_doc: str, timeout_s: float = 30.0) -> bytes:
+def _pdf_with_weasyprint(html_doc: str, timeout_s: float = 120.0) -> bytes:
     """Run WeasyPrint with a hard wall-clock budget.
 
     Stripping the remote Google Fonts link (above) removes the one network
@@ -3670,6 +3670,16 @@ def _pdf_with_weasyprint(html_doc: str, timeout_s: float = 30.0) -> bytes:
     of hanging the request — and, since generate_pdf now offloads this
     whole call via asyncio.to_thread, a timeout here no longer blocks the
     server's event loop for other requests either.
+
+    The budget is intentionally generous (120s, not 30s). A heavy report
+    (many inline-SVG charts, big tables, stat cards) is genuine CPU-bound
+    layout work on a modest Render box and can legitimately take well
+    over 30s to finish — that used to get killed here and silently
+    downgraded to the Chromium fallback (usually unavailable) and then the
+    lower-fidelity legacy ReportLab renderer, discarding a perfectly good
+    WeasyPrint render for a worse one. 120s comfortably covers real,
+    complex reports while still catching an actual hang (e.g. a stray
+    unreachable network fetch that would otherwise block forever).
     """
     from concurrent.futures import ThreadPoolExecutor, TimeoutError as _FutureTimeout
     from weasyprint import HTML
