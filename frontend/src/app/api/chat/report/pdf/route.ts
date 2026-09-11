@@ -10,7 +10,7 @@ import { LOGO_B64 } from './logos';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
-export const maxDuration = 180;
+export const maxDuration = 120;
 
 const log = createLogger('api/chat/report/pdf');
 const BACKEND = (process.env.BACKEND_URL ?? 'http://localhost:8000').replace(/\/$/, '');
@@ -49,25 +49,48 @@ export async function POST(req: NextRequest) {
   }
 
   if (!upstream.ok) {
+    const contentType = (upstream.headers.get('content-type') ?? '').toLowerCase();
     const raw = await upstream.text();
-    // The backend already returns a JSON body like {"error": "..."}. Re-wrapping
-    // that raw text as { error: raw } here double-encodes it into
-    // {"error":"{\"error\":\"...\"}"} — which is what rendered as the garbled
-    // nested-JSON blob on screen. Parse it through if it's already JSON;
-    // only fall back to wrapping when the upstream body genuinely isn't JSON.
-    let payload: unknown;
-    try {
-      const parsed = JSON.parse(raw);
-      payload = (parsed && typeof parsed === 'object') ? parsed : { error: raw || `Upstream error (${upstream.status})` };
-    } catch {
-      payload = { error: raw || `Upstream error (${upstream.status})` };
+    const trimmed = raw.trim();
+    const looksLikeHtml = /<!doctype\s+html|<html[\s>]|<head[\s>]/i.test(trimmed) || contentType.includes('text/html');
+    let message = `PDF generation failed (HTTP ${upstream.status}).`;
+
+    // Hosting/framework layers can return a complete HTML error page. Never
+    // surface that document in the report UI; convert it to one safe sentence.
+    if (looksLikeHtml) {
+      message = upstream.status >= 500
+        ? 'The PDF service returned a server error. Please retry the PDF export.'
+        : `PDF generation failed (HTTP ${upstream.status}).`;
+    } else {
+      try {
+        const parsed = JSON.parse(trimmed);
+        if (parsed && typeof parsed === 'object' && typeof (parsed as any).error === 'string' && (parsed as any).error.trim()) {
+          message = (parsed as any).error;
+        } else if (trimmed) {
+          message = trimmed.slice(0, 500);
+        }
+      } catch {
+        if (trimmed) message = trimmed.slice(0, 500);
+      }
     }
-    log.error('PDF generation failed upstream: HTTP %d — %s', upstream.status, raw.slice(0, 120));
+
+    log.error('PDF generation failed upstream: HTTP %d (%s) — %s', upstream.status, contentType || 'unknown', looksLikeHtml ? '<html error page suppressed>' : trimmed.slice(0, 120));
     done(upstream.status, 'upstream error');
-    return NextResponse.json(payload, { status: upstream.status });
+    return NextResponse.json({ error: message }, { status: upstream.status });
   }
 
+  const contentType = (upstream.headers.get('content-type') ?? '').toLowerCase();
   const pdfBuffer = await upstream.arrayBuffer();
+  const pdfBytes = new Uint8Array(pdfBuffer);
+  const signature = new TextDecoder().decode(pdfBytes.slice(0, 5));
+  if (!contentType.includes('application/pdf') || signature !== '%PDF-') {
+    // A 2xx response can still be a framework/edge HTML page. Do not let it
+    // masquerade as a PDF download.
+    log.error('PDF upstream returned non-PDF success response: content-type=%s signature=%s bytes=%d', contentType || 'unknown', signature, pdfBytes.length);
+    done(502, 'non-pdf upstream response');
+    return NextResponse.json({ error: 'The PDF service returned an unexpected response. Please retry the PDF export.' }, { status: 502 });
+  }
+
   const dateStr = new Date().toISOString().slice(0, 10);
   done(200, `${(pdfBuffer.byteLength / 1024).toFixed(1)} KB`);
   return new NextResponse(pdfBuffer, {

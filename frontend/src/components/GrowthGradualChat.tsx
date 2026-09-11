@@ -845,10 +845,22 @@ function ReportPanel({ msg, question, hasPriorContext, onGenerate }: { msg: Mess
       }
       const contentType = (res.headers.get('Content-Type') ?? '').toLowerCase();
       if (!contentType.includes('application/pdf')) {
-        let message = 'The server returned an unexpected response instead of a PDF.';
+        let message = 'The PDF service returned an unexpected response.';
         try {
           const body = await res.text();
-          if (body.trim()) message = body.slice(0, 240);
+          const trimmed = body.trim();
+          if (/<!doctype\s+html|<html[\s>]|<head[\s>]/i.test(trimmed) || contentType.includes('text/html')) {
+            message = 'The PDF service returned a server error. Please retry the PDF export.';
+          } else if (trimmed) {
+            try {
+              const parsed = JSON.parse(trimmed);
+              message = typeof parsed?.error === 'string' && parsed.error.trim()
+                ? parsed.error
+                : trimmed.slice(0, 500);
+            } catch {
+              message = trimmed.slice(0, 500);
+            }
+          }
         } catch { /* ignore */ }
         setArtifactError(message);
         return;
