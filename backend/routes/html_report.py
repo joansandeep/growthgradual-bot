@@ -995,6 +995,11 @@ def _merge_presentation_visual(theme: dict | None, presentation: object) -> dict
         "shape_style": "shapeStyle",
         "accent_strategy": "accentStrategy",
         "chart_style": "chartStyle",
+        "spacing_scale": "spacingScale",
+        "card_style": "cardStyle",
+        "section_rule": "sectionRule",
+        "title_alignment": "titleAlignment",
+        "background_treatment": "backgroundTreatment",
     }
     for src, dst in mapping.items():
         value = visual.get(src)
@@ -1031,12 +1036,16 @@ def _build_css(theme: dict | None) -> str:
     return f"""
 :root {{
   --primary: {navy}; --accent: {gold}; --secondary: {theme.get("secondaryColor") or _shade_hex(gold, -0.10)}; --accent-soft: {gold_light};
-  --ink: {ink}; --ink-soft: {ink_soft}; --paper: {paper}; --paper-alt: {paper_alt}; --rule: {rule}; --muted: {ink_soft};
+  --ink: {ink}; --ink-soft: {ink_soft}; --paper: {paper}; --paper-alt: {paper_alt}; --surface-strong: {theme.get("surfaceAltColor") or paper_alt}; --rule: {rule}; --muted: {ink_soft};
   --negative: #b42318; --positive: #147a4b; --font-body: {font_body}; --font-heading: {font_heading};
   --content-max: 1120px;
   --radius: {"0px" if theme.get("shapeStyle") == "sharp" else "18px" if theme.get("shapeStyle") == "rounded" else "10px"};
   --shadow: {"none" if theme.get("shapeStyle") == "sharp" else "0 10px 30px rgba(15, 23, 42, .08)"};
   --title-scale: {"0.88" if theme.get("typographyScale") == "compact" else "1.16" if theme.get("typographyScale") == "dramatic" else "1"};
+  --space-unit: {"6px" if theme.get("spacingScale") == "compact" else "11px" if theme.get("spacingScale") == "airy" else "8px"};
+  --card-border-width: {"0px" if theme.get("cardStyle") == "flat" else "2px" if theme.get("cardStyle") == "filled" else "1px"};
+  --title-align: {theme.get("titleAlignment") or "left"};
+  --section-rule-color: {"transparent" if theme.get("sectionRule") == "none" else "var(--accent)" if theme.get("sectionRule") == "accent_bar" else "var(--rule)"};
   --panel-radius: var(--radius); --panel-shadow: var(--shadow);
 }}
 * {{ box-sizing: border-box; }}
@@ -1059,14 +1068,14 @@ main {{ width: min(var(--content-max), calc(100% - 48px)); margin: 0 auto; paddi
 .gg-cover__aside {{ padding: 20px; border-left: 3px solid var(--accent); background: var(--paper-alt); }}
 .gg-cover__aside-label {{ margin: 0 0 8px; font: 700 11px var(--font-heading); letter-spacing: .08em; text-transform: uppercase; color: var(--accent); }}
 .gg-eyebrow {{ margin: 0 0 12px; font: 700 11px var(--font-heading); letter-spacing: .14em; text-transform: uppercase; color: var(--accent); }}
-.gg-title {{ margin: 0 0 16px; font-size: calc(clamp(34px, 5vw, 62px) * var(--title-scale)); letter-spacing: -.025em; }}
+.gg-title {{ margin: 0 0 16px; font-size: 52px; line-height: 1.08; letter-spacing: -.025em; text-align: var(--title-align); }}
 .gg-summary {{ max-width: 72ch; margin: 0; font-size: 18px; }}
 .gg-date {{ margin-top: 18px; color: var(--muted); font-size: 13px; }}
 
 .gg-summary-wrap {{ margin: 0 0 32px; }}
 .gg-summary-wrap--sidebar {{ display: grid; grid-template-columns: minmax(240px, .34fr) minmax(0, 1fr); gap: 28px; align-items: start; }}
 .gg-summary-wrap--end {{ margin-top: 42px; }}
-.gg-summary-card {{ padding: 26px 28px; border: 1px solid var(--rule); background: var(--paper-alt); box-shadow: var(--shadow); border-radius: var(--radius); }}
+.gg-summary-card {{ padding: 26px 28px; border: var(--card-border-width) solid var(--rule); background: var(--paper-alt); box-shadow: var(--shadow); border-radius: var(--radius); }}
 .gg-summary-card--high {{ border-left: 4px solid var(--accent); }}
 .gg-summary-card--critical {{ border-left: 5px solid var(--negative); }}
 .gg-summary-heading {{ margin: 0 0 14px; font-size: 24px; }}
@@ -1081,7 +1090,7 @@ main {{ width: min(var(--content-max), calc(100% - 48px)); margin: 0 auto; paddi
 .gg-section--sidebar_main {{ display: grid; grid-template-columns: minmax(180px, .26fr) minmax(0, 1fr); gap: 30px; align-items: start; }}
 .gg-section--sidebar_main .gg-section-heading {{ position: sticky; top: 20px; }}
 .gg-section-heading {{ margin-bottom: 18px; }}
-.gg-section-heading h2 {{ margin: 0; font-size: calc(clamp(24px, 3vw, 34px) * var(--title-scale)); }}
+.gg-section-heading h2 {{ margin: 0; font-size: 30px; line-height: 1.15; text-align: var(--title-align); }}
 .gg-section-heading p {{ margin: 8px 0 0; font-size: 13px; color: var(--muted); }}
 .gg-section--high .gg-section-heading {{ border-top: 3px solid var(--accent); padding-top: 14px; }}
 .gg-section--critical .gg-section-heading {{ border-top: 4px solid var(--negative); padding-top: 14px; }}
@@ -1091,7 +1100,7 @@ main {{ width: min(var(--content-max), calc(100% - 48px)); margin: 0 auto; paddi
 .gg-section[data-density="sparse"] {{ padding-top: 14px; padding-bottom: 14px; }}
 .gg-section[data-density="dense"] {{ font-size: 15px; }}
 .gg-section[data-density="dense"] p {{ font-size: 15px; }}
-''.gg-section[data-density="dense"] .gg-block {{ margin-bottom: 14px; }}
+.gg-section[data-density="dense"] .gg-block {{ margin-bottom: 14px; }}
 .gg-composition--hybrid .gg-section + .gg-section {{ border-top: 1px solid var(--rule); padding-top: 24px; }}
 .gg-section[data-emphasis="critical"] {{ background: color-mix(in srgb, var(--negative) 5%, transparent); padding: 16px; border-radius: 10px; }}
 .gg-section[data-section-type="comparison"] .gg-table-wrap, .gg-section[data-section-type="financials"] .gg-table-wrap {{ overflow: auto; }}
@@ -1105,7 +1114,7 @@ main {{ width: min(var(--content-max), calc(100% - 48px)); margin: 0 auto; paddi
 .gg-pullquote {{ border-left: 3px solid var(--accent); margin: 26px 0; padding: 6px 0 6px 20px; font-style: italic; font-size: 19px; color: var(--ink); }}
 .gg-divider {{ border: 0; border-top: 1px solid var(--rule); margin: 36px 0; }}
 
-.gg-chart-wrap, .gg-table-wrap {{ margin: 22px 0; padding: 18px 20px; background: var(--paper-alt); border: 1px solid var(--rule); break-inside: avoid; }}
+.gg-chart-wrap, .gg-table-wrap {{ margin: calc(var(--space-unit) * 2) 0; padding: calc(var(--space-unit) * 2) calc(var(--space-unit) * 2.5); background: var(--paper-alt); border: var(--card-border-width) solid var(--rule); break-inside: avoid; }}
 .gg-chart-title {{ margin-bottom: 12px; font: 700 12px var(--font-heading); letter-spacing: .06em; text-transform: uppercase; color: var(--accent); }}
 .gg-chart-canvas-box {{ position: relative; height: 320px; }}
 .gg-table-scroll {{ overflow-x: auto; }}
@@ -1125,6 +1134,17 @@ body.gg-type-scale--compact .gg-section-heading h2 {{ letter-spacing: -.01em; }}
 body.gg-type-scale--dramatic .gg-section-heading h2 {{ letter-spacing: -.035em; }}
 body.gg-shape--sharp .gg-chart-wrap, body.gg-shape--sharp .gg-table-wrap, body.gg-shape--sharp .gg-callout, body.gg-shape--sharp .gg-summary-card, body.gg-shape--sharp .gg-metric, body.gg-shape--sharp .gg-stat-card, body.gg-shape--sharp .gg-source-card {{ border-radius: 0; }}
 body.gg-shape--rounded .gg-chart-wrap, body.gg-shape--rounded .gg-table-wrap, body.gg-shape--rounded .gg-callout, body.gg-shape--rounded .gg-summary-card, body.gg-shape--rounded .gg-metric, body.gg-shape--rounded .gg-stat-card, body.gg-shape--rounded .gg-source-card {{ border-radius: 18px; }}
+body.gg-spacing--compact .gg-section {{ margin-bottom: 10px; }}
+body.gg-spacing--airy .gg-section {{ margin-bottom: 34px; }}
+body.gg-card--flat .gg-chart-wrap, body.gg-card--flat .gg-table-wrap, body.gg-card--flat .gg-callout, body.gg-card--flat .gg-summary-card, body.gg-card--flat .gg-metric, body.gg-card--flat .gg-stat-card, body.gg-card--flat .gg-source-card {{ box-shadow: none; border-color: transparent; }}
+body.gg-card--filled .gg-chart-wrap, body.gg-card--filled .gg-table-wrap, body.gg-card--filled .gg-callout, body.gg-card--filled .gg-summary-card, body.gg-card--filled .gg-metric, body.gg-card--filled .gg-stat-card, body.gg-card--filled .gg-source-card {{ background: var(--surface-strong, var(--paper-alt)); border-width: 2px; }}
+body.gg-rule--none .gg-section-heading {{ border-bottom: 0; }}
+body.gg-rule--hairline .gg-section-heading {{ border-bottom: 1px solid var(--rule); padding-bottom: 8px; }}
+body.gg-rule--accent_bar .gg-section-heading {{ border-bottom: 3px solid var(--accent); padding-bottom: 8px; }}
+body.gg-rule--panel .gg-section-heading {{ background: var(--paper-alt); border: 1px solid var(--rule); padding: 12px 14px; }}
+body.gg-align--center .gg-title, body.gg-align--center .gg-section-heading h2 {{ text-align: center; }}
+body.gg-bg--tinted {{ background: var(--paper-alt); }}
+body.gg-bg--banded .gg-section:nth-of-type(even) {{ background: var(--paper-alt); padding: 18px; }}
 
 /* Legacy/stat-dashboard primitive used by metrics_dashboard sections. */
 .gg-stats-grid {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 12px; margin: 18px 0; }}
@@ -1661,6 +1681,11 @@ def build_html_report(report: str, title: str, question: str, summary: str,
     visual_mode = str((spec_dict.get("visual") or {}).get("mode") or "light")
     visual_scale = str((spec_dict.get("visual") or {}).get("typography_scale") or "balanced")
     visual_shape = str((spec_dict.get("visual") or {}).get("shape_style") or "soft")
+    visual_spacing = str((spec_dict.get("visual") or {}).get("spacing_scale") or "balanced")
+    visual_card = str((spec_dict.get("visual") or {}).get("card_style") or "outlined")
+    visual_rule = str((spec_dict.get("visual") or {}).get("section_rule") or "hairline")
+    visual_align = str((spec_dict.get("visual") or {}).get("title_alignment") or "left")
+    visual_bg = str((spec_dict.get("visual") or {}).get("background_treatment") or "plain")
     # Do not emit arbitrary theme.customCss from the LLM; only validated theme tokens are consumed.
     font_link = ""
     actual_sections = _split_report_into_sections(report)
@@ -1739,7 +1764,7 @@ def build_html_report(report: str, title: str, question: str, summary: str,
 {font_link}
 <style>{css}</style>
 </head>
-<body class="gg-visual--{html.escape(visual_mode, quote=True)} gg-type-scale--{html.escape(visual_scale, quote=True)} gg-shape--{html.escape(visual_shape, quote=True)}">
+<body class="gg-visual--{html.escape(visual_mode, quote=True)} gg-type-scale--{html.escape(visual_scale, quote=True)} gg-shape--{html.escape(visual_shape, quote=True)} gg-spacing--{html.escape(visual_spacing, quote=True)} gg-card--{html.escape(visual_card, quote=True)} gg-rule--{html.escape(visual_rule, quote=True)} gg-align--{html.escape(visual_align, quote=True)} gg-bg--{html.escape(visual_bg, quote=True)}">
 {cover_html}
 <main class="{composition_class}">
   {opening_html}

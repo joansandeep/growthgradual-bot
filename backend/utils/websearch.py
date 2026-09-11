@@ -289,13 +289,6 @@ async def search_web(
             historical_intent=historical_intent,
         )
         err = None
-        if not results and prov.name == "tavily" and SerperProvider().available():
-            log.warning("Tavily returned no results; trying optional Serper fallback")
-            results = await SerperProvider().search(
-                qs, max_results=max_results, topic=topic, region=region,
-                time_range=time_range, images_out=images_out,
-                historical_intent=historical_intent,
-            )
         # Optional provider resilience: if the configured Tavily path returns
         # no results and a Serper key is configured, use Serper once as a
         # secondary search engine. This is disabled automatically when the
@@ -307,8 +300,6 @@ async def search_web(
                 time_range=time_range, images_out=images_out,
                 historical_intent=historical_intent,
             )
-            if results:
-                err = None
     except Exception as exc:
         results, err = [], f"{type(exc).__name__}: {exc}"
         log.warning("Web search provider %s raised: %s", prov.name, err)

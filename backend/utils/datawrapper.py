@@ -510,6 +510,27 @@ async def publish_chart(client: httpx.AsyncClient, spec: dict) -> dict | None:
                 "intro": _axis_intro(spec),
             },
             "annotate": {"notes": ""},
+            "publish": {
+                # Hide Datawrapper's own branding/attribution from both the
+                # live iframe embed (chat UI — GrowthGradualChat.tsx renders
+                # chart["datawrapper"]["embedUrl"] directly) and the static
+                # PNG export (PDF builder) — same published chart backs both,
+                # so one metadata change covers both surfaces. Without this,
+                # every chart carried a "Datawrapper" logo/link in its
+                # footer that has nothing to do with Growth Gradual and
+                # wasn't something the report itself needed to disclose —
+                # the actual data-source attribution is the separate
+                # "describe.source-name"/"source-url" fields above, which
+                # are untouched by this block.
+                "blocks": {
+                    "logo": {"enabled": False},
+                    "get-the-data": False,
+                    "embed": False,
+                    "download-image": False,
+                    "download-pdf": False,
+                    "download-svg": False,
+                },
+            },
             "visualize": {
                 "custom-colors": custom_colors,
                 "base-color": "#1a1f4e",

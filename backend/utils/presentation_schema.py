@@ -823,6 +823,37 @@ class ChartVisualStyle(str, Enum):
     BOLD = "bold"
 
 
+class SpacingScale(str, Enum):
+    COMPACT = "compact"
+    BALANCED = "balanced"
+    AIRY = "airy"
+
+
+class CardStyle(str, Enum):
+    FLAT = "flat"
+    OUTLINED = "outlined"
+    LIFTED = "lifted"
+    FILLED = "filled"
+
+
+class SectionRuleStyle(str, Enum):
+    NONE = "none"
+    HAIRLINE = "hairline"
+    ACCENT_BAR = "accent_bar"
+    PANEL = "panel"
+
+
+class TitleAlignment(str, Enum):
+    LEFT = "left"
+    CENTER = "center"
+
+
+class BackgroundTreatment(str, Enum):
+    PLAIN = "plain"
+    TINTED = "tinted"
+    BANDED = "banded"
+
+
 _HEX_COLOR_RE = re.compile(r"^#[0-9a-fA-F]{6}$")
 
 def _hex_rgb(value: str) -> tuple[int, int, int]:
@@ -863,6 +894,11 @@ class VisualSpec:
     shape_style: ShapeStyle = ShapeStyle.SOFT
     accent_strategy: AccentStrategy = AccentStrategy.DUOTONE
     chart_style: ChartVisualStyle = ChartVisualStyle.EDITORIAL
+    spacing_scale: SpacingScale = SpacingScale.BALANCED
+    card_style: CardStyle = CardStyle.OUTLINED
+    section_rule: SectionRuleStyle = SectionRuleStyle.HAIRLINE
+    title_alignment: TitleAlignment = TitleAlignment.LEFT
+    background_treatment: BackgroundTreatment = BackgroundTreatment.PLAIN
 
     @staticmethod
     def from_dict(data: Optional[Dict[str, Any]], warnings: List[str]) -> "VisualSpec":
@@ -897,6 +933,21 @@ class VisualSpec:
             ),
             chart_style=_coerce_enum(
                 ChartVisualStyle, data.get("chart_style"), ChartVisualStyle.EDITORIAL, warnings, "visual.chart_style"
+            ),
+            spacing_scale=_coerce_enum(
+                SpacingScale, data.get("spacing_scale"), SpacingScale.BALANCED, warnings, "visual.spacing_scale"
+            ),
+            card_style=_coerce_enum(
+                CardStyle, data.get("card_style"), CardStyle.OUTLINED, warnings, "visual.card_style"
+            ),
+            section_rule=_coerce_enum(
+                SectionRuleStyle, data.get("section_rule"), SectionRuleStyle.HAIRLINE, warnings, "visual.section_rule"
+            ),
+            title_alignment=_coerce_enum(
+                TitleAlignment, data.get("title_alignment"), TitleAlignment.LEFT, warnings, "visual.title_alignment"
+            ),
+            background_treatment=_coerce_enum(
+                BackgroundTreatment, data.get("background_treatment"), BackgroundTreatment.PLAIN, warnings, "visual.background_treatment"
             ),
         )
         try:

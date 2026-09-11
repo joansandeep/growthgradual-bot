@@ -17,6 +17,10 @@ def main() -> None:
     assert "position: sticky" not in low
     assert "overflow-x: auto" not in low
     assert "place-items: center" not in low
+    assert "auto-fit" not in low
+    assert "auto-fill" not in low
+    assert "color-mix(" not in low
+    assert "box-shadow:" not in low
     print("PASS: print CSS sanitizer removes browser-only constructs")
 
 

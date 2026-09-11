@@ -3880,7 +3880,12 @@ Respond with this shape:
       "typography_scale": "compact" | "balanced" | "dramatic",
       "shape_style": "sharp" | "soft" | "rounded",
       "accent_strategy": "single" | "duotone" | "contrast" | "monochrome",
-      "chart_style": "minimal" | "editorial" | "technical" | "bold"
+      "chart_style": "minimal" | "editorial" | "technical" | "bold",
+      "spacing_scale": "compact" | "balanced" | "airy",
+      "card_style": "flat" | "outlined" | "lifted" | "filled",
+      "section_rule": "none" | "hairline" | "accent_bar" | "panel",
+      "title_alignment": "left" | "center",
+      "background_treatment": "plain" | "tinted" | "banded"
     },
     "cover": {
       "enabled": true | false,
@@ -3941,7 +3946,8 @@ HOW TO DECIDE — DATA FIRST, NEVER A TEMPLATE:
 16. The visual colors, mode, typography scale, shape style, accent strategy, and chart style are deliberate model decisions for this report. They must form a coherent professional, print-readable identity and may differ between reports even within the same broad domain.
 17. Never reuse a prior report's visual identity merely because the domain label matches.
 18. The visual object is structured data only. Never emit HTML, CSS, JavaScript, arbitrary stylesheet rules, or markup.
-19. Do not use color to imply evidence certainty.
+19. Choose spacing, card treatment, section-rule treatment, title alignment, and background treatment to fit THIS report's information density and editorial register. These are layout tokens for the renderer, not a fixed house style.
+20. Do not use color to imply evidence certainty.
 
 
 SECTION PLANNING GUIDANCE:
@@ -5134,7 +5140,7 @@ async def generate_report(request: Request):
         f"Today's date is {today}. Resolve \"latest\", \"current\", \"this quarter/year\", "
         f"\"past N quarters/months/years\", and any other relative time reference in the "
         f"question strictly against this date — never against your own training data or "
-        f"internal sense of what the current date/quarter/year is. If the sources provided "
+        f"internal sense of what the current date/quarter/year is. When the request says 'next one/two/three years', 'next year', or similar relative forecast language, anchor the forecast window to {today} and use that future window in the report title, headings, tables, and conclusions rather than accidentally describing a historical window. If the sources provided "
         f"below don't clearly establish which period is \"current\" as of {today}, say so "
         f"rather than guessing."
         + quarter_anchor

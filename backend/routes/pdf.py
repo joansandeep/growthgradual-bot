@@ -3452,24 +3452,37 @@ def _replace_chart_runtime_with_svg(html_doc: str) -> str:
     )
     return html_doc
 
-def _strip_non_printing_runtime(html_doc: str) -> str:
-    """Prepare browser-oriented report HTML for print/PDF engines.
+def _strip_non_printing_runtime(html_doc: str, theme: dict | None = None) -> str:
+    """Convert the browser-oriented report HTML into a strict PDF-safe document.
 
-    The interactive HTML renderer intentionally uses a few modern screen CSS
-    features that WeasyPrint does not implement (clamp(), 100vw, sticky,
-    overflow-x, grid place-items and screen-only media queries). Normalize
-    those constructs only in the PDF copy so the web report remains unchanged.
+    The HTML renderer is intentionally richer than a print engine. WeasyPrint
+    68 is reliable when it receives conventional CSS, but it can emit noisy
+    warnings (and in some complex layouts hit internal box-tree failures) on
+    constructs such as ``clamp()``, ``min()``, ``minmax(auto-fit, ...)``,
+    ``color-mix()``, sticky positioning, and variable-backed shadows.
+
+    This function therefore compiles the dynamic report theme/layout into a
+    conservative print dialect before the PDF engine sees it. The model still
+    decides the visual identity; this layer merely guarantees that the chosen
+    identity is expressed with print-safe CSS instead of silently falling back
+    to the old ReportLab renderer.
     """
-    # Remove browser media blocks entirely from the PDF copy. The dedicated
-    # print stylesheet below becomes the only print-specific CSS.
+    theme = theme or {}
+
     def _strip_media_blocks(doc: str) -> str:
+        # Remove browser-only media blocks. The print overrides below are the
+        # only media-specific rules that the PDF pass needs.
         pos = 0
         while True:
             low = doc.lower()
-            candidates = [low.find(token, pos) for token in ('@media screen', '@media (max-width', '@media print') if low.find(token, pos) >= 0]
-            if not candidates:
+            found = []
+            for token in ('@media screen', '@media (max-width', '@media print'):
+                idx = low.find(token, pos)
+                if idx >= 0:
+                    found.append(idx)
+            if not found:
                 return doc
-            idx = min(candidates)
+            idx = min(found)
             brace = doc.find('{', idx)
             if brace < 0:
                 return doc
@@ -3487,20 +3500,40 @@ def _strip_non_printing_runtime(html_doc: str) -> str:
                 return doc
             doc = doc[:idx] + doc[end_idx:]
             pos = idx
+
     html_doc = _strip_media_blocks(html_doc)
 
-    # Make the generated HTML CSS print-safe before WeasyPrint parses it.
-    html_doc = re.sub(r'font-size:\s*clamp\([^;{}]+\)', 'font-size: 42px', html_doc, flags=re.IGNORECASE)
-    html_doc = re.sub(r'width:\s*100vw', 'width: 100%', html_doc, flags=re.IGNORECASE)
+    # Print-safe replacements. Keep them deliberately simple so WeasyPrint's
+    # parser does not have to evaluate modern viewport/math functions.
+    html_doc = re.sub(
+        r'font-size:\s*calc\(clamp\([^)]*\)\s*\*\s*var\(--title-scale\)\)',
+        'font-size: 34px', html_doc, flags=re.IGNORECASE,
+    )
+    html_doc = re.sub(r'font-size:\s*clamp\([^;{}]+\)', 'font-size: 34px', html_doc, flags=re.IGNORECASE)
+    html_doc = re.sub(
+        r'width:\s*min\(var\(--content-max\),\s*calc\(100%\s*-\s*48px\)\)',
+        'width: 100%; max-width: 1120px', html_doc, flags=re.IGNORECASE,
+    )
+    html_doc = re.sub(r'width:\s*min\([^;{}]+\)', 'width: 100%', html_doc, flags=re.IGNORECASE)
+    html_doc = re.sub(r'max-width:\s*min\([^;{}]+\)', 'max-width: 1120px', html_doc, flags=re.IGNORECASE)
     html_doc = re.sub(r'margin-left:\s*calc\(50%\s*-\s*50vw\)', 'margin-left: 0', html_doc, flags=re.IGNORECASE)
+    html_doc = re.sub(r'width:\s*100vw', 'width: 100%', html_doc, flags=re.IGNORECASE)
     html_doc = re.sub(r'position:\s*sticky', 'position: static', html_doc, flags=re.IGNORECASE)
     html_doc = re.sub(r'overflow-x:\s*auto', 'overflow: visible', html_doc, flags=re.IGNORECASE)
     html_doc = re.sub(r'place-items:\s*center', 'align-items: center; justify-content: center', html_doc, flags=re.IGNORECASE)
-    html_doc = re.sub(r'print-color-adjust:\s*exact\s*!?important?;?', '', html_doc, flags=re.IGNORECASE)
-    html_doc = re.sub(r'-webkit-print-color-adjust:\s*exact\s*!?important?;?', '', html_doc, flags=re.IGNORECASE)
-    html_doc = re.sub(r'\sloading=["\']lazy["\']', "", html_doc, flags=re.IGNORECASE)
-    # HTML stat cards normally animate from 0 to their target in the browser.
-    # PDF is static, so write the target value into the markup before printing.
+    html_doc = re.sub(r'color-mix\([^;{}]+\)', 'var(--paper-alt)', html_doc, flags=re.IGNORECASE)
+    html_doc = re.sub(
+        r'repeat\(\s*auto-(?:fit|fill)\s*,\s*minmax\([^)]*\)\s*\)',
+        'repeat(3, minmax(0, 1fr))', html_doc, flags=re.IGNORECASE,
+    )
+    # WeasyPrint 68 can parse normal fixed shadows but does not reliably resolve
+    # custom-property shadows. Keep the report's card treatment but use a safe
+    # non-shadow representation for print.
+    html_doc = re.sub(r'box-shadow\s*:[^;}]+;?', '', html_doc, flags=re.IGNORECASE)
+    html_doc = re.sub(r'\sloading=["\']lazy["\']', '', html_doc, flags=re.IGNORECASE)
+    html_doc = re.sub(r'print-color-adjust\s*:\s*exact\s*!?important?;?', '', html_doc, flags=re.IGNORECASE)
+    html_doc = re.sub(r'-webkit-print-color-adjust\s*:\s*exact\s*!?important?;?', '', html_doc, flags=re.IGNORECASE)
+
     def _materialize_count(m):
         attrs = m.group(1)
         target = m.group(2)
@@ -3513,24 +3546,56 @@ def _strip_non_printing_runtime(html_doc: str) -> str:
 
     html_doc = re.sub(
         r'<span class="gg-count"([^>]*)data-count-target="([^"]+)"[^>]*>0</span>',
-        _materialize_count,
-        html_doc,
+        _materialize_count, html_doc,
     )
-    # No browser runtime is needed in a static PDF after charts have become SVG.
+
+    # No JS/browser runtime is required once Chart.js has been converted to
+    # static SVG. Remove scripts only after chart hydration.
     html_doc = re.sub(r'<script>.*?</script>', '', html_doc, flags=re.DOTALL)
+
+    # Explicit print CSS uses only conservative, renderer-supported features.
     print_css = """
 <style id="gg-pdf-print-overrides">
-@page { size: A4; margin: 14mm 12mm 18mm 12mm; @bottom-center { content: "Growth Gradual | " counter(page); font-family: system-ui, sans-serif; font-size: 8pt; color: #9aa2b1; } }
+@page { size: A4; margin: 14mm 12mm 18mm 12mm; @bottom-center { content: "Growth Gradual | " counter(page); font-family: system-ui, sans-serif; font-size: 8pt; color: #808894; } }
 * { animation: none !important; transition: none !important; caret-color: transparent !important; }
-[data-reveal] { opacity: 1 !important; transform: none !important; visibility: visible !important; }
-.gg-chart-canvas-box { min-height: 280px; }
+html, body { background: var(--paper, #ffffff) !important; }
+body { font-size: 10.5pt; line-height: 1.48; overflow-wrap: anywhere; }
+p, .gg-list { font-size: 10.5pt; line-height: 1.48; }
+h1 { break-after: avoid; }
+h2, h3, h4 { break-after: avoid; }
+p { orphans: 3; widows: 3; }
+main, .gg-cover { width: 100% !important; max-width: 1120px !important; margin-left: 0 !important; margin-right: 0 !important; }
+main { padding: 18px 0 38px; }
+.gg-cover { margin-top: 0; }
+.gg-title { font-size: 30pt !important; line-height: 1.08; }
+.gg-summary { font-size: 12pt; line-height: 1.5; }
+.gg-summary-card { padding: 16px 18px; }
+.gg-report-sections { gap: 18px; }
+.gg-section { break-inside: auto; }
+.gg-section-heading { break-inside: avoid; break-after: avoid; margin-bottom: 10px; }
+.gg-section-heading h2 { font-size: 18pt !important; line-height: 1.15; }
+.gg-section--full_bleed { width: 100% !important; margin-left: 0 !important; padding-left: 0; padding-right: 0; }
+.gg-section-body--two_column { columns: 2; column-gap: 24px; }
+.gg-chart-wrap, .gg-table-wrap { margin: 12px 0; padding: 10px 12px; }
+.gg-chart-canvas-box { height: 220px; min-height: 0; }
+.gg-pdf-chart-fallback { width: 100% !important; max-width: 100% !important; overflow: hidden; }
+.gg-pdf-chart-fallback svg { width: 100% !important; height: auto !important; max-width: 100% !important; display: block; }
+.gg-table-scroll { overflow: visible; width: 100%; }
+.gg-table { width: 100%; table-layout: fixed; font-size: 9.2pt; }
+.gg-table th { padding: 6px 7px; font-size: 9pt; overflow-wrap: anywhere; }
+.gg-table td { padding: 6px 7px; font-size: 9pt; overflow-wrap: anywhere; }
+.gg-metrics, .gg-stats-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; margin: 12px 0; }
+.gg-timeline-item { grid-template-columns: 86px minmax(0, 1fr); gap: 10px; padding: 10px 0; }
+.gg-risk-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; margin: 12px 0; }
+.gg-sources-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 6px; }
+.gg-sources[data-source-placement="appendix"] { break-before: page; }
+.gg-source-card { grid-template-columns: 18px minmax(0, 1fr); gap: 6px; padding: 7px; }
 .gg-figure img { break-inside: avoid; max-height: 480px; }
 .gg-table-wrap, .gg-callout, .gg-risk, .gg-metric, .gg-pdf-chart-fallback { break-inside: avoid; }
-.gg-section { break-before: auto; }
+[data-reveal] { opacity: 1 !important; transform: none !important; visibility: visible !important; }
 </style>
 """
     return html_doc.replace("</head>", print_css + "</head>", 1)
-
 
 def _trim_trailing_blank_pages(pdf_bytes: bytes) -> bytes:
     """Remove trailing pages that contain only the generated page footer or whitespace."""
@@ -3622,7 +3687,7 @@ def build_pdf(report: str, title: str, question: str, summary: str,
         key_stats or [], charts or [], images, safe_theme, sources, presentation,
     )
     html_doc = _replace_chart_runtime_with_svg(html_doc)
-    html_doc = _strip_non_printing_runtime(html_doc)
+    html_doc = _strip_non_printing_runtime(html_doc, safe_theme)
 
     # WeasyPrint is preferred because it is deterministic and does not require
     # a browser runtime. Chromium remains a fallback for deployments that have
