@@ -3452,6 +3452,52 @@ def _replace_chart_runtime_with_svg(html_doc: str) -> str:
     )
     return html_doc
 
+def _remove_external_resources(html_doc: str) -> str:
+    """Make the PDF document strictly self-contained.
+
+    A report may contain remote URLs for web previews, but PDF export must not
+    let the print engine discover and fetch them. Images selected by the report
+    route are already fetched and converted to data URIs before this function
+    runs, so resource-bearing remote URLs can safely be removed here.
+    """
+    html_doc = re.sub(
+        r'(<(?:img|source|video|audio|iframe|object|embed|track|input)\b[^>]*?)\s+(?:src|srcset|data|poster)\s*=\s*["\']https?://[^"\']*["\']',
+        r'\1', html_doc, flags=re.IGNORECASE,
+    )
+    html_doc = re.sub(
+        r'(<(?:img|source|video|audio|iframe|object|embed|track|input)\b[^>]*?)\s+(?:src|srcset|data|poster)\s*=\s*https?://[^\s>]+',
+        r'\1', html_doc, flags=re.IGNORECASE,
+    )
+    html_doc = re.sub(
+        r'(<image\b[^>]*?)\s+(?:xlink:href|href)\s*=\s*["\']https?://[^"\']*["\']',
+        r'\1', html_doc, flags=re.IGNORECASE,
+    )
+    html_doc = re.sub(
+        r'url\(\s*["\']?https?://[^)"\']+["\']?\s*\)',
+        'none', html_doc, flags=re.IGNORECASE,
+    )
+    html_doc = re.sub(
+        r'<link\b[^>]+href=["\']https?://[^"\']+["\'][^>]*>\s*',
+        '', html_doc, flags=re.IGNORECASE,
+    )
+    html_doc = re.sub(r'@import[^;{}]+;?', '', html_doc, flags=re.IGNORECASE)
+    return html_doc
+
+
+def _offline_url_fetcher(url: str, timeout: float | None = None, ssl_context=None,
+                         http_headers=None, data=None):
+    """WeasyPrint fetcher that rejects all network resources."""
+    from urllib.parse import urlparse
+    from weasyprint.urls import default_url_fetcher
+
+    parsed = urlparse(url)
+    if (parsed.scheme or '').lower() in {'http', 'https', 'ftp'}:
+        raise ValueError(f'External network resource disabled for PDF: {url[:180]}')
+    return default_url_fetcher(
+        url, timeout=timeout or 2, ssl_context=ssl_context, http_headers=http_headers,
+    )
+
+
 def _strip_non_printing_runtime(html_doc: str, theme: dict | None = None) -> str:
     """Convert the browser-oriented report HTML into a strict PDF-safe document.
 
@@ -3502,6 +3548,7 @@ def _strip_non_printing_runtime(html_doc: str, theme: dict | None = None) -> str
             pos = idx
 
     html_doc = _strip_media_blocks(html_doc)
+    html_doc = _remove_external_resources(html_doc)
 
     # PDF export is offline-first (see the chart-hydration comment above) —
     # a live fetch of Google Fonts here defeated that guarantee. WeasyPrint
@@ -3670,7 +3717,8 @@ def _pdf_with_chromium(html_doc: str) -> bytes:
 # above, 2 minutes. 240s gives real headroom above the slowest run observed
 # so far while still bounding a genuine hang (e.g. a stray unreachable
 # network fetch that would otherwise block forever).
-_WEASYPRINT_TIMEOUT_S_DEFAULT = 240.0
+_WEASYPRINT_TIMEOUT_S_DEFAULT = 180.0
+_WEASYPRINT_TIMEOUT_S_MAX = 180.0
 
 
 def _pdf_with_weasyprint(html_doc: str, timeout_s: float | None = None) -> bytes:
@@ -3710,11 +3758,12 @@ def _pdf_with_weasyprint(html_doc: str, timeout_s: float | None = None) -> bytes
             timeout_s = float(os.environ.get("GG_PDF_WEASYPRINT_TIMEOUT_S", "") or _WEASYPRINT_TIMEOUT_S_DEFAULT)
         except ValueError:
             timeout_s = _WEASYPRINT_TIMEOUT_S_DEFAULT
+    timeout_s = max(30.0, min(float(timeout_s), _WEASYPRINT_TIMEOUT_S_MAX))
 
     t_start = time.perf_counter()
 
     def _render() -> bytes:
-        return HTML(string=html_doc, base_url=str(Path.cwd())).write_pdf()
+        return HTML(string=html_doc, base_url=None, url_fetcher=_offline_url_fetcher).write_pdf()
 
     def _log_late_completion(fut) -> None:
         # Fires even after we've given up waiting, purely for observability:
@@ -3749,6 +3798,37 @@ def _pdf_with_weasyprint(html_doc: str, timeout_s: float | None = None) -> bytes
     finally:
         if future.done():
             pool.shutdown(wait=False)
+
+
+def _build_minimal_pdf_html(html_doc: str) -> str:
+    """Compile a second, simpler print stylesheet while retaining the dynamic theme."""
+    html_doc = re.sub(r'<div class="gg-pdf-chart-fallback".*?</div>', '', html_doc, flags=re.DOTALL | re.IGNORECASE)
+    html_doc = re.sub(r'<svg\b.*?</svg>', '', html_doc, flags=re.DOTALL | re.IGNORECASE)
+    html_doc = re.sub(r'<canvas\b[^>]*>.*?</canvas>', '', html_doc, flags=re.DOTALL | re.IGNORECASE)
+    html_doc = re.sub(r'<style\b[^>]*>.*?</style>', '', html_doc, flags=re.DOTALL | re.IGNORECASE)
+    dynamic_css = """<style id="gg-pdf-minimal">
+@page { size:A4; margin:14mm 12mm 18mm 12mm; @bottom-center { content:"Growth Gradual | " counter(page); font-size:8pt; color:#808894; } }
+html,body { margin:0; padding:0; background:#fff; }
+body { font-family:system-ui,sans-serif; font-size:10.5pt; line-height:1.5; color:#24324a; }
+main { width:100%; max-width:none; }
+.gg-cover { page-break-after:always; min-height:235mm; padding:18mm 8mm; box-sizing:border-box; }
+.gg-title { font-size:30pt !important; line-height:1.08; }
+.gg-summary, .gg-summary-card { font-size:11pt; line-height:1.5; }
+h1,h2,h3,h4 { page-break-after:avoid; }
+.gg-section { margin:0 0 16mm; }
+.gg-section-heading { page-break-after:avoid; }
+.gg-report-sections { display:block !important; }
+.gg-section-body--two_column { columns:auto !important; }
+.gg-metrics, .gg-stats-grid, .gg-risk-grid, .gg-sources-grid { display:block !important; }
+.gg-metric, .gg-stat-card, .gg-risk, .gg-source-card { display:block !important; margin:0 0 6px; page-break-inside:avoid; }
+.gg-chart-wrap, .gg-table-wrap, .gg-callout { page-break-inside:avoid; margin:10px 0; }
+.gg-table { width:100%; border-collapse:collapse; table-layout:fixed; font-size:9pt; }
+.gg-table th, .gg-table td { padding:5px 6px; overflow-wrap:anywhere; }
+.gg-figure img { max-width:100%; height:auto; page-break-inside:avoid; }
+.gg-footer { margin-top:12mm; font-size:8pt; }
+.gg-reveal { opacity:1 !important; transform:none !important; visibility:visible !important; }
+</style>"""
+    return html_doc.replace('</head>', dynamic_css + '</head>', 1)
 
 
 def build_pdf(report: str, title: str, question: str, summary: str,
@@ -3801,14 +3881,18 @@ def build_pdf(report: str, title: str, question: str, summary: str,
     try:
         return _trim_trailing_blank_pages(_pdf_with_weasyprint(html_doc))
     except Exception as exc:
-        log.warning("PDF: WeasyPrint unavailable/failed; trying Chromium fallback: %s", exc)
+        log.warning("PDF: first-pass WeasyPrint failed; compiling strict minimal dynamic CSS pass: %s", exc)
+        minimal_html = _build_minimal_pdf_html(html_doc)
         try:
-            return _trim_trailing_blank_pages(_pdf_with_chromium(html_doc))
-        except Exception as chrome_exc:
-            log.error("PDF: dynamic HTML-to-PDF failed: weasyprint=%s chromium=%s", exc, chrome_exc)
-            # Preserve a usable legacy export as a last resort for older
-            # deployments without either print engine.
-            return _legacy_build_pdf(report, title, question, summary, key_stats, charts, logo_b64, file_images, web_images, safe_theme, sources)
+            return _trim_trailing_blank_pages(_pdf_with_weasyprint(minimal_html, timeout_s=90.0))
+        except Exception as minimal_exc:
+            log.warning("PDF: minimal dynamic WeasyPrint failed; trying Chromium: %s", minimal_exc)
+            try:
+                return _trim_trailing_blank_pages(_pdf_with_chromium(minimal_html))
+            except Exception as chrome_exc:
+                log.error("PDF: all dynamic HTML-to-PDF engines failed: weasyprint=%s minimal=%s chromium=%s", exc, minimal_exc, chrome_exc)
+                # Absolute last resort only for catastrophic deployment failures.
+                return _legacy_build_pdf(report, title, question, summary, key_stats, charts, logo_b64, file_images, web_images, safe_theme, sources)
 
 
 # ─── Route ────────────────────────────────────────────────────────────────────
