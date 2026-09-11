@@ -6,17 +6,25 @@ Body: { report, title, question, summary, keyStats, charts, images, logoB64 }
 for the SAME structured report data, not a second report-generation step.)
 
 Why this exists as a separate route rather than an option on the PDF one:
-PDF (ReportLab, see routes/pdf.py) is a static-document format — there is no
-such thing as an animated or interactive PDF element in that pipeline, by
-construction of the format itself. When a request asks for "animated
-images," "creative UI," or an "interactive" report, there is no amount of
-prompting that makes ReportLab produce that; the deliverable format itself
-has to change. This route renders the exact same report/title/charts/
-keyStats/images payload as a single self-contained HTML document instead,
-using CSS transitions/keyframes, an IntersectionObserver-driven scroll-reveal,
-animated count-up stat cards, and real Chart.js charts (which can render
-enter-animations, tooltips, and hover states — none of which a static PDF
-chart can do).
+PDF (see routes/pdf.py's build_pdf) renders from this SAME presentation-
+driven HTML composition (build_html_report, below) via WeasyPrint or headless
+Chromium — it is not a separate, independently-templated renderer, and it is
+not static in the sense of always looking the same; per-report colors,
+typography, section layout/density, and cover treatment all come from the
+same planner/writer output this route uses. But PDF is still fundamentally a
+static-DOCUMENT format: there is no such thing as an animated or interactive
+element once WeasyPrint/Chromium has rasterized the page, by construction of
+the format itself. (The old fixed-template ReportLab renderer, NAVY/GOLD
+flowables and all, still exists as build_pdf's last-resort fallback for when
+both WeasyPrint and Chromium are unavailable — see _legacy_build_pdf — but it
+is not the normal path.) When a request asks for "animated images," "creative
+UI," or an "interactive" report, there is no amount of prompting that makes a
+paginated PDF produce that; the deliverable format itself has to change. This
+route renders the exact same report/title/charts/keyStats/images payload as a
+single self-contained HTML document instead, using CSS transitions/keyframes,
+an IntersectionObserver-driven scroll-reveal, animated count-up stat cards,
+and real Chart.js charts (which can render enter-animations, tooltips, and
+hover states — none of which a static PDF chart can do).
 
 Nothing about the report-generation step (routes/report.py) changes: the
 LLM still writes the same markdown with the same [CHART_n]/[WEB_IMG_n]
@@ -1033,7 +1041,7 @@ def _build_css(theme: dict | None) -> str:
     else:
         font_body = "system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif"
         font_heading = "system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif"
-    return f"""
+    base_css = f"""
 :root {{
   --primary: {navy}; --accent: {gold}; --secondary: {theme.get("secondaryColor") or _shade_hex(gold, -0.10)}; --accent-soft: {gold_light};
   --ink: {ink}; --ink-soft: {ink_soft}; --paper: {paper}; --paper-alt: {paper_alt}; --surface-strong: {theme.get("surfaceAltColor") or paper_alt}; --rule: {rule}; --muted: {ink_soft};
@@ -1257,6 +1265,23 @@ body.gg-bg--banded .gg-section:nth-of-type(even) {{ background: var(--paper-alt)
   .gg-reveal {{ opacity: 1 !important; transform: none !important; }}
 }}
 """
+    # Report-specific custom CSS — the writer LLM's optional theme.customCss
+    # (see report.py's THEME schema field). Already sanitized by
+    # routes.report._sanitize_theme before it ever reaches this renderer:
+    # length-capped and rejected outright if it contains any of the
+    # </style>/<script>/@import/expression()/url()/javascript:/behaviour:/
+    # -moz-binding escape hatches (see _CSS_DANGER_RE there) — what survives
+    # is plain CSS declarations (colors, borders, gradients, animations,
+    # pseudo-elements, media queries), so it's safe to concatenate as-is.
+    # Appended last, after every token/utility rule above, so it can
+    # actually override them for an explicitly requested rich visual
+    # treatment — that's the whole point of the field; appending it earlier
+    # would let the base stylesheet's own rules win on selector order instead.
+    custom_css = str((theme or {}).get("customCss") or "").strip()
+    if custom_css:
+        base_css += f"\n/* --- report-specific custom CSS (model-authored, sanitized) --- */\n{custom_css}\n"
+    return base_css
+
 
 _JS = """
 document.addEventListener('DOMContentLoaded', function () {
@@ -1686,7 +1711,9 @@ def build_html_report(report: str, title: str, question: str, summary: str,
     visual_rule = str((spec_dict.get("visual") or {}).get("section_rule") or "hairline")
     visual_align = str((spec_dict.get("visual") or {}).get("title_alignment") or "left")
     visual_bg = str((spec_dict.get("visual") or {}).get("background_treatment") or "plain")
-    # Do not emit arbitrary theme.customCss from the LLM; only validated theme tokens are consumed.
+    # theme.customCss (if the writer LLM set it) is emitted too — see
+    # _build_css below — but only after routes.report._sanitize_theme has
+    # already stripped anything that could escape the <style> block.
     font_link = ""
     actual_sections = _split_report_into_sections(report)
     matches = _match_planned_sections(spec, actual_sections)

@@ -3213,6 +3213,179 @@ async def _build_strict_subject_search_queries(question: str, intent: "RequestIn
     return [f'"{topic}" latest evidence data sources']
 
 
+# ─── Gap-driven deep research (rounds 2+) ───────────────────────────────────
+# Ports routes/datasearch.py's multi-round research loop over to report
+# generation. Round 1 here is the existing single search-and-extract pass
+# above (_build_multi_angle_search_queries -> tavily_search_multi -> Tavily,
+# plus its strict-fallback recovery) — that part is unchanged. What was
+# missing, same gap datasearch.py had before its own fix: nothing looked at
+# what round 1 actually found and asked "does this cover the question, and
+# if not, what's specifically missing" before treating one search pass as
+# the entire research budget for the report.
+#
+# Adapted from datasearch.py rather than reused directly: that module's gap
+# check (_assess_gaps) reviews extracted, structured dataPoints against the
+# question. A report is written from raw source text (src_text below), not
+# extracted numbers — this module has no datapoint-extraction step of its
+# own — so the assessor here reviews the actual gathered source excerpts
+# instead. Same JSON contract and stopping logic otherwise: an LLM call
+# returns {"sufficient": bool, "next_queries": [...]}, capped at
+# _RESEARCH_MAX_ROUNDS total rounds, and a round that turns up nothing new
+# stops the loop early regardless of what the gap check would have said.
+_RESEARCH_MAX_ROUNDS = 3
+# Wall-clock budget for gap-driven rounds 2+ ONLY (round 1 already ran
+# before this is ever consulted) — kept well under GEMINI_TIME_BUDGET_SECONDS
+# (100s, reserved for the writer itself) so a struggling gap-search round
+# can never eat into the frontend's shared 170s budget for the whole request.
+_RESEARCH_GAP_ROUND_DEADLINE_S = 45
+_GAP_SOURCE_PREVIEW_CHARS = 400
+_GAP_SOURCE_PREVIEW_COUNT = 20
+
+_GAP_ASSESS_SYSTEM_PROMPT = (
+    "You review the web sources gathered so far for a financial research report against the "
+    "report's question and decide whether another round of web search would meaningfully close a "
+    "gap. Return ONLY JSON: {\"sufficient\": bool, \"next_queries\": [string, ...]}. "
+    "\"sufficient\": true means the sources already gathered give enough concrete, current material "
+    "(numbers, named entities, recent developments) to write a thorough report — stop searching. If "
+    "false, give up to 4 NEW, specific search queries that target exactly what's missing (a "
+    "company/entity the question names but that has no coverage yet, a metric or comparison the "
+    "question asks for but that's absent from every source, a more recent time period, a "
+    "regulatory/official source) — never repeat a query already tried, and never invent queries for "
+    "angles the question didn't ask about."
+)
+
+
+async def _assess_research_gaps(
+    question: str, tried_queries: list[str], sources: list[dict],
+) -> dict | None:
+    """Groq call: does what's been gathered so far actually cover the
+    question, or is a further gap-targeted round of search worth running?
+    Returns None on any failure (no keys configured, HTTP error, unparseable
+    JSON) — the caller treats that the same as "stop here": this is an
+    enrichment decision layered on top of research that already happened,
+    never a hard requirement to keep searching.
+    """
+    keys = get_groq_keys()
+    if not keys:
+        return None
+
+    preview = "\n".join(
+        f"[{i}] {s.get('title', '')} — {s.get('url', '')}\n"
+        f"{(s.get('fullContent') or s.get('snippet') or '')[:_GAP_SOURCE_PREVIEW_CHARS]}"
+        for i, s in enumerate(sources[:_GAP_SOURCE_PREVIEW_COUNT])
+    ) or "(no sources gathered yet)"
+    tried = "\n".join(f"- {q}" for q in tried_queries) or "(none)"
+    user_content = (
+        f"Report question: {question[:500]}\n\n"
+        f"Queries already tried:\n{tried}\n\n"
+        f"Sources gathered so far ({len(sources)} total, showing up to {_GAP_SOURCE_PREVIEW_COUNT}):\n{preview}"
+    )
+
+    for key in round_robin(keys):
+        if is_rate_limited(f"{key}:{_QUERY_BUILDER_MODEL}"):
+            continue
+        try:
+            async with httpx.AsyncClient(timeout=15) as client:
+                res = await client.post(
+                    "https://api.groq.com/openai/v1/chat/completions",
+                    headers={"Content-Type": "application/json", "Authorization": f"Bearer {key}"},
+                    json={
+                        "model": _QUERY_BUILDER_MODEL,
+                        "messages": [
+                            {"role": "system", "content": _GAP_ASSESS_SYSTEM_PROMPT},
+                            {"role": "user", "content": user_content},
+                        ],
+                        "max_tokens": 500,
+                        "temperature": 0.1,
+                        "response_format": {"type": "json_object"},
+                    },
+                )
+            if res.status_code == 429:
+                log.debug("Gap-assess Groq 429 on key ...%s", key[-4:])
+                mark_rate_limited(f"{key}:{_QUERY_BUILDER_MODEL}", 60_000)
+                continue
+            if not res.is_success:
+                log.debug("Gap-assess Groq HTTP %d on key ...%s", res.status_code, key[-4:])
+                continue
+            data = res.json()
+            text = data.get("choices", [{}])[0].get("message", {}).get("content", "")
+            return json.loads(text, strict=False)
+        except Exception as exc:
+            log.debug("Gap-assess Groq exception on key ...%s: %s", key[-4:], exc)
+            continue
+    return None
+
+
+async def _run_gap_driven_research(
+    question: str,
+    intent: "RequestIntent | None",
+    sources: list[dict],
+    tried_queries: list[str],
+    image_candidates_raw: list,
+) -> list[dict]:
+    """Rounds 2..N of report.py's own web research. Asks _assess_research_gaps
+    whether `sources` (already searched + relevance-filtered by round 1,
+    upstream of this call) covers `question`; if not, runs Tavily against
+    the gap-targeted queries it returns, relevance-filters and dedupes the
+    result against what's already in hand, and merges in whatever's new.
+    Repeats until the gap check says sufficient, a round adds nothing new,
+    or _RESEARCH_MAX_ROUNDS is reached — so a narrow question that round 1
+    already answered stops immediately (one extra, cheap Groq call), while a
+    broad one keeps going with queries aimed at exactly what's missing.
+    Mutates and returns `sources`; never raises — any failure here just
+    means the loop stops with whatever round 1 already found, same as the
+    rest of this module's best-effort source-gathering steps.
+    """
+    from routes.chat import tavily_search_multi as _tavily_search_multi
+
+    seen_urls = {str(s.get("url") or "") for s in sources}
+    for round_idx in range(1, _RESEARCH_MAX_ROUNDS):
+        try:
+            gap = await _assess_research_gaps(question, tried_queries, sources)
+        except Exception as exc:
+            log.warning("Report: gap assessment failed, stopping research loop: %s", exc)
+            break
+        if not isinstance(gap, dict) or gap.get("sufficient"):
+            log.info("Report: gap check says sufficient after round %d — stopping", round_idx)
+            break
+        candidates = gap.get("next_queries")
+        if not isinstance(candidates, list):
+            break
+        next_queries = [
+            q.strip() for q in candidates
+            if isinstance(q, str) and q.strip() and q.strip() not in tried_queries
+        ][:4]
+        if not next_queries:
+            break
+        tried_queries.extend(next_queries)
+        log.info("Report: gap-driven round %d search: %r", round_idx + 1, [q[:60] for q in next_queries])
+        try:
+            searched = await _tavily_search_multi(
+                next_queries, max_results=15, min_results=6,
+                images_out=image_candidates_raw,
+                historical_intent=bool(_HISTORICAL_INTENT_RE.search(question)),
+                max_keys_per_query=1,
+            )
+        except Exception as exc:
+            log.warning("Report: gap-driven round %d search failed: %s", round_idx + 1, exc)
+            break
+        new_sources = [
+            {"title": r["title"], "url": r["url"], "snippet": r["snippet"], "fullContent": r.get("fullContent", "")}
+            for r in searched if r.get("url") and r["url"] not in seen_urls
+        ]
+        new_sources = _filter_relevant_sources(new_sources, question, intent)
+        if not new_sources:
+            log.info("Report: gap-driven round %d found nothing new — stopping", round_idx + 1)
+            break
+        for s in new_sources:
+            seen_urls.add(s["url"])
+        sources.extend(new_sources)
+        log.info("Report: gap-driven round %d added %d new source(s), %d total now",
+                  round_idx + 1, len(new_sources), len(sources))
+
+    return sources
+
+
 async def _build_multi_angle_search_queries(
     question: str,
     conversation_context: str,
@@ -4675,6 +4848,15 @@ async def generate_report(request: Request):
     # ── Decide source strategy ─────────────────────────────────────────────────
     has_file_data = bool(file_context.strip()) or bool(extracted_image_context.strip())
 
+    # Populated by either self-search branch below; feeds the gap-driven
+    # research loop after the strict-fallback recovery block so it knows
+    # which queries round 1 already tried (never repeat one). Stays empty
+    # when the caller already supplied `sources` (the `else` branch) — the
+    # gap loop only extends OUR OWN web research, same as datasearch.py's
+    # loop only extends its own web-research source, not the other three.
+    search_queries: list[str] = []
+    _self_search_ran = False
+
     if has_file_data and not sources:
         from routes.chat import (
             tavily_search_multi as _tavily_search_multi,
@@ -4702,6 +4884,7 @@ async def generate_report(request: Request):
                  "snippet": r["snippet"], "fullContent": r.get("fullContent", "")}
                 for r in searched
             ]
+            _self_search_ran = True
         else:
             # Generic "what is this / describe / summarise" type question about
             # an attached file/image — a web search on the literal question text
@@ -4732,6 +4915,7 @@ async def generate_report(request: Request):
         ]
         log.info("Report: self-search returned %d sources across %d angle(s)",
                   len(sources), len(search_queries))
+        _self_search_ran = True
     else:
         from routes.chat import _looks_like_ai_overview
 
@@ -4758,8 +4942,33 @@ async def generate_report(request: Request):
             strict_sources = [{"title": r["title"], "url": r["url"], "snippet": r["snippet"], "fullContent": r.get("fullContent", "")} for r in searched_strict]
             sources = _filter_relevant_sources(strict_sources, question, intent)
             log.info("Report: strict relevance search retained %d/%d sources", len(sources), len(strict_sources))
+            if sources:
+                search_queries = list(strict_queries)
+                _self_search_ran = True
         except Exception as exc:
             log.warning("Report: strict relevance search failed: %s", exc)
+
+    # Gap-driven deep research, same shape as routes/datasearch.py's
+    # multi-round research loop: round 1 (the self-search above, or its
+    # strict-fallback recovery) already ran — ask whether what it found
+    # actually covers the question, and if not, run further gap-targeted
+    # rounds rather than treating round 1 as the whole research budget.
+    # Only extends OUR OWN web research (never runs when the caller already
+    # supplied `sources`, and never on a question the file-first branch
+    # decided doesn't need web search at all). Wrapped in its own deadline
+    # so a slow/rate-limited round can't eat into the writer's own
+    # GEMINI_TIME_BUDGET_SECONDS below.
+    if _self_search_ran and sources:
+        try:
+            sources = await asyncio.wait_for(
+                _run_gap_driven_research(question, intent, sources, list(search_queries), image_candidates_raw),
+                timeout=_RESEARCH_GAP_ROUND_DEADLINE_S,
+            )
+        except asyncio.TimeoutError:
+            log.warning("Report: gap-driven research exceeded %ds deadline — continuing with what round 1 found",
+                        _RESEARCH_GAP_ROUND_DEADLINE_S)
+        except Exception as exc:
+            log.warning("Report: gap-driven research failed, continuing with round 1 sources: %s", exc)
 
     # A Tavily search coming back empty does NOT mean the topic is
     # unanswerable — it just means there's no news article/webpage that
