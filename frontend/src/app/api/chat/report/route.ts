@@ -6,7 +6,7 @@ import { createLogger, logRequest } from '@/lib/logger';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
-export const maxDuration = 180; // 3 min — report generation is slow (LLM + web search)
+export const maxDuration = 240; // 3 min — report generation is slow (LLM + web search)
 
 const log = createLogger('api/chat/report');
 const BACKEND = (process.env.BACKEND_URL ?? 'http://localhost:8000').replace(/\/$/, '');
@@ -27,7 +27,7 @@ export async function POST(req: NextRequest) {
       // timeout) gets its connection killed uncleanly — the fetch never
       // resolves through our try/catch, and the caller can end up treating
       // whatever partial/empty response comes back as a "successful" report.
-      signal: AbortSignal.timeout(170_000),
+      signal: AbortSignal.timeout(225_000),
     });
   } catch (err) {
     const timedOut = err instanceof Error && (err.name === 'TimeoutError' || err.name === 'AbortError');

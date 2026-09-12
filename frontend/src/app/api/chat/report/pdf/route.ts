@@ -10,7 +10,7 @@ import { LOGO_B64 } from './logos';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
-export const maxDuration = 180;
+export const maxDuration = 300;
 
 const log = createLogger('api/chat/report/pdf');
 const BACKEND = (process.env.BACKEND_URL ?? 'http://localhost:8000').replace(/\/$/, '');
@@ -36,7 +36,7 @@ export async function POST(req: NextRequest) {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(bodyObj),
-      signal: AbortSignal.timeout(165_000),
+      signal: AbortSignal.timeout(285_000),
     });
   } catch (err) {
     log.error('Backend unreachable or timed out: %s', err);

@@ -3765,7 +3765,7 @@ def _pdf_with_chromium(html_doc: str) -> bytes:
 # above, 2 minutes. 240s gives real headroom above the slowest run observed
 # so far while still bounding a genuine hang (e.g. a stray unreachable
 # network fetch that would otherwise block forever).
-_WEASYPRINT_TIMEOUT_S_DEFAULT = 20.0
+_WEASYPRINT_TIMEOUT_S_DEFAULT = 120.0
 
 
 def _pdf_with_weasyprint(html_doc: str, timeout_s: float | None = None) -> bytes:
@@ -3914,7 +3914,7 @@ def build_pdf(report: str, title: str, question: str, summary: str,
     # instances used by this deployment, while still consuming the exact same
     # compiled dynamic print HTML/CSS. WeasyPrint remains the deterministic
     # fallback for environments without a browser.
-    prefer_chromium = fast_print and os.environ.get("GG_PDF_RENDER_ENGINE", "weasyprint").lower() == "chromium"
+    prefer_chromium = fast_print and os.environ.get("GG_PDF_RENDER_ENGINE", "chromium").lower() == "chromium"
     attempts = []
     if prefer_chromium:
         attempts.append(("chromium", _pdf_with_chromium))

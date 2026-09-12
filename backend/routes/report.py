@@ -3426,31 +3426,69 @@ async def _build_multi_angle_search_queries(
     # a sensible multi-angle search without a new branch being added here.
     if intent is not None and intent.resolved_topic.strip():
         topic = intent.resolved_topic.strip()
-        # Truncate on a word boundary, not mid-word — a hard slice can chop
-        # a search-bound phrase in half (e.g. "...its c" instead of "...its
-        # clinical trials"), which hurts every angle query built from it.
+        # Truncate on a word boundary, not mid-word.
         if len(topic) > 100:
             topic = topic[:100].rsplit(" ", 1)[0]
-        if _research_domain_from_intent(question, intent) == "scientific":
+        domain = _research_domain_from_intent(question, intent)
+        if domain == "scientific":
             base = f"{topic} human transmission clinical cases virology surveillance"
+        elif domain == "regulatory":
+            base = f"{topic} official regulator guidance compliance"
+        elif domain == "comparison":
+            base = f"{topic} financial comparison market data"
         else:
             base = _augment_query_for_historical_data(topic)
+
         queries = [base]
         for kind in intent.evidence_needed:
             suffix = _EVIDENCE_ANGLE_SUFFIX.get(kind)
             if not suffix:
-                continue  # "documents" / "general_knowledge" — no search angle
+                continue
             candidate = f"{topic} {suffix}"
-            # Skip a suffix that would just repeat what the base query
-            # already reads as (e.g. don't add "...sector peer comparison"
-            # on top of a question that's already phrased as a comparison).
             if kind == "comparison" and re.search(r"\bvs\.?\b|\bversus\b|compar", base, re.IGNORECASE):
                 continue
             if kind == "historical" and _HISTORICAL_INTENT_RE.search(base):
                 continue
-            if candidate.strip().lower() not in [q.strip().lower() for q in queries]:
+            if candidate.strip().lower() not in {q.strip().lower() for q in queries}:
                 queries.append(candidate)
-        log.info("Intent-driven search angles (%s): %r", intent.source, [q[:60] for q in queries[:5]])
+
+        # A correctly-resolved company/topic can still be labelled only
+        # `general_knowledge` by the intent LLM. For finance reports that is
+        # too little search diversity: it collapses the request to one Tavily
+        # query and often only ~15 sources. Add distinct evidence angles
+        # rather than fanning the same query across multiple API keys.
+        if qtype == "finance":
+            fallback_angles = [
+                f"{topic} latest developments news 2026",
+                f"{topic} financial results revenue profit margins key metrics",
+                f"{topic} strategy acquisitions partnerships operations risks outlook",
+            ]
+            for candidate in fallback_angles:
+                if candidate.strip().lower() not in {q.strip().lower() for q in queries}:
+                    queries.append(candidate)
+        elif domain == "scientific":
+            for candidate in (
+                f"{topic} primary research recent evidence",
+                f"{topic} genomic surveillance epidemiology recent data",
+            ):
+                if candidate.strip().lower() not in {q.strip().lower() for q in queries}:
+                    queries.append(candidate)
+        elif domain == "regulatory":
+            for candidate in (
+                f"{topic} official circular notification latest",
+                f"{topic} enforcement implementation compliance latest",
+            ):
+                if candidate.strip().lower() not in {q.strip().lower() for q in queries}:
+                    queries.append(candidate)
+        elif intent.wants_report and len(queries) == 1:
+            for candidate in (
+                f"{topic} latest evidence developments",
+                f"{topic} historical trend data",
+            ):
+                if candidate.strip().lower() not in {q.strip().lower() for q in queries}:
+                    queries.append(candidate)
+
+        log.info("Intent-driven search angles (%s): %r", intent.source, [q[:80] for q in queries[:5]])
         return queries[:5]
 
     base = _augment_query_for_historical_data(
@@ -4325,7 +4363,7 @@ def _build_plan_source_preview(
     file_section: str,
     okf_context: str,
     no_web_sources: bool,
-    max_sources: int = 20,
+    max_sources: int = 30,
     per_source_chars: int = 350,
 ) -> str:
     """Light-weight preview of the source material for the planning call —
@@ -5188,7 +5226,7 @@ async def generate_report(request: Request):
     # use 25 sources and real-fetch all of them — the model's context window
     # has plenty of headroom, and more real page text = more genuine data
     # points to chart/table instead of the same handful of numbers reused.
-    ENRICH_SOURCE_COUNT = 25
+    ENRICH_SOURCE_COUNT = 35
     ENRICH_FETCH_CHARS = 3000
 
     async def enrich(src: dict, idx: int) -> dict:

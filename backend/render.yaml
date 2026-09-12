@@ -14,7 +14,7 @@ services:
       - key: LOGO_B64
         sync: false
       - key: GG_PDF_RENDER_ENGINE
-        value: auto
+        value: chromium
       - key: DATABASE_URL
         sync: false
 
