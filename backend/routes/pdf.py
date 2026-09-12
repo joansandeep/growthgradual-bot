@@ -3260,12 +3260,12 @@ def _svg_escape(value: object) -> str:
     return _html.escape(str(value or ""), quote=True)
 
 
-def _svg_chart_from_config(config: dict, width: int = 720, height: int = 320) -> str:
-    """Render the chart config emitted by html_report as static SVG.
+def _svg_chart_from_config(config: dict, width: int = 760, height: int = 300) -> str:
+    """Render a Chart.js config as a print-safe, self-contained SVG.
 
-    This covers the chart forms most commonly emitted by the application and
-    gives WeasyPrint a JS-free representation. Unsupported chart types degrade
-    to a labelled block instead of silently producing an empty canvas.
+    The PDF path must not depend on a browser measuring a canvas. Keep the SVG
+    inside its viewBox, use a predictable aspect ratio, and give pie/doughnut
+    charts their own layout so Cartesian-axis labels never leak into the pie.
     """
     if not isinstance(config, dict):
         return ""
@@ -3273,14 +3273,84 @@ def _svg_chart_from_config(config: dict, width: int = 720, height: int = 320) ->
     data = config.get("data") or {}
     labels = [str(x) for x in (data.get("labels") or [])]
     datasets = data.get("datasets") or []
-    margin_l, margin_r, margin_t, margin_b = 58, 24, 44, 54
-    plot_w = width - margin_l - margin_r
-    plot_h = height - margin_t - margin_b
-    grid = []
-    text = []
-    marks = []
+    colors = ["#1a1f4e", "#c8860a", "#21767a", "#b93c37", "#4a5c8a", "#806e28", "#6e2f3a", "#168058"]
+    text: list[str] = []
+    marks: list[str] = []
+    grid: list[str] = []
 
-    def add_grid():
+    # Pie/doughnut charts have no axes. The old renderer drew Cartesian grid
+    # lines/ticks before entering the pie branch, leaving a large empty plot
+    # and axis labels behind the donut and making the result look clipped.
+    if ctype in ("doughnut", "pie"):
+        cx, cy = width * 0.36, height * 0.49
+        r = min(height * 0.33, width * 0.22)
+        ds = datasets[0] if datasets else {}
+        vals = []
+        for v in ds.get("data") or []:
+            try:
+                vals.append(max(0.0, float(v)))
+            except Exception:
+                vals.append(0.0)
+        total = sum(vals) or 1.0
+        angle = -math.pi / 2
+        inner = r * (0.50 if ctype == "doughnut" else 0.0)
+        for i, val in enumerate(vals):
+            sweep = 2 * math.pi * (val / total)
+            if sweep <= 0:
+                continue
+            x1, y1 = cx + r * math.cos(angle), cy + r * math.sin(angle)
+            a2 = angle + sweep
+            x2, y2 = cx + r * math.cos(a2), cy + r * math.sin(a2)
+            large = 1 if sweep > math.pi else 0
+            marks.append(
+                f'<path d="M {cx:.1f} {cy:.1f} L {x1:.1f} {y1:.1f} A {r:.1f} {r:.1f} 0 {large} 1 {x2:.1f} {y2:.1f} Z" '
+                f'fill="{colors[i % len(colors)]}"/>'
+            )
+            angle = a2
+        if inner:
+            marks.append(f'<circle cx="{cx:.1f}" cy="{cy:.1f}" r="{inner:.1f}" fill="#ffffff"/>')
+
+        # Compact legend on the right; wrap long labels instead of allowing
+        # them to run outside the chart card.
+        legend_x = width * 0.60
+        legend_y = 42
+        for i, (lbl, val) in enumerate(zip(labels, vals)):
+            yy = legend_y + i * 24
+            if yy > height - 18:
+                break
+            pct = (val / total * 100) if total else 0
+            marks.append(f'<rect x="{legend_x:.1f}" y="{yy-9:.1f}" width="10" height="10" rx="2" fill="{colors[i % len(colors)]}"/>')
+            safe = _svg_escape(lbl)
+            text.append(f'<text x="{legend_x+16:.1f}" y="{yy:.1f}" font-size="9" fill="#4b5563">{safe}</text>')
+            text.append(f'<text x="{width-18:.1f}" y="{yy:.1f}" text-anchor="end" font-size="9" font-weight="700" fill="{colors[i % len(colors)]}">{pct:.1f}%</text>')
+    else:
+        margin_l, margin_r, margin_t, margin_b = 58, 24, 34, 48
+        plot_w = width - margin_l - margin_r
+        plot_h = height - margin_t - margin_b
+        all_values = []
+        for ds in datasets:
+            for v in ds.get("data") or []:
+                if isinstance(v, dict):
+                    v = v.get("y", v.get("value", 0))
+                elif isinstance(v, list) and len(v) >= 2:
+                    v = v[1]
+                try:
+                    all_values.append(float(v))
+                except Exception:
+                    pass
+        vmax = max(all_values) if all_values else 1.0
+        vmin = min(all_values) if all_values else 0.0
+        if vmax == vmin:
+            pad = abs(vmax) * 0.1 or 1.0
+            vmax += pad
+            vmin -= pad
+        if vmin > 0:
+            vmin = 0
+        span = vmax - vmin or 1.0
+
+        def y_of(v: float) -> float:
+            return margin_t + (vmax - float(v)) / span * plot_h
+
         for i in range(6):
             y = margin_t + plot_h * i / 5
             grid.append(f'<line x1="{margin_l}" y1="{y:.1f}" x2="{width-margin_r}" y2="{y:.1f}" stroke="#d9dde7" stroke-width="1"/>')
@@ -3293,119 +3363,78 @@ def _svg_chart_from_config(config: dict, width: int = 720, height: int = 320) ->
                 val = f"{tick:,.2f}"
             text.append(f'<text x="{margin_l-8}" y="{y+4:.1f}" text-anchor="end" font-size="9" fill="#6b7280">{_svg_escape(val)}</text>')
 
-    all_values = []
-    for ds in datasets:
-        vals = ds.get("data") or []
-        for v in vals:
-            if isinstance(v, dict):
-                if "y" in v: v = v.get("y")
-                elif "value" in v: v = v.get("value")
-            if isinstance(v, (int, float)):
-                all_values.append(float(v))
-            else:
-                try: all_values.append(float(v))
-                except Exception: pass
-    vmax = max(all_values) if all_values else 1.0
-    vmin = min(all_values) if all_values else 0.0
-    if vmax == vmin:
-        pad = abs(vmax) * 0.1 or 1.0
-        vmax += pad; vmin -= pad
-    if vmin > 0: vmin = 0
-    span = vmax - vmin or 1.0
-    add_grid()
+        # Limit x-axis labels when there are many categories. This avoids the
+        # most common source of apparent overlap in exported charts.
+        label_step = max(1, math.ceil(len(labels) / 8))
+        for i, lbl in enumerate(labels[:60]):
+            if i % label_step != 0 and i != len(labels) - 1:
+                continue
+            x = margin_l + (i + 0.5) * plot_w / max(1, len(labels))
+            short = lbl if len(lbl) <= 18 else lbl[:17] + "…"
+            text.append(f'<text x="{x:.1f}" y="{height-14}" text-anchor="middle" font-size="9" fill="#5f6675">{_svg_escape(short)}</text>')
 
-    def y_of(v):
-        return margin_t + (vmax - float(v)) / span * plot_h
-
-    colors = ["#1a1f4e", "#c8860a", "#21767a", "#b93c37", "#4a5c8a", "#806e28", "#6e2f3a", "#168058"]
-    legend_x = margin_l
-    for ds_i, ds in enumerate(datasets[:8]):
-        name = _svg_escape(ds.get("label") or ds.get("name") or f"Series {ds_i + 1}")
-        lx = legend_x + ds_i * 150
-        if lx + 130 <= width - margin_r:
-            marks.append(f'<rect x="{lx}" y="12" width="10" height="10" rx="2" fill="{colors[ds_i%len(colors)]}"/>')
-            text.append(f'<text x="{lx+15}" y="21" font-size="9" fill="#5f6675">{name}</text>')
-    for i, lbl in enumerate(labels[:40]):
-        x = margin_l + (i + 0.5) * plot_w / max(1, len(labels))
-        text.append(f'<text x="{x:.1f}" y="{height-18}" text-anchor="middle" font-size="9" fill="#5f6675">{_svg_escape(lbl)}</text>')
-
-    if ctype in ("doughnut", "pie"):
-        cx, cy, r = width/2, height/2 - 8, min(plot_h, plot_w) * 0.27
-        vals = []
-        ds = datasets[0] if datasets else {}
-        for v in ds.get("data", []):
-            try: vals.append(max(0.0, float(v)))
-            except Exception: vals.append(0.0)
-        total = sum(vals) or 1.0
-        import math as _m
-        angle = -_m.pi/2
-        for i, val in enumerate(vals):
-            a2 = angle + 2*_m.pi*(val/total)
-            x1,y1 = cx+r*_m.cos(angle), cy+r*_m.sin(angle)
-            x2,y2 = cx+r*_m.cos(a2), cy+r*_m.sin(a2)
-            large = 1 if a2-angle > _m.pi else 0
-            marks.append(f'<path d="M {cx:.1f} {cy:.1f} L {x1:.1f} {y1:.1f} A {r:.1f} {r:.1f} 0 {large} 1 {x2:.1f} {y2:.1f} Z" fill="{colors[i%len(colors)]}"/>')
-            angle = a2
-        marks.append(f'<circle cx="{cx:.1f}" cy="{cy:.1f}" r="{r*0.48:.1f}" fill="#ffffff"/>')
-    elif ctype == "scatter":
-        # Scatter configs contain datasets of {x,y}.
-        pts = []
-        xs=[]; ys=[]
-        for ds in datasets:
-            for p in ds.get("data") or []:
-                if isinstance(p, dict):
-                    try: xs.append(float(p.get("x",0))); ys.append(float(p.get("y",0))); pts.append((float(p.get("x",0)),float(p.get("y",0))))
-                    except Exception: pass
-        if xs and ys:
-            xmin,xmax=min(xs),max(xs); ymin,ymax=min(ys),max(ys)
-            if xmin==xmax: xmin-=1; xmax+=1
-            if ymin==ymax: ymin-=1; ymax+=1
-            for x,y in pts[:500]:
-                px=margin_l+(x-xmin)/(xmax-xmin)*plot_w; py=margin_t+(ymax-y)/(ymax-ymin)*plot_h
-                marks.append(f'<circle cx="{px:.1f}" cy="{py:.1f}" r="4" fill="#c8860a" opacity="0.88"/>')
-    elif ctype in ("line", "radar"):
+        legend_x = margin_l
         for ds_i, ds in enumerate(datasets[:8]):
-            pts=[]
-            for i,v in enumerate(ds.get("data") or []):
-                try:
-                    if isinstance(v, dict): v=v.get("y", v.get("value",0))
-                    val=float(v)
-                    x=margin_l+(i+0.5)*plot_w/max(1,len(labels)); y=y_of(val)
-                    pts.append((x,y))
-                except Exception: pass
-            if pts:
-                d=" ".join(("M" if j==0 else "L")+f" {x:.1f} {y:.1f}" for j,(x,y) in enumerate(pts))
-                marks.append(f'<path d="{d}" fill="none" stroke="{colors[ds_i%len(colors)]}" stroke-width="2.4"/>')
-                for x,y in pts:
-                    marks.append(f'<circle cx="{x:.1f}" cy="{y:.1f}" r="2.8" fill="{colors[ds_i%len(colors)]}"/>')
-    else:  # bar, including floating/bar-like fallback
-        n = max(1, len(labels)); series_count=max(1, len(datasets)); group_w=plot_w/n; bar_w=max(4, group_w*0.72/series_count)
-        for ds_i, ds in enumerate(datasets[:8]):
-            vals=ds.get("data") or []
-            for i,v in enumerate(vals[:len(labels)]):
-                if isinstance(v, list) and len(v)>=2:
-                    try: a,b=float(v[0]),float(v[1])
-                    except Exception: continue
-                    y1,y2=y_of(a),y_of(b); top=min(y1,y2); bh=abs(y2-y1)
-                else:
+            name = _svg_escape(ds.get("label") or ds.get("name") or f"Series {ds_i + 1}")
+            lx = legend_x + ds_i * 150
+            if lx + 130 <= width - margin_r:
+                marks.append(f'<rect x="{lx}" y="10" width="10" height="10" rx="2" fill="{colors[ds_i%len(colors)]}"/>')
+                text.append(f'<text x="{lx+15}" y="19" font-size="9" fill="#5f6675">{name}</text>')
+
+        if ctype in ("line", "radar"):
+            for ds_i, ds in enumerate(datasets[:8]):
+                pts = []
+                for i, v in enumerate(ds.get("data") or []):
                     try:
-                        if isinstance(v, dict): v=v.get("y", v.get("value",0))
-                        val=float(v)
-                    except Exception: continue
-                    y0=y_of(0); yv=y_of(val); top=min(y0,yv); bh=abs(y0-yv)
-                x=margin_l+i*group_w+(group_w-series_count*bar_w)/2+ds_i*bar_w
-                marks.append(f'<rect x="{x:.1f}" y="{top:.1f}" width="{max(2,bar_w-2):.1f}" height="{max(1,bh):.1f}" rx="2" fill="{colors[ds_i%len(colors)]}"/>')
+                        if isinstance(v, dict):
+                            v = v.get("y", v.get("value", 0))
+                        val = float(v)
+                        x = margin_l + (i + 0.5) * plot_w / max(1, len(labels))
+                        pts.append((x, y_of(val)))
+                    except Exception:
+                        pass
+                if pts:
+                    d = " ".join(("M" if j == 0 else "L") + f" {x:.1f} {y:.1f}" for j, (x, y) in enumerate(pts))
+                    marks.append(f'<path d="{d}" fill="none" stroke="{colors[ds_i%len(colors)]}" stroke-width="2.4"/>')
+                    for x, y in pts:
+                        marks.append(f'<circle cx="{x:.1f}" cy="{y:.1f}" r="2.8" fill="{colors[ds_i%len(colors)]}"/>')
+        else:
+            n = max(1, len(labels))
+            series_count = max(1, len(datasets))
+            group_w = plot_w / n
+            bar_w = max(4, group_w * 0.72 / series_count)
+            for ds_i, ds in enumerate(datasets[:8]):
+                vals = ds.get("data") or []
+                for i, v in enumerate(vals[:len(labels)]):
+                    if isinstance(v, list) and len(v) >= 2:
+                        try:
+                            a, b = float(v[0]), float(v[1])
+                        except Exception:
+                            continue
+                        y1, y2 = y_of(a), y_of(b)
+                        top, bh = min(y1, y2), abs(y2 - y1)
+                    else:
+                        try:
+                            if isinstance(v, dict):
+                                v = v.get("y", v.get("value", 0))
+                            val = float(v)
+                        except Exception:
+                            continue
+                        y0, yv = y_of(0), y_of(val)
+                        top, bh = min(y0, yv), abs(y0 - yv)
+                    x = margin_l + i * group_w + (group_w - series_count * bar_w) / 2 + ds_i * bar_w
+                    marks.append(f'<rect x="{x:.1f}" y="{top:.1f}" width="{max(2,bar_w-2):.1f}" height="{max(1,bh):.1f}" rx="2" fill="{colors[ds_i%len(colors)]}"/>')
 
     title = (config.get("options") or {}).get("plugins", {}).get("title", {}).get("text") or ""
+    title_html = f'<div style="font-weight:700;font-size:11pt;margin:0 0 5px;color:#1b2447;">{_svg_escape(title)}</div>' if title else ""
     return (
-        f'<div class="gg-pdf-chart-fallback" style="break-inside:avoid;max-width:100%;">'
-        f'{f"<div style=\"font-weight:700;font-size:11pt;margin:0 0 5px;color:#1b2447;\">{_svg_escape(title)}</div>" if title else ""}'
-        f'<svg xmlns="http://www.w3.org/2000/svg" width="{width}" height="{height}" viewBox="0 0 {width} {height}" role="img" aria-label="chart">'
-        f'<rect x="0" y="0" width="{width}" height="{height}" fill="#ffffff"/>'
-        + "".join(grid + marks + text) +
-        f'</svg></div>'
+        '<div class="gg-pdf-chart-fallback">'
+        + title_html
+        + f'<svg xmlns="http://www.w3.org/2000/svg" width="760" height="300" viewBox="0 0 760 300" preserveAspectRatio="xMidYMid meet" role="img" aria-label="chart">'
+        + '<rect x="0" y="0" width="760" height="300" fill="#ffffff"/>'
+        + "".join(grid + marks + text)
+        + '</svg></div>'
     )
-
 
 def _replace_chart_runtime_with_svg(html_doc: str, rasterize: bool = False) -> str:
     """Replace Chart.js canvas/script pairs with static SVGs for PDF output."""

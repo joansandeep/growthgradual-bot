@@ -32,7 +32,9 @@ def main():
     c=build_html_report(presentation=scientific, **kwargs)
     assert "gg-cover--data_driven" in a and "gg-section--two_column" in a
     assert "gg-cover--minimal" in b and "gg-section--sidebar_main" in b
-    assert "gg-cover--classic" in c and "gg-section--two_column" in c
+    assert "gg-cover--classic" in c
+    # Empty presentation plans must not produce heading-only sections.
+    assert 'Research Questions' not in c
     # Markdown-table parsing is separately covered below; structured financial blocks
     # intentionally take precedence when the presentation requests metrics/table primitives.
     from routes.html_report import _markdown_to_html

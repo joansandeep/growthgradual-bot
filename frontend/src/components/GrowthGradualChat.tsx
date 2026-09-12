@@ -2837,15 +2837,14 @@ export default function GrowthGradualChat() {
 
         .report-section-shell { margin: 0 0 clamp(12px,1.8vh,22px); }
         .report-section-shell.report-layout-grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(180px,1fr)); gap:10px; }
-        .report-section-shell.report-layout-two_column { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:18px; }
+        .report-section-shell.report-layout-two_column { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:18px; min-width:0; }
         .report-section-shell.report-layout-sidebar_main { display:grid; grid-template-columns:minmax(120px,.28fr) minmax(0,1fr); gap:16px; }
         .report-section-shell.report-density-dense { font-size:.96em; }
         .report-section-shell.report-density-sparse { max-width:90%; }
         .report-section-shell.report-emphasis-critical { border-left:4px solid currentColor; padding-left:10px; }
         .report-section-shell.report-density-sparse { max-width: 88%; }
         .report-section-shell.report-density-dense { margin-bottom: 9px; }
-        .report-section-shell.report-layout-two_column { column-count: 2; column-gap: 22px; }
-        .report-section-shell.report-layout-two_column > * { break-inside: avoid; }
+        .report-section-shell.report-layout-two_column > * { min-width:0; break-inside:avoid; }
         .report-section-shell.report-layout-sidebar_main { border-left: 3px solid #cfd8e8; padding-left: 12px; }
         .report-section-shell.report-layout-grid { background: rgba(255,255,255,.45); border: 1px solid #e2e6f0; border-radius: 10px; padding: 10px; }
         .report-section-shell.report-emphasis-high { border-top: 2px solid #aeb8d0; padding-top: 7px; }
@@ -2855,28 +2854,31 @@ export default function GrowthGradualChat() {
 
         /* Charts */
         .charts-grid { display:grid;grid-template-columns:repeat(auto-fit,minmax(min(240px,100%),1fr));gap:clamp(8px,1.2vw,16px);margin-bottom:clamp(10px,1.5vh,20px); }
-        .key-stats-row { display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:8px;margin:0 0 clamp(12px,1.5vh,18px); }
+        .key-stats-row { display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px;margin:0 0 clamp(12px,1.5vh,18px);align-items:stretch; }
         .key-stats--fallback { opacity:.96; }
         .key-stats--scientific { grid-template-columns:repeat(auto-fit,minmax(150px,1fr)); }
         .key-stats--regulatory { grid-template-columns:repeat(auto-fit,minmax(170px,1fr)); }
         .key-stats--comparison { grid-template-columns:repeat(auto-fit,minmax(145px,1fr)); }
         .key-stat-card {
           background:#fff;border:1px solid #e2e6f0;border-radius:10px;
-          padding:clamp(8px,1.2vh,14px) clamp(10px,1.4vw,18px);min-width:80px;flex:1;
+          padding:clamp(9px,1.2vh,14px) clamp(10px,1.2vw,16px);min-width:0;min-height:78px;
+          display:flex;flex-direction:column;justify-content:center;overflow:hidden;
           transition:box-shadow .2s cubic-bezier(.4,0,.2,1), transform .2s cubic-bezier(.4,0,.2,1), border-color .2s cubic-bezier(.4,0,.2,1);
         }
         .key-stat-card:hover { box-shadow:0 6px 18px rgba(26,31,78,.09); border-color:#d5dbe8; transform:translateY(-1px); }
-        .key-stat-label { font-size:clamp(9px,.85vw,10.5px);text-transform:uppercase;letter-spacing:.07em;color:#8b93b5;margin-bottom:4px; }
-        .key-stat-value { font-size:clamp(14px,1.5vw,18px);font-weight:700;color:#1a1f4e;line-height:1; }
-        .key-stat-change { font-size:clamp(10px,.9vw,11.5px);margin-top:4px;font-weight:600; }
+        .key-stat-label { font-size:clamp(8.5px,.78vw,10px);text-transform:uppercase;letter-spacing:.06em;color:#8b93b5;margin-bottom:5px;line-height:1.25;overflow-wrap:anywhere; }
+        .key-stat-value { font-size:clamp(13px,1.35vw,18px);font-weight:700;color:#1a1f4e;line-height:1.12;overflow-wrap:anywhere;word-break:break-word; }
+        .key-stat-change { font-size:clamp(9.5px,.82vw,11.5px);margin-top:5px;font-weight:600;line-height:1.15;overflow-wrap:anywhere; }
         .key-stat-change.pos { color:#16a34a; } .key-stat-change.neg { color:#dc2626; }
         .chart-wrap {
           background:#fff;border:1px solid #e2e6f0;border-radius:10px;
-          padding:clamp(10px,1.3vw,16px) clamp(10px,1.3vw,16px) 8px;
+          padding:clamp(10px,1.3vw,16px) clamp(10px,1.3vw,16px) 8px;min-width:0;overflow:hidden;
           transition:box-shadow .2s cubic-bezier(.4,0,.2,1);
         }
         .chart-wrap:hover { box-shadow:0 6px 18px rgba(26,31,78,.07); }
-        .chart-title { font-size:clamp(10px,.9vw,11.5px);font-weight:600;color:#1a1f4e;font-family:'DM Sans',sans-serif;margin-bottom:8px; }
+        .chart-title { font-size:clamp(10px,.9vw,11.5px);font-weight:600;color:#1a1f4e;font-family:'DM Sans',sans-serif;margin-bottom:8px;line-height:1.25;overflow-wrap:anywhere; }
+        .chart-wrap svg { display:block; width:100%; max-width:100%; height:auto; overflow:visible; }
+        .chart-wrap > div { min-width:0; }
         .chart-legend { display:flex;flex-wrap:wrap;gap:8px;margin-top:6px; }
         .chart-leg { display:flex;align-items:center;gap:4px;font-size:10px;color:#4b5680;font-family:'DM Sans',sans-serif; }
         .chart-leg i { width:8px;height:8px;border-radius:2px;display:block; }
@@ -3012,6 +3014,10 @@ export default function GrowthGradualChat() {
            BREAKPOINTS
         ══════════════════════════════════════════════════════════════════ */
 
+        @media (min-width: 481px) and (max-width: 900px) {
+          .key-stats-row { grid-template-columns:repeat(3,minmax(0,1fr)); }
+        }
+
         /* ── Small phone (≤ 480px) ──────────────────────────────────────── */
         @media (max-width: 480px) {
           .chat-shell { height: calc(100dvh - 108px); border-radius: 8px; }
@@ -3036,6 +3042,7 @@ export default function GrowthGradualChat() {
           .key-stat-card { padding: 8px 10px; }
           .key-stat-value { font-size: 14px; }
           .charts-grid { grid-template-columns: 1fr; }
+          .key-stats-row { grid-template-columns:repeat(2,minmax(0,1fr)); }
           .report-body { padding: 10px; }
           .report-section-shell.report-layout-two_column { column-count: 1; }
         }

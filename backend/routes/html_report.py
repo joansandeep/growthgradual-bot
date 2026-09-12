@@ -1754,6 +1754,16 @@ def build_html_report(report: str, title: str, question: str, summary: str,
         if section_type == "metrics_dashboard" and key_stats and not key_stats_rendered and "gg-metric" not in body_html:
             body_html = _render_key_stats(key_stats) + body_html
             key_stats_rendered = True
+
+        # A presentation plan can contain more sections than the generated
+        # markdown (for example, a model may plan an optional "Outlook"
+        # section that was never actually written). Rendering those empty
+        # plans creates pages containing only headings, which is especially
+        # harmful in print/PDF output. Only emit a planned section when it has
+        # real body content or a real structured block.
+        if not body_html.strip():
+            log.info("HTML report: skipping empty planned section '%s'", section_title)
+            continue
         if section_type == "timeline" and not blocks_meaningful:
             # Markdown remains the content source; presentation controls the arrangement.
             pass
