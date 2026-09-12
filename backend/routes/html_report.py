@@ -1720,6 +1720,11 @@ def build_html_report(report: str, title: str, question: str, summary: str,
 
     exec_spec = spec_dict.get("executive_summary") or {}
     exec_placement = str(exec_spec.get("placement") or "none")
+    # Reports no longer reserve a standalone cover page. If the planner chose
+    # the historical "after_cover" placement, keep its composition intent but
+    # move the summary to the top of the actual report body.
+    if exec_placement == "after_cover":
+        exec_placement = "top_of_body"
     exec_body = str(exec_spec.get("body") or summary or "").strip()
     # Do not automatically inject KPIs into every executive summary. Metrics are
     # a presentation choice now; only render them here when the validated plan
@@ -1792,7 +1797,11 @@ def build_html_report(report: str, title: str, question: str, summary: str,
         opening_html = ""
         closing_summary = ""
 
-    cover_html = _render_cover(spec_dict, safe_title, safe_summary, date_str, key_stats)
+    # No standalone cover page: the report begins with the planner-selected
+    # executive summary/first section. The title remains available in the HTML
+    # document metadata and the generated section headings provide the visual
+    # entry point without wasting a full A4 page.
+    cover_html = ""
     return f"""<!DOCTYPE html>
 <html lang="en">
 <head>

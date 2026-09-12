@@ -502,12 +502,12 @@ function PieChart({ spec }: { spec: ChartSpec }) {
         <svg width="136" height="136" viewBox="0 0 136 136">
           {slices.map((s,i) => <path key={i} d={s.path} fill={s.color} stroke="#fff" strokeWidth="1.5" opacity=".9"/>)}
         </svg>
-        <div style={{ display:'flex', flexDirection:'column', gap:5 }}>
+        <div style={{ display:'flex', flexDirection:'column', gap:5, minWidth:0, flex:1 }}>
           {slices.map((s,i) => (
             <div key={i} style={{ display:'flex', alignItems:'center', gap:6, fontSize:11, fontFamily:'DM Sans,sans-serif' }}>
               <span style={{ width:9, height:9, borderRadius:2, background:s.color, flexShrink:0, display:'inline-block' }}/>
-              <span style={{ color:'#4b5680' }}>{s.label}</span>
-              <span style={{ color:s.color, fontWeight:700, fontFamily:'DM Mono,monospace', marginLeft:'auto', paddingLeft:8 }}>{s.pct}%</span>
+              <span style={{ color:'#4b5680', minWidth:0, overflowWrap:'anywhere' }}>{s.label}</span>
+              <span style={{ color:s.color, fontWeight:700, fontFamily:'DM Mono,monospace', marginLeft:'auto', paddingLeft:8, flexShrink:0 }}>{s.pct}%</span>
             </div>
           ))}
         </div>
@@ -2826,7 +2826,7 @@ export default function GrowthGradualChat() {
         .report-sources h2{font:700 clamp(13px,1.3vw,16px) 'Playfair Display',serif;color:#1a1f4e;margin:0 0 4px;}
         .report-sources h2 span{display:inline-grid;place-items:center;min-width:21px;height:21px;padding:0 6px;border-radius:999px;background:#e8efff;color:#0d4f3c;font:700 11px 'DM Sans',sans-serif;vertical-align:middle;}
         .report-sources>p{margin:0 0 10px;color:#68708c;font-size:11px;}
-        .report-sources ol{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:7px;margin:0;padding:0;list-style:none;counter-reset:source;}
+        .report-sources ol{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:7px;margin:0;padding:0;list-style:none;counter-reset:source;}
         .report-sources li{position:relative;min-width:0;padding:9px 10px 9px 32px;border:1px solid #e2e6f0;border-radius:8px;background:#fff;counter-increment:source;}
         .report-sources li::before{content:counter(source);position:absolute;left:9px;top:10px;width:16px;height:16px;border-radius:50%;display:grid;place-items:center;background:#0d4f3c;color:#fff;font:700 9px 'DM Sans',sans-serif;}
         .report-source-title{font-size:11px;font-weight:700;line-height:1.35;color:#1a1f4e;overflow-wrap:anywhere;}
@@ -2854,20 +2854,20 @@ export default function GrowthGradualChat() {
 
         /* Charts */
         .charts-grid { display:grid;grid-template-columns:repeat(auto-fit,minmax(min(240px,100%),1fr));gap:clamp(8px,1.2vw,16px);margin-bottom:clamp(10px,1.5vh,20px); }
-        .key-stats-row { display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px;margin:0 0 clamp(12px,1.5vh,18px);align-items:stretch; }
+        .key-stats-row { display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:10px;margin:0 0 clamp(12px,1.5vh,18px);align-items:stretch; }
         .key-stats--fallback { opacity:.96; }
-        .key-stats--scientific { grid-template-columns:repeat(auto-fit,minmax(150px,1fr)); }
-        .key-stats--regulatory { grid-template-columns:repeat(auto-fit,minmax(170px,1fr)); }
-        .key-stats--comparison { grid-template-columns:repeat(auto-fit,minmax(145px,1fr)); }
+        .key-stats--scientific { grid-template-columns:repeat(auto-fit,minmax(170px,1fr)); }
+        .key-stats--regulatory { grid-template-columns:repeat(auto-fit,minmax(180px,1fr)); }
+        .key-stats--comparison { grid-template-columns:repeat(auto-fit,minmax(170px,1fr)); }
         .key-stat-card {
           background:#fff;border:1px solid #e2e6f0;border-radius:10px;
-          padding:clamp(9px,1.2vh,14px) clamp(10px,1.2vw,16px);min-width:0;min-height:78px;
+          padding:clamp(9px,1.2vh,14px) clamp(10px,1.2vw,16px);min-width:0;min-height:82px;
           display:flex;flex-direction:column;justify-content:center;overflow:hidden;
           transition:box-shadow .2s cubic-bezier(.4,0,.2,1), transform .2s cubic-bezier(.4,0,.2,1), border-color .2s cubic-bezier(.4,0,.2,1);
         }
         .key-stat-card:hover { box-shadow:0 6px 18px rgba(26,31,78,.09); border-color:#d5dbe8; transform:translateY(-1px); }
-        .key-stat-label { font-size:clamp(8.5px,.78vw,10px);text-transform:uppercase;letter-spacing:.06em;color:#8b93b5;margin-bottom:5px;line-height:1.25;overflow-wrap:anywhere; }
-        .key-stat-value { font-size:clamp(13px,1.35vw,18px);font-weight:700;color:#1a1f4e;line-height:1.12;overflow-wrap:anywhere;word-break:break-word; }
+        .key-stat-label { font-size:clamp(8.5px,.78vw,10px);text-transform:uppercase;letter-spacing:.06em;color:#8b93b5;margin-bottom:5px;line-height:1.25;overflow-wrap:anywhere;min-width:0; }
+        .key-stat-value { font-size:clamp(13px,1.35vw,18px);font-weight:700;color:#1a1f4e;line-height:1.12;overflow-wrap:anywhere;word-break:break-word;min-width:0; }
         .key-stat-change { font-size:clamp(9.5px,.82vw,11.5px);margin-top:5px;font-weight:600;line-height:1.15;overflow-wrap:anywhere; }
         .key-stat-change.pos { color:#16a34a; } .key-stat-change.neg { color:#dc2626; }
         .chart-wrap {
@@ -3019,6 +3019,10 @@ export default function GrowthGradualChat() {
         }
 
         /* ── Small phone (≤ 480px) ──────────────────────────────────────── */
+        @media (max-width: 900px) {
+          .report-sources ol { grid-template-columns: 1fr; }
+        }
+
         @media (max-width: 480px) {
           .chat-shell { height: calc(100dvh - 108px); border-radius: 8px; }
           .chat-topbar { padding: 7px 10px; gap: 6px; }

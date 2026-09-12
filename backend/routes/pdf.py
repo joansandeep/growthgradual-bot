@@ -3278,12 +3278,10 @@ def _svg_chart_from_config(config: dict, width: int = 760, height: int = 300) ->
     marks: list[str] = []
     grid: list[str] = []
 
-    # Pie/doughnut charts have no axes. The old renderer drew Cartesian grid
-    # lines/ticks before entering the pie branch, leaving a large empty plot
-    # and axis labels behind the donut and making the result look clipped.
+    # Pie/doughnut charts get a dedicated, self-contained layout. No Cartesian
+    # axes, labels, or gridlines are emitted. The legend lives inside the same
+    # SVG and wraps long labels so it can never leak outside the chart card.
     if ctype in ("doughnut", "pie"):
-        cx, cy = width * 0.36, height * 0.49
-        r = min(height * 0.33, width * 0.22)
         ds = datasets[0] if datasets else {}
         vals = []
         for v in ds.get("data") or []:
@@ -3291,9 +3289,17 @@ def _svg_chart_from_config(config: dict, width: int = 760, height: int = 300) ->
                 vals.append(max(0.0, float(v)))
             except Exception:
                 vals.append(0.0)
-        total = sum(vals) or 1.0
+        if not vals or sum(vals) <= 0:
+            return '<div class="gg-pdf-chart-fallback"></div>'
+        total = sum(vals)
+        count = len(vals)
+        # Give the legend a predictable amount of horizontal room and size the
+        # donut to the remaining area. This is intentionally independent of
+        # xLabel/yLabel because pie charts do not have Cartesian axes.
+        cx, cy = 205, 172
+        r = 112 if count <= 4 else 96
+        inner = r * (0.52 if ctype == "doughnut" else 0.0)
         angle = -math.pi / 2
-        inner = r * (0.50 if ctype == "doughnut" else 0.0)
         for i, val in enumerate(vals):
             sweep = 2 * math.pi * (val / total)
             if sweep <= 0:
@@ -3302,27 +3308,49 @@ def _svg_chart_from_config(config: dict, width: int = 760, height: int = 300) ->
             a2 = angle + sweep
             x2, y2 = cx + r * math.cos(a2), cy + r * math.sin(a2)
             large = 1 if sweep > math.pi else 0
-            marks.append(
-                f'<path d="M {cx:.1f} {cy:.1f} L {x1:.1f} {y1:.1f} A {r:.1f} {r:.1f} 0 {large} 1 {x2:.1f} {y2:.1f} Z" '
-                f'fill="{colors[i % len(colors)]}"/>'
-            )
+            if inner:
+                # Annular sector rather than a pie wedge with a white overlay;
+                # this stays crisp when the SVG is rasterized for WeasyPrint.
+                ix2, iy2 = cx + inner * math.cos(a2), cy + inner * math.sin(a2)
+                ix1, iy1 = cx + inner * math.cos(angle), cy + inner * math.sin(angle)
+                marks.append(
+                    f'<path d="M {x1:.1f} {y1:.1f} A {r:.1f} {r:.1f} 0 {large} 1 {x2:.1f} {y2:.1f} '
+                    f'L {ix2:.1f} {iy2:.1f} A {inner:.1f} {inner:.1f} 0 {large} 0 {ix1:.1f} {iy1:.1f} Z" '
+                    f'fill="{colors[i % len(colors)]}"/>'
+                )
+            else:
+                marks.append(
+                    f'<path d="M {cx:.1f} {cy:.1f} L {x1:.1f} {y1:.1f} A {r:.1f} {r:.1f} 0 {large} 1 {x2:.1f} {y2:.1f} Z" '
+                    f'fill="{colors[i % len(colors)]}"/>'
+                )
             angle = a2
-        if inner:
-            marks.append(f'<circle cx="{cx:.1f}" cy="{cy:.1f}" r="{inner:.1f}" fill="#ffffff"/>')
 
-        # Compact legend on the right; wrap long labels instead of allowing
-        # them to run outside the chart card.
-        legend_x = width * 0.60
-        legend_y = 42
+        # Legend: one row per slice, with two-line wrapping for long labels.
+        legend_x = 405
+        legend_y = 48
+        legend_w = 320
+        row_h = 38 if count <= 6 else 31
         for i, (lbl, val) in enumerate(zip(labels, vals)):
-            yy = legend_y + i * 24
-            if yy > height - 18:
-                break
+            yy = legend_y + i * row_h
+            if yy > height - 20:
+                # Never clip the last item; fall back to a smaller row height.
+                yy = legend_y + i * 27
             pct = (val / total * 100) if total else 0
-            marks.append(f'<rect x="{legend_x:.1f}" y="{yy-9:.1f}" width="10" height="10" rx="2" fill="{colors[i % len(colors)]}"/>')
-            safe = _svg_escape(lbl)
-            text.append(f'<text x="{legend_x+16:.1f}" y="{yy:.1f}" font-size="9" fill="#4b5563">{safe}</text>')
-            text.append(f'<text x="{width-18:.1f}" y="{yy:.1f}" text-anchor="end" font-size="9" font-weight="700" fill="{colors[i % len(colors)]}">{pct:.1f}%</text>')
+            marks.append(f'<rect x="{legend_x}" y="{yy-10:.1f}" width="11" height="11" rx="2" fill="{colors[i % len(colors)]}"/>')
+            raw_label = str(lbl or "")
+            safe = _svg_escape(raw_label)
+            # Keep the first line compact and place the percentage on its own
+            # right-aligned line when the label is long.
+            if len(raw_label) > 28:
+                first, second = raw_label[:27].rsplit(" ", 1) if " " in raw_label[:27] else (raw_label[:27], "")
+                second = (second + raw_label[27:]).strip() if second else raw_label[27:].strip()
+                text.append(f'<text x="{legend_x+18}" y="{yy:.1f}" font-size="9.5" fill="#4b5563">{_svg_escape(first)}</text>')
+                if second:
+                    text.append(f'<text x="{legend_x+18}" y="{yy+13:.1f}" font-size="9.5" fill="#4b5563">{_svg_escape(second[:34])}</text>')
+                text.append(f'<text x="{width-18}" y="{yy+13:.1f}" text-anchor="end" font-size="9" font-weight="700" fill="{colors[i % len(colors)]}">{pct:.1f}%</text>')
+            else:
+                text.append(f'<text x="{legend_x+18}" y="{yy:.1f}" font-size="9.5" fill="#4b5563">{safe}</text>')
+                text.append(f'<text x="{width-18}" y="{yy:.1f}" text-anchor="end" font-size="9" font-weight="700" fill="{colors[i % len(colors)]}">{pct:.1f}%</text>')
     else:
         margin_l, margin_r, margin_t, margin_b = 58, 24, 34, 48
         plot_w = width - margin_l - margin_r
@@ -3430,8 +3458,8 @@ def _svg_chart_from_config(config: dict, width: int = 760, height: int = 300) ->
     return (
         '<div class="gg-pdf-chart-fallback">'
         + title_html
-        + f'<svg xmlns="http://www.w3.org/2000/svg" width="760" height="300" viewBox="0 0 760 300" preserveAspectRatio="xMidYMid meet" role="img" aria-label="chart">'
-        + '<rect x="0" y="0" width="760" height="300" fill="#ffffff"/>'
+        + f'<svg xmlns="http://www.w3.org/2000/svg" width="760" height="344" viewBox="0 0 760 344" preserveAspectRatio="xMidYMid meet" role="img" aria-label="chart">'
+        + '<rect x="0" y="0" width="760" height="344" fill="#ffffff"/>'
         + "".join(grid + marks + text)
         + '</svg></div>'
     )
@@ -3492,6 +3520,20 @@ def _replace_chart_runtime_with_svg(html_doc: str, rasterize: bool = False) -> s
         '',
         html_doc,
         count=1,
+    )
+    # If a chart registration was malformed or intentionally skipped, do not
+    # leave its original canvas/card shell behind as an empty white rectangle.
+    html_doc = _re.sub(
+        r'<div class="gg-chart-canvas-box">\s*<canvas[^>]*>\s*</canvas>\s*</div>',
+        '',
+        html_doc,
+        flags=_re.IGNORECASE | _re.DOTALL,
+    )
+    html_doc = _re.sub(
+        r'<div class="gg-chart-wrap"[^>]*>\s*(?:<div class="gg-chart-title">.*?</div>\s*)?</div>',
+        '',
+        html_doc,
+        flags=_re.IGNORECASE | _re.DOTALL,
     )
     return html_doc
 
@@ -3602,10 +3644,16 @@ def _strip_non_printing_runtime(html_doc: str, theme: dict | None = None, presen
     # scale, shape, card treatment, section rules and section structure while
     # avoiding layout constructs that can become disproportionately expensive
     # for long documents on small Render instances.
-    two_col_css = "column-count: 1;" if fast_mode else "column-count: 2; column-gap: 14mm;"
-    metric_css = "display: block;" if fast_mode else "display: grid; grid-template-columns: repeat(3, 1fr);"
-    risk_css = "display: block;" if fast_mode else "display: grid; grid-template-columns: repeat(2, 1fr);"
-    source_css = "grid-template-columns: 1fr;"
+    # Keep composition decisions with the presentation planner. fast_mode is only
+    # a rendering/performance switch (e.g. rasterizing charts); it must never
+    # collapse model-selected section layouts or metric arrangements.
+    two_col_css = "column-count: 2; column-gap: 14mm;"
+    metric_css = "display: grid; grid-template-columns: repeat(3, minmax(0, 1fr));"
+    risk_css = "display: grid; grid-template-columns: repeat(2, minmax(0, 1fr));"
+    # Sources are an appendix primitive rather than a model-authored section
+    # layout: two compact columns make the long source manifest readable while
+    # avoiding the 18-page single-column source wall.
+    source_css = "grid-template-columns: repeat(2, minmax(0, 1fr));"
 
     # Banded/tinted background remains report-specific, but is expressed with
     # simple solid colors only so the print engine has no gradient/image work.
@@ -3691,9 +3739,9 @@ main {{ width: 100%; max-width: 178mm; margin: 0 auto; }}
 .gg-metric-change, .gg-stat-change {{ font-size: 8.5pt; color: {accent}; }}
 .gg-chart-wrap, .gg-table-wrap {{ margin: 10px 0; padding: 9px; background: {card_bg}; border: 1px solid {line}; border-radius: {radius}; break-inside: {"auto" if fast_mode else "avoid"}; }}
 .gg-chart-title {{ font-size: 10.5pt; font-weight: 700; color: {primary}; margin-bottom: 6px; }}
-.gg-chart-canvas-box {{ height: 220px; }}
-.gg-pdf-chart-fallback {{ width: 100%; max-width: 100%; overflow: hidden; break-inside: avoid; }}
-.gg-pdf-chart-fallback svg {{ display: block; width: 100%; height: auto; max-width: 100%; }}
+.gg-chart-canvas-box {{ height: auto; min-height: 0; overflow: visible; }}
+.gg-pdf-chart-fallback {{ width: 100%; max-width: 100%; overflow: visible; break-inside: avoid; display: block; }}
+.gg-pdf-chart-fallback svg {{ display: block; width: 100%; height: auto; max-width: 100%; overflow: visible; }}
 .gg-table-scroll {{ width: 100%; }}
 .gg-table {{ width: 100%; border-collapse: collapse; table-layout: fixed; font-size: 8.8pt; }}
 .gg-table th {{ background: {primary}; color: #FFFFFF; font-weight: 700; padding: 6px; border: 1px solid {line}; }}
