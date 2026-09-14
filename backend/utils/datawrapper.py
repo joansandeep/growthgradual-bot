@@ -495,8 +495,20 @@ async def publish_chart(client: httpx.AsyncClient, spec: dict) -> dict | None:
 
         metadata: dict = {
             "describe": {
-                "source-name": "Growth Gradual",
-                "source-url": "https://growth-gradual.com",
+                # Was hardcoded to "Growth Gradual" / growth-gradual.com for
+                # every single chart and table regardless of where the
+                # underlying numbers actually came from — meaning a table of
+                # RBI data, a Screener.in fundamentals chart, and a news
+                # article's figures were ALL visibly credited to Growth
+                # Gradual itself in the published chart's footer. That's not
+                # a missing attribution, it's an actively wrong one. Now uses
+                # whatever real source the report pipeline attached to this
+                # spec (see report.py's chart-source instructions), and only
+                # falls back to Growth Gradual for genuinely self-computed
+                # content (e.g. a derived ratio with no single external
+                # source to name).
+                "source-name": spec.get("source") or spec.get("sourceName") or "Growth Gradual",
+                "source-url": spec.get("sourceUrl") or spec.get("source_url") or "https://growth-gradual.com",
                 # Bar/column/line charts on Datawrapper have no literal
                 # axis-title text option at all (that's a Datawrapper
                 # platform limitation, confirmed on their own Academy docs —

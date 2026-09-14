@@ -293,7 +293,7 @@ const FEEDS: Array<{ url: string; backups?: string[]; source: string; category: 
   { url: 'https://news.google.com/rss/search?q=seeking+alpha+india+stocks+investing&hl=en-IN&gl=IN&ceid=IN:en',
     source: 'Seeking Alpha', category: 'stocks', tag: 'Analysis' },
 
-  // ── BROKERAGE EDUCATION ─────────────────────────────────────────────────
+  // ── WEALTH & INVESTMENT EDUCATION ───────────────────────────────────────
   { url: 'https://news.google.com/rss/search?q=zerodha+varsity+investing+india+stocks&hl=en-IN&gl=IN&ceid=IN:en',
     source: 'Zerodha Varsity', category: 'stocks', tag: 'Education' },
   { url: 'https://news.google.com/rss/search?q=groww+india+mutual+fund+stocks&hl=en-IN&gl=IN&ceid=IN:en',
@@ -303,15 +303,15 @@ const FEEDS: Array<{ url: string; backups?: string[]; source: string; category: 
   { url: 'https://news.google.com/rss/search?q=angel+one+india+stocks+broking&hl=en-IN&gl=IN&ceid=IN:en',
     source: 'Angel One Knowledge Center', category: 'stocks', tag: 'Education' },
   { url: 'https://news.google.com/rss/search?q=kotak+securities+india+stocks+research&hl=en-IN&gl=IN&ceid=IN:en',
-    source: 'Kotak Securities Research', category: 'stocks', tag: 'Brokerage' },
+    source: 'Kotak Securities Research', category: 'stocks', tag: 'Research' },
   { url: 'https://news.google.com/rss/search?q=HDFC+securities+india+stocks+research&hl=en-IN&gl=IN&ceid=IN:en',
-    source: 'HDFC Securities', category: 'stocks', tag: 'Brokerage' },
+    source: 'HDFC Securities', category: 'stocks', tag: 'Research' },
   { url: 'https://news.google.com/rss/search?q=motilal+oswal+india+stocks+research&hl=en-IN&gl=IN&ceid=IN:en',
-    source: 'Motilal Oswal', category: 'stocks', tag: 'Brokerage' },
+    source: 'Motilal Oswal', category: 'stocks', tag: 'Research' },
   { url: 'https://news.google.com/rss/search?q=sharekhan+india+stocks+research&hl=en-IN&gl=IN&ceid=IN:en',
-    source: 'Sharekhan Research', category: 'stocks', tag: 'Brokerage' },
+    source: 'Sharekhan Research', category: 'stocks', tag: 'Research' },
   { url: 'https://news.google.com/rss/search?q=ICICI+direct+india+stocks+research&hl=en-IN&gl=IN&ceid=IN:en',
-    source: 'ICICI Direct', category: 'stocks', tag: 'Brokerage' },
+    source: 'ICICI Direct', category: 'stocks', tag: 'Research' },
 
   // ── GLOBAL MACRO & DATA ──────────────────────────────────────────────────
   { url: 'https://news.google.com/rss/search?q=FRED+economic+data+US+interest+rate&hl=en-IN&gl=IN&ceid=IN:en',

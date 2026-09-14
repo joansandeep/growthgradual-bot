@@ -658,7 +658,8 @@ def _dataclass_to_jsonable(obj: Any) -> Any:
 
 @dataclass
 class CoverSpec:
-    enabled: bool = True
+    # Presentation is query-driven; a cover is optional and must be explicitly selected by the planner.
+    enabled: bool = False
     title: str = ""
     subtitle: str = ""
     treatment: TitleTreatment = TitleTreatment.CLASSIC
@@ -682,7 +683,8 @@ class CoverSpec:
 
 @dataclass
 class ExecutiveSummarySpec:
-    placement: ExecutiveSummaryPlacement = ExecutiveSummaryPlacement.AFTER_COVER
+    # No mandatory executive summary: the planner decides whether this shape belongs.
+    placement: ExecutiveSummaryPlacement = ExecutiveSummaryPlacement.NONE
     heading: str = "Executive Summary"
     body: str = ""
     key_metrics: List[MetricItem] = field(default_factory=list)
@@ -700,12 +702,12 @@ class ExecutiveSummarySpec:
             placement=_coerce_enum(
                 ExecutiveSummaryPlacement,
                 data.get("placement"),
-                ExecutiveSummaryPlacement.AFTER_COVER,
+                ExecutiveSummaryPlacement.NONE,
                 warnings,
                 "executive_summary.placement",
             ),
             heading=clean_text(
-                data.get("heading"), default="Executive Summary", warnings=warnings,
+                data.get("heading"), default="", warnings=warnings,
                 field_name="executive_summary.heading", max_len=MAX_SHORT_TEXT_LEN,
             ),
             body=clean_text(data.get("body"), warnings=warnings, field_name="executive_summary.body"),
@@ -1029,7 +1031,7 @@ class ReportPresentationSpec:
             seen_ids.add(s.id)
 
         if not sections:
-            warnings.append("sections: none provided/valid; report will render with only cover/executive summary")
+            warnings.append("sections: none provided/valid; renderer will use only content-derived fallback structure")
 
         spec = ReportPresentationSpec(
             domain=domain,
@@ -1129,84 +1131,22 @@ def _validate_block_no_markup(block: Any) -> bool:
 
 
 def default_spec_for_domain(domain: Union[ReportDomain, str]) -> ReportPresentationSpec:
-    """Return a minimal, valid starting-point spec for a given domain.
+    """Return a neutral presentation shell, never a domain report template.
 
-    This is a convenience helper only -- it is NOT used by any planner or
-    renderer in this step, and callers are free to build entirely custom
-    specs via ``ReportPresentationSpec.from_llm_output``.
+    The report planner owns substantive structure. This helper exists only for
+    legacy callers that need a valid renderer-independent shell. It deliberately
+    contains no domain-specific sections, no mandatory cover, and no summary.
     """
     warnings: List[str] = []
     domain_enum = _coerce_enum(ReportDomain, domain, ReportDomain.GENERIC, warnings, "domain")
-
-    presets: Dict[ReportDomain, Dict[str, Any]] = {
-        ReportDomain.FINANCIAL: {
-            "cover": {"treatment": TitleTreatment.DATA_DRIVEN.value},
-            "executive_summary": {"placement": ExecutiveSummaryPlacement.AFTER_COVER.value},
-            "sections": [
-                {"id": "metrics", "title": "Key Metrics", "section_type": SectionType.METRICS_DASHBOARD.value,
-                 "layout": LayoutVariant.GRID.value, "order": 0},
-                {"id": "financials", "title": "Financial Performance", "section_type": SectionType.FINANCIALS.value,
-                 "layout": LayoutVariant.TWO_COLUMN.value, "order": 1},
-                {"id": "risks", "title": "Risk Factors", "section_type": SectionType.RISK_ASSESSMENT.value, "order": 2},
-            ],
-            "source_appendix": {"placement": SourcePlacement.END_OF_REPORT.value},
-        },
-        ReportDomain.REGULATORY: {
-            "cover": {"treatment": TitleTreatment.CLASSIC.value},
-            "executive_summary": {"placement": ExecutiveSummaryPlacement.TOP_OF_BODY.value},
-            "sections": [
-                {"id": "compliance", "title": "Compliance Overview", "section_type": SectionType.COMPLIANCE.value, "order": 0},
-                {"id": "findings", "title": "Findings", "section_type": SectionType.FINDINGS.value, "order": 1},
-                {"id": "appendix", "title": "Appendix", "section_type": SectionType.APPENDIX.value, "order": 2},
-            ],
-            "source_appendix": {"placement": SourcePlacement.APPENDIX.value, "include_appendix": True},
-        },
-        ReportDomain.SCIENTIFIC: {
-            "cover": {"treatment": TitleTreatment.MINIMAL.value},
-            "executive_summary": {"placement": ExecutiveSummaryPlacement.TOP_OF_BODY.value},
-            "sections": [
-                {"id": "methodology", "title": "Methodology", "section_type": SectionType.METHODOLOGY.value, "order": 0},
-                {"id": "findings", "title": "Findings", "section_type": SectionType.FINDINGS.value, "order": 1},
-                {"id": "sources", "title": "References", "section_type": SectionType.SOURCES.value, "order": 2},
-            ],
-            "source_appendix": {"placement": SourcePlacement.INLINE_FOOTNOTES.value},
-        },
-        ReportDomain.COMPANY_ANALYSIS: {
-            "cover": {"treatment": TitleTreatment.BOLD_BANNER.value},
-            "sections": [
-                {"id": "overview", "title": "Company Overview", "section_type": SectionType.OVERVIEW.value, "order": 0},
-                {"id": "metrics", "title": "Key Metrics", "section_type": SectionType.METRICS_DASHBOARD.value,
-                 "layout": LayoutVariant.GRID.value, "order": 1},
-                {"id": "narrative", "title": "Analysis", "section_type": SectionType.NARRATIVE.value, "order": 2},
-                {"id": "recommendations", "title": "Recommendations", "section_type": SectionType.RECOMMENDATIONS.value, "order": 3},
-            ],
-        },
-        ReportDomain.MARKET_NEWS: {
-            "cover": {"treatment": TitleTreatment.BOLD_BANNER.value},
-            "executive_summary": {"placement": ExecutiveSummaryPlacement.TOP_OF_BODY.value},
-            "sections": [
-                {"id": "market_context", "title": "Market Context", "section_type": SectionType.MARKET_CONTEXT.value, "order": 0},
-                {"id": "news", "title": "News Digest", "section_type": SectionType.NEWS_DIGEST.value, "order": 1},
-                {"id": "timeline", "title": "Timeline", "section_type": SectionType.TIMELINE.value, "order": 2},
-            ],
-        },
-        ReportDomain.COMPARISON: {
-            "cover": {"treatment": TitleTreatment.CLASSIC.value},
-            "sections": [
-                {"id": "comparison", "title": "Comparison", "section_type": SectionType.COMPARISON.value,
-                 "layout": LayoutVariant.TWO_COLUMN.value, "order": 0},
-                {"id": "recommendations", "title": "Recommendation", "section_type": SectionType.RECOMMENDATIONS.value, "order": 1},
-            ],
-        },
-        ReportDomain.GENERIC: {
-            "sections": [
-                {"id": "overview", "title": "Overview", "section_type": SectionType.OVERVIEW.value, "order": 0},
-            ],
-        },
+    shell = {
+        "domain": domain_enum.value,
+        "cover": {"enabled": False, "title": "", "subtitle": "", "show_date": False, "show_author": False},
+        "executive_summary": {"placement": ExecutiveSummaryPlacement.NONE.value, "heading": "", "key_metrics": []},
+        "sections": [],
+        "source_appendix": {"placement": SourcePlacement.END_OF_REPORT.value, "group_by_section": False, "include_appendix": True},
+        "default_layout": LayoutVariant.SINGLE_COLUMN.value,
+        "default_density": ContentDensity.STANDARD.value,
     }
-
-    preset = presets.get(domain_enum, presets[ReportDomain.GENERIC])
-    preset = dict(preset)
-    preset["domain"] = domain_enum.value
-    spec, _ = ReportPresentationSpec.from_llm_output(preset)
+    spec, _ = ReportPresentationSpec.from_llm_output(shell)
     return spec

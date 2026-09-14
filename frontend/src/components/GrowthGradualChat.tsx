@@ -6,7 +6,7 @@ import { supabase } from '@/lib/supabaseClient';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 interface Source { title: string; url: string; snippet: string; }
-interface ReportSource { title: string; url?: string; publisher?: string; kind?: string; }
+interface ReportSource { id?: string; title: string; url?: string; publisher?: string; kind?: string; }
 interface ChartDataPoint { label: string; value: number; }
 interface ChartSeries { name: string; data: ChartDataPoint[]; color?: string; }
 /** Route a Tavily/third-party image URL through our server-side proxy to bypass hotlink protection. */
@@ -164,7 +164,7 @@ function saveConversations(convs: Conversation[]) {
 }
 
 // ─── Markdown renderer ────────────────────────────────────────────────────────
-function renderMd(text: string): string {
+function renderMd(text: string, citationSources: ReportSource[] = []): string {
   // Escape raw report/source text before creating our own renderer markup.
   // LLM output is untrusted input; raw HTML/JS must never reach
   // dangerouslySetInnerHTML.
@@ -172,6 +172,16 @@ function renderMd(text: string): string {
     .replace(/&/g, '&amp;')
     .replace(/</g, '&lt;')
     .replace(/>/g, '&gt;')
+    // Turn grounded [S#] research citations into links to the exact source
+    // returned with the report. Unknown IDs remain plain text.
+    .replace(/\[S(\d+)\]/g, (_m, n) => {
+      const source = citationSources.find(s => String(s.id ?? '') === `S${n}`);
+      if (!source) return `[S${n}]`;
+      const safeTitle = (source.title || `Source S${n}`).replace(/\"/g, '&quot;');
+      if (!source.url) return `<span class=\"md-citation\" title=\"${safeTitle}\">[S${n}]</span>`;
+      const safeUrl = source.url.replace(/&/g, '&amp;').replace(/\"/g, '&quot;');
+      return `<a class=\"md-citation\" href=\"${safeUrl}\" target=\"_blank\" rel=\"noopener noreferrer\" title=\"${safeTitle}\">[S${n}]</a>`;
+    })
     // Normalize line endings, strip trailing spaces, and collapse runs of 3+
     // blank lines (common in LLM output) down to a single blank line so we
     // don't end up stacking extra empty paragraphs / gaps before tables etc.
@@ -182,6 +192,14 @@ function renderMd(text: string): string {
     .replace(/^### (.+)$/gm, '<h3 class="md-h3">$1</h3>')
     .replace(/^## (.+)$/gm,  '<h2 class="md-h2">$1</h2>')
     .replace(/^# (.+)$/gm,   '<h1 class="md-h1">$1</h1>')
+    // Divider lines: models reach for various repeated-character breaks
+    // (---, ***, ___, ///, ===, ~~~) as a section separator. None of these
+    // were ever converted to an <hr/> here, so they fell straight through
+    // to the generic paragraph text below and showed up literally in the
+    // chat — most visibly as a bare "///" line. Require 3+ repeats of the
+    // SAME character on an otherwise-empty line so real text containing a
+    // slash (dates, "and/or", fractions) is never affected.
+    .replace(/^[ \t]*([-*_/=~])\1{2,}[ \t]*$/gm, '<hr class="md-hr"/>')
     .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
     .replace(/\*(.+?)\*/g, '<em>$1</em>')
     .replace(/`([^`]+)`/g, '<code class="md-code">$1</code>')
@@ -502,12 +520,12 @@ function PieChart({ spec }: { spec: ChartSpec }) {
         <svg width="136" height="136" viewBox="0 0 136 136">
           {slices.map((s,i) => <path key={i} d={s.path} fill={s.color} stroke="#fff" strokeWidth="1.5" opacity=".9"/>)}
         </svg>
-        <div style={{ display:'flex', flexDirection:'column', gap:5, minWidth:0, flex:1 }}>
+        <div style={{ display:'flex', flexDirection:'column', gap:5 }}>
           {slices.map((s,i) => (
             <div key={i} style={{ display:'flex', alignItems:'center', gap:6, fontSize:11, fontFamily:'DM Sans,sans-serif' }}>
               <span style={{ width:9, height:9, borderRadius:2, background:s.color, flexShrink:0, display:'inline-block' }}/>
-              <span style={{ color:'#4b5680', minWidth:0, overflowWrap:'anywhere' }}>{s.label}</span>
-              <span style={{ color:s.color, fontWeight:700, fontFamily:'DM Mono,monospace', marginLeft:'auto', paddingLeft:8, flexShrink:0 }}>{s.pct}%</span>
+              <span style={{ color:'#4b5680' }}>{s.label}</span>
+              <span style={{ color:s.color, fontWeight:700, fontFamily:'DM Mono,monospace', marginLeft:'auto', paddingLeft:8 }}>{s.pct}%</span>
             </div>
           ))}
         </div>
@@ -908,6 +926,44 @@ function ReportPanel({ msg, question, hasPriorContext, onGenerate }: { msg: Mess
     } finally { setHtmlLoading(false); }
   };
 
+  const openDocumentPreview = async () => {
+    if (!rd || !rd.report || !rd.report.trim() || htmlLoading) return;
+    // Open synchronously so popup blockers do not treat the async fetch as an
+    // unsolicited popup. The returned HTML is the same presentation renderer
+    // used by the downloadable report, including charts and clickable sources.
+    const preview = window.open('', '_blank');
+    if (!preview) {
+      setArtifactError('Your browser blocked the document preview popup. Please allow popups for Growth Gradual and retry.');
+      return;
+    }
+    preview.document.write('<p style="font-family:system-ui;padding:32px">Preparing research document…</p>');
+    setHtmlLoading(true);
+    setArtifactError(null);
+    try {
+      const res = await fetch('/api/chat/report/html', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ report: rd.report, title: rd.title, charts: rd.charts, images: rd.images ?? [], question, keyStats: rd.keyStats, summary: rd.summary, fileImages: rd.fileImages ?? [], sources: rd.sources ?? [], theme: rd.theme ?? null, presentation: rd.presentation ?? null }),
+      });
+      if (!res.ok) throw new Error(`Document generation failed (HTTP ${res.status})`);
+      const contentType = (res.headers.get('Content-Type') ?? '').toLowerCase();
+      if (!contentType.includes('text/html')) throw new Error('The server returned an invalid document.');
+      const htmlText = await res.text();
+      if (!htmlText.trim()) throw new Error('The generated document was empty.');
+      preview.document.open();
+      preview.document.write(htmlText);
+      preview.document.close();
+    } catch (e) {
+      console.error('[openDocumentPreview]', e);
+      preview.document.open();
+      preview.document.write('<p style="font-family:system-ui;padding:32px;color:#b42318">Could not prepare the research document. Please close this tab and retry.</p>');
+      preview.document.close();
+      setArtifactError(e instanceof Error ? e.message : 'Could not open the document preview.');
+    } finally {
+      setHtmlLoading(false);
+    }
+  };
+
   // The backend recommends "html" only when the question itself asked for
   // something a static PDF structurally can't do (animation/interactive/
   // motion/etc — see routes/report.py's _WANTS_INTERACTIVE_RE). Everything
@@ -1019,6 +1075,10 @@ function ReportPanel({ msg, question, hasPriorContext, onGenerate }: { msg: Mess
                 <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></svg>
                 {open ? 'Hide report' : 'Show report'}
               </button>
+              <button className="report-btn" onClick={openDocumentPreview} disabled={htmlLoading} title="Open the fully rendered research document with its presentation, charts and clickable citations">
+                <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><path d="M8 13h8M8 17h5"/></svg>
+                {htmlLoading ? 'Opening document…' : 'View document'}
+              </button>
               <button className="report-btn" onClick={wantsHtml ? downloadHtml : downloadPdf} disabled={wantsHtml ? htmlLoading : pdfLoading}
                 style={{ background: (wantsHtml ? htmlLoading : pdfLoading) ? '#166534' : '#15803d', opacity: (wantsHtml ? htmlLoading : pdfLoading) ? 0.8 : 1 }}>
                 {wantsHtml
@@ -1064,7 +1124,7 @@ function ReportPanel({ msg, question, hasPriorContext, onGenerate }: { msg: Mess
                   const elements: React.ReactNode[] = [];
                   for (let i = 0; i < parts.length; i += 3) {
                     const text = parts[i];
-                    if (text && text.trim()) elements.push(<div key={`${prefix}-t-${i}`} dangerouslySetInnerHTML={{ __html: renderMd(text) }} />);
+                    if (text && text.trim()) elements.push(<div key={`${prefix}-t-${i}`} dangerouslySetInnerHTML={{ __html: renderMd(text, rd.sources ?? []) }} />);
                     const kind = parts[i + 1];
                     const num = parts[i + 2];
                     if (kind && num !== undefined) {
@@ -1149,7 +1209,7 @@ function ReportPanel({ msg, question, hasPriorContext, onGenerate }: { msg: Mess
                   <ol>
                     {rd.sources?.map((source, index) => (
                       <li key={`${source.url || source.title}-${index}`}>
-                        <div className="report-source-title">{source.title}</div>
+                        <div className="report-source-title"><span className="report-source-id">{source.id || `S${index + 1}`}</span>{source.title}</div>
                         <div className="report-source-meta">{source.publisher || source.kind || 'Source'}{source.kind && source.publisher ? ` · ${source.kind}` : ''}</div>
                         {source.url
                           ? <a href={source.url} target="_blank" rel="noopener noreferrer">Open source ↗</a>
@@ -2745,6 +2805,7 @@ export default function GrowthGradualChat() {
         .msg-text .md-p:last-child { margin-bottom: 0; }
         .msg-text .md-h1,.msg-text .md-h2,.msg-text .md-h3 { font-family: 'Playfair Display',serif; color: #1a1f4e; margin: 11px 0 5px; }
         .msg-text .md-h1{font-size:clamp(14px,1.5vw,17px);} .msg-text .md-h2{font-size:clamp(13px,1.3vw,15px);} .msg-text .md-h3{font-size:clamp(12px,1.2vw,13.5px);}
+        .msg-text .md-hr { border: none; border-top: 1px solid #dce1ed; margin: 12px 0; }
         .msg-text .md-ul { margin: 4px 0 8px 16px; padding: 0; list-style: disc; }
         .msg-text .md-li { margin: 3px 0; }
         .msg-text .md-code { background: rgba(26,31,78,.06); padding: 1px 6px; border-radius: 4px; font-family: 'DM Mono',monospace; font-size: clamp(11px,1vw,12.5px); }
@@ -2816,6 +2877,7 @@ export default function GrowthGradualChat() {
         .report-content .md-p{margin:0 0 10px;text-align:justify;}
         .report-content .md-h1,.report-content .md-h2,.report-content .md-h3{font-family:'Playfair Display',serif;color:#1a1f4e;margin:14px 0 6px;}
         .report-content .md-h1{font-size:clamp(15px,1.6vw,18px);} .report-content .md-h2{font-size:clamp(13px,1.3vw,15px);} .report-content .md-h3{font-size:clamp(12px,1.1vw,13px);}
+        .report-content .md-hr { border: none; border-top: 1px solid #dce1ed; margin: 14px 0; }
         .report-content .md-ul{margin:4px 0 10px 16px;list-style:disc;}
         .report-content .md-li{margin:3px 0;text-align:justify;}
         .report-content .md-table{border-collapse:collapse;margin:10px 0;width:100%;font-size:clamp(11px,.95vw,12.5px);display:block;overflow-x:auto;}
@@ -2826,10 +2888,13 @@ export default function GrowthGradualChat() {
         .report-sources h2{font:700 clamp(13px,1.3vw,16px) 'Playfair Display',serif;color:#1a1f4e;margin:0 0 4px;}
         .report-sources h2 span{display:inline-grid;place-items:center;min-width:21px;height:21px;padding:0 6px;border-radius:999px;background:#e8efff;color:#0d4f3c;font:700 11px 'DM Sans',sans-serif;vertical-align:middle;}
         .report-sources>p{margin:0 0 10px;color:#68708c;font-size:11px;}
-        .report-sources ol{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:7px;margin:0;padding:0;list-style:none;counter-reset:source;}
+        .report-sources ol{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:7px;margin:0;padding:0;list-style:none;counter-reset:source;}
         .report-sources li{position:relative;min-width:0;padding:9px 10px 9px 32px;border:1px solid #e2e6f0;border-radius:8px;background:#fff;counter-increment:source;}
         .report-sources li::before{content:counter(source);position:absolute;left:9px;top:10px;width:16px;height:16px;border-radius:50%;display:grid;place-items:center;background:#0d4f3c;color:#fff;font:700 9px 'DM Sans',sans-serif;}
         .report-source-title{font-size:11px;font-weight:700;line-height:1.35;color:#1a1f4e;overflow-wrap:anywhere;}
+        .report-source-id{display:inline-grid;place-items:center;min-width:24px;height:17px;margin-right:6px;padding:0 5px;border-radius:5px;background:#eef3ff;color:#1a1f4e;font:700 9px 'DM Sans',sans-serif;vertical-align:1px;}
+        .md-citation{font-weight:700;color:#0d4f3c;text-decoration:none;border-bottom:1px dotted currentColor;margin-left:2px;white-space:nowrap;}
+        .md-citation:hover{text-decoration:underline;}
         .report-source-meta{margin-top:2px;font-size:9.5px;color:#7b849f;overflow-wrap:anywhere;}
         .report-sources a,.report-source-provided{display:block;margin-top:4px;font-size:10px;color:#0d4f3c;text-decoration:none;overflow-wrap:anywhere;}
         .report-sources a:hover{text-decoration:underline;}
@@ -2854,20 +2919,20 @@ export default function GrowthGradualChat() {
 
         /* Charts */
         .charts-grid { display:grid;grid-template-columns:repeat(auto-fit,minmax(min(240px,100%),1fr));gap:clamp(8px,1.2vw,16px);margin-bottom:clamp(10px,1.5vh,20px); }
-        .key-stats-row { display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:10px;margin:0 0 clamp(12px,1.5vh,18px);align-items:stretch; }
+        .key-stats-row { display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px;margin:0 0 clamp(12px,1.5vh,18px);align-items:stretch; }
         .key-stats--fallback { opacity:.96; }
-        .key-stats--scientific { grid-template-columns:repeat(auto-fit,minmax(170px,1fr)); }
-        .key-stats--regulatory { grid-template-columns:repeat(auto-fit,minmax(180px,1fr)); }
-        .key-stats--comparison { grid-template-columns:repeat(auto-fit,minmax(170px,1fr)); }
+        .key-stats--scientific { grid-template-columns:repeat(auto-fit,minmax(150px,1fr)); }
+        .key-stats--regulatory { grid-template-columns:repeat(auto-fit,minmax(170px,1fr)); }
+        .key-stats--comparison { grid-template-columns:repeat(auto-fit,minmax(145px,1fr)); }
         .key-stat-card {
           background:#fff;border:1px solid #e2e6f0;border-radius:10px;
-          padding:clamp(9px,1.2vh,14px) clamp(10px,1.2vw,16px);min-width:0;min-height:82px;
+          padding:clamp(9px,1.2vh,14px) clamp(10px,1.2vw,16px);min-width:0;min-height:78px;
           display:flex;flex-direction:column;justify-content:center;overflow:hidden;
           transition:box-shadow .2s cubic-bezier(.4,0,.2,1), transform .2s cubic-bezier(.4,0,.2,1), border-color .2s cubic-bezier(.4,0,.2,1);
         }
         .key-stat-card:hover { box-shadow:0 6px 18px rgba(26,31,78,.09); border-color:#d5dbe8; transform:translateY(-1px); }
-        .key-stat-label { font-size:clamp(8.5px,.78vw,10px);text-transform:uppercase;letter-spacing:.06em;color:#8b93b5;margin-bottom:5px;line-height:1.25;overflow-wrap:anywhere;min-width:0; }
-        .key-stat-value { font-size:clamp(13px,1.35vw,18px);font-weight:700;color:#1a1f4e;line-height:1.12;overflow-wrap:anywhere;word-break:break-word;min-width:0; }
+        .key-stat-label { font-size:clamp(8.5px,.78vw,10px);text-transform:uppercase;letter-spacing:.06em;color:#8b93b5;margin-bottom:5px;line-height:1.25;overflow-wrap:anywhere; }
+        .key-stat-value { font-size:clamp(13px,1.35vw,18px);font-weight:700;color:#1a1f4e;line-height:1.12;overflow-wrap:anywhere;word-break:break-word; }
         .key-stat-change { font-size:clamp(9.5px,.82vw,11.5px);margin-top:5px;font-weight:600;line-height:1.15;overflow-wrap:anywhere; }
         .key-stat-change.pos { color:#16a34a; } .key-stat-change.neg { color:#dc2626; }
         .chart-wrap {
@@ -3019,10 +3084,6 @@ export default function GrowthGradualChat() {
         }
 
         /* ── Small phone (≤ 480px) ──────────────────────────────────────── */
-        @media (max-width: 900px) {
-          .report-sources ol { grid-template-columns: 1fr; }
-        }
-
         @media (max-width: 480px) {
           .chat-shell { height: calc(100dvh - 108px); border-radius: 8px; }
           .chat-topbar { padding: 7px 10px; gap: 6px; }
@@ -3354,7 +3415,7 @@ export default function GrowthGradualChat() {
                                 <div className="msg-text">
                                   {parts.map((p, pi) =>
                                     p.type === 'text'
-                                      ? <div key={pi} dangerouslySetInnerHTML={{ __html: renderMd(p.content) }}/>
+                                      ? <div key={pi} dangerouslySetInnerHTML={{ __html: renderMd(p.content, msg.sources ?? []) }}/>
                                       : <div key={pi} className="inline-chart-wrap"><ChartBlock spec={p.spec}/></div>
                                   )}
                                 </div>
