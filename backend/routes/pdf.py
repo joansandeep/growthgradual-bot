@@ -3699,7 +3699,7 @@ main {{ width: 100%; max-width: 178mm; margin: 0 auto; }}
 .gg-section--critical, .gg-section--high {{ border-left: 4px solid {accent}; }}
 .gg-section-body {{ min-width: 0; }}
 .gg-section-body--two_column {{ {two_col_css} }}
-.gg-section-body--two_column > * {{ break-inside: avoid-column; }}
+.gg-section-body--two_column > * {{ break-inside: avoid; }}
 .gg-block, .gg-list, p {{ margin-top: 0; margin-bottom: 8px; }}
 .gg-list {{ padding-left: 18px; }}
 .gg-divider {{ border-top: 1px solid {line}; margin: 10px 0; }}
@@ -3973,15 +3973,36 @@ def build_pdf(report: str, title: str, question: str, summary: str,
         attempts.append(("chromium", _pdf_with_chromium))
 
     errors = []
-    for engine, renderer in attempts:
-        try:
-            t_engine = time.perf_counter()
-            pdf_bytes = renderer(html_doc)
-            log.info("PDF: %s render succeeded in %.1fs", engine, time.perf_counter() - t_engine)
-            return _trim_trailing_blank_pages(pdf_bytes)
-        except Exception as exc:
-            errors.append(f"{engine}={exc}")
-            log.warning("PDF: %s render failed: %s", engine, exc)
+    profiles = [("dynamic", html_doc)]
+    # If a presentation-selected layout hits a browser/WeasyPrint edge case,
+    # retry the exact same report with a conservative print profile. This does
+    # NOT change the model-generated section structure or content; it only
+    # simplifies print-only layout primitives (e.g. CSS multi-column flow).
+    # This is especially important for long reports containing nested cards,
+    # tables and mixed layouts.
+    if not fast_print:
+        safe_print_html = _strip_non_printing_runtime(
+            _replace_chart_runtime_with_svg(
+                build_html_report(
+                    report or "", title or "", question or "Research Report", summary or "",
+                    key_stats or [], charts or [], images, safe_theme, sources, presentation,
+                ),
+                rasterize=False,
+            ),
+            safe_theme, presentation, fast_mode=True,
+        )
+        profiles.append(("conservative", safe_print_html))
+
+    for profile_name, profile_html in profiles:
+        for engine, renderer in attempts:
+            try:
+                t_engine = time.perf_counter()
+                pdf_bytes = renderer(profile_html)
+                log.info("PDF: %s/%s render succeeded in %.1fs", profile_name, engine, time.perf_counter() - t_engine)
+                return _trim_trailing_blank_pages(pdf_bytes)
+            except Exception as exc:
+                errors.append(f"{profile_name}:{engine}={exc}")
+                log.warning("PDF: %s/%s render failed: %s", profile_name, engine, exc)
 
     # Never silently revert to the fixed legacy renderer. The product contract
     # is presentation-driven PDF output; returning a clean error is safer than

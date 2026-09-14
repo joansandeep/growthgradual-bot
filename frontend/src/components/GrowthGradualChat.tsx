@@ -927,32 +927,41 @@ function ReportPanel({ msg, question, hasPriorContext, onGenerate }: { msg: Mess
   };
 
   const openDocumentPreview = async () => {
-    if (!rd || !rd.report || !rd.report.trim() || htmlLoading) return;
+    if (!rd || !rd.report || !rd.report.trim() || pdfLoading) return;
     // Open synchronously so popup blockers do not treat the async fetch as an
-    // unsolicited popup. The returned HTML is the same presentation renderer
-    // used by the downloadable report, including charts and clickable sources.
+    // unsolicited popup. The preview is the actual printable research document
+    // (PDF), not the renderer's HTML source. This guarantees that what the user
+    // sees in "View document" is the same paginated artifact they can download.
     const preview = window.open('', '_blank');
     if (!preview) {
       setArtifactError('Your browser blocked the document preview popup. Please allow popups for Growth Gradual and retry.');
       return;
     }
     preview.document.write('<p style="font-family:system-ui;padding:32px">Preparing research document…</p>');
-    setHtmlLoading(true);
+    setPdfLoading(true);
     setArtifactError(null);
     try {
-      const res = await fetch('/api/chat/report/html', {
+      const res = await fetch('/api/chat/report/pdf', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ report: rd.report, title: rd.title, charts: rd.charts, images: rd.images ?? [], question, keyStats: rd.keyStats, summary: rd.summary, fileImages: rd.fileImages ?? [], sources: rd.sources ?? [], theme: rd.theme ?? null, presentation: rd.presentation ?? null }),
       });
-      if (!res.ok) throw new Error(`Document generation failed (HTTP ${res.status})`);
+      if (!res.ok) {
+        let message = `Document generation failed (HTTP ${res.status}).`;
+        try {
+          const body = await res.json();
+          if (typeof body?.error === 'string' && body.error.trim()) message = body.error.slice(0, 500);
+        } catch { /* keep concise error */ }
+        throw new Error(message);
+      }
       const contentType = (res.headers.get('Content-Type') ?? '').toLowerCase();
-      if (!contentType.includes('text/html')) throw new Error('The server returned an invalid document.');
-      const htmlText = await res.text();
-      if (!htmlText.trim()) throw new Error('The generated document was empty.');
-      preview.document.open();
-      preview.document.write(htmlText);
-      preview.document.close();
+      if (!contentType.includes('application/pdf')) throw new Error('The document service returned an invalid PDF.');
+      const blob = await res.blob();
+      if (!blob.size) throw new Error('The generated document was empty.');
+      const url = URL.createObjectURL(blob);
+      preview.location.replace(url);
+      // Keep the object URL alive long enough for the new tab to load it.
+      setTimeout(() => URL.revokeObjectURL(url), 60_000);
     } catch (e) {
       console.error('[openDocumentPreview]', e);
       preview.document.open();
@@ -960,7 +969,7 @@ function ReportPanel({ msg, question, hasPriorContext, onGenerate }: { msg: Mess
       preview.document.close();
       setArtifactError(e instanceof Error ? e.message : 'Could not open the document preview.');
     } finally {
-      setHtmlLoading(false);
+      setPdfLoading(false);
     }
   };
 
@@ -1075,21 +1084,25 @@ function ReportPanel({ msg, question, hasPriorContext, onGenerate }: { msg: Mess
                 <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></svg>
                 {open ? 'Hide report' : 'Show report'}
               </button>
-              <button className="report-btn" onClick={openDocumentPreview} disabled={htmlLoading} title="Open the fully rendered research document with its presentation, charts and clickable citations">
+              <button className="report-btn" onClick={openDocumentPreview} disabled={pdfLoading} title="Open the fully rendered research document with its presentation, charts and clickable citations">
                 <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><path d="M8 13h8M8 17h5"/></svg>
-                {htmlLoading ? 'Opening document…' : 'View document'}
+                {pdfLoading ? 'Opening document…' : 'View document'}
               </button>
-              <button className="report-btn" onClick={wantsHtml ? downloadHtml : downloadPdf} disabled={wantsHtml ? htmlLoading : pdfLoading}
-                style={{ background: (wantsHtml ? htmlLoading : pdfLoading) ? '#166534' : '#15803d', opacity: (wantsHtml ? htmlLoading : pdfLoading) ? 0.8 : 1 }}>
-                {wantsHtml
-                  ? (htmlLoading
-                      ? <><span className="dots" style={{marginRight:4}}><i/><i/><i/></span>Building HTML…</>
-                      : <><svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>Download HTML</>)
-                  : (pdfLoading
-                      ? <><span className="dots" style={{marginRight:4}}><i/><i/><i/></span>Building PDF…</>
-                      : <><svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>Download PDF</>)
-                }
+              <button className="report-btn" onClick={downloadPdf} disabled={pdfLoading}
+                style={{ background: pdfLoading ? '#166534' : '#15803d', opacity: pdfLoading ? 0.8 : 1 }}>
+                {pdfLoading
+                  ? <><span className="dots" style={{marginRight:4}}><i/><i/><i/></span>Building PDF…</>
+                  : <><svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>Download PDF</>}
               </button>
+              {wantsHtml && (
+                <button className="report-btn" onClick={downloadHtml} disabled={htmlLoading}
+                  style={{ background: htmlLoading ? '#475569' : '#334155', opacity: htmlLoading ? 0.8 : 1 }}
+                  title="Download the interactive HTML version">
+                  {htmlLoading
+                    ? <><span className="dots" style={{marginRight:4}}><i/><i/><i/></span>Building HTML…</>
+                    : <>Download HTML</>}
+                </button>
+              )}
               <button className="report-btn" onClick={() => { setEmailResult(null); setEmailOpen(true); }}
                 style={{ background:'#6d28d9' }}>
                 <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round"><path d="M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z"/><polyline points="22,6 12,13 2,6"/></svg>
