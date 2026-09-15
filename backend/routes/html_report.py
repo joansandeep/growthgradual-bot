@@ -809,31 +809,7 @@ def _render_image_block(image: dict, idx: int) -> str:
 </figure>"""
 
 
-def _link_citations(rendered_html: str, sources: object) -> str:
-    """Turn grounded [S1]/[S2] markers into safe, clickable source badges.
-
-    Only IDs present in the canonical source manifest are linked; unknown IDs
-    remain visible as plain text so the renderer never invents provenance.
-    """
-    manifest = sources if isinstance(sources, list) else []
-    by_id = {str(x.get("id")): x for x in manifest if isinstance(x, dict) and x.get("id")}
-
-    def repl(match):
-        sid = f"S{match.group(1)}"
-        src = by_id.get(sid)
-        if not src:
-            return match.group(0)
-        title = html.escape(str(src.get("title") or sid), quote=True)
-        url = _safe_plain_url(src.get("url"))
-        label = html.escape(sid)
-        if url:
-            return f'<a class="gg-citation" href="{html.escape(url, quote=True)}" target="_blank" rel="noopener noreferrer" title="{title}">{label}</a>'
-        return f'<span class="gg-citation gg-citation--provided" title="{title}">{label}</span>'
-
-    return re.sub(r"\[S(\d+)\]", repl, rendered_html)
-
-
-def _markdown_to_html(md: str, charts: list, images: list, theme: dict | None = None, sources: object = None) -> str:
+def _markdown_to_html(md: str, charts: list, images: list, theme: dict | None = None) -> str:
     """Small safe Markdown renderer with native tables/charts/images."""
     lines = md.replace("\r\n", "\n").split("\n")
     out: list[str] = []
@@ -936,7 +912,7 @@ def _markdown_to_html(md: str, charts: list, images: list, theme: dict | None = 
         close_list(); para_buf.append(stripped); i += 1
 
     flush_para(); close_list()
-    return _link_citations("\n".join(out), sources)
+    return "\n".join(out)
 
 
 # ─────────────────────────────────────────────────────────────────────────
@@ -1135,19 +1111,6 @@ main {{ width: min(var(--content-max), calc(100% - 48px)); margin: 0 auto; paddi
 .gg-title {{ margin: 0 0 16px; font-size: 52px; line-height: 1.08; letter-spacing: -.025em; text-align: var(--title-align); }}
 .gg-summary {{ max-width: 72ch; margin: 0; font-size: 18px; }}
 .gg-date {{ margin-top: 18px; color: var(--muted); font-size: 13px; }}
-
-/* Document navigation / research map */
-.gg-toc {{ margin: 0 0 34px; padding: 20px 22px; border: 1px solid var(--rule); background: var(--paper-alt); border-radius: var(--radius); box-shadow: var(--shadow); }}
-.gg-toc__eyebrow {{ margin: 0 0 6px; color: var(--accent); font: 700 10px var(--font-heading); letter-spacing: .14em; text-transform: uppercase; }}
-.gg-toc__title {{ margin: 0 0 12px; font-size: 20px; }}
-.gg-toc__list {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 7px 24px; margin: 0; padding: 0; list-style: none; counter-reset: toc; }}
-.gg-toc__item {{ counter-increment: toc; }}
-.gg-toc__link {{ display: grid; grid-template-columns: 28px minmax(0,1fr); gap: 8px; align-items: center; padding: 8px 0; color: var(--ink); text-decoration: none; border-bottom: 1px solid color-mix(in srgb, var(--rule) 65%, transparent); }}
-.gg-toc__link::before {{ content: counter(toc, decimal-leading-zero); color: var(--accent); font: 700 10px var(--font-heading); }}
-.gg-toc__link:hover {{ color: var(--accent); }}
-.gg-citation {{ display: inline-flex; align-items: center; justify-content: center; min-width: 25px; height: 17px; margin-left: 3px; padding: 0 5px; border: 1px solid color-mix(in srgb, var(--accent) 50%, var(--rule)); border-radius: 999px; color: var(--accent); background: color-mix(in srgb, var(--accent) 8%, transparent); font: 700 9px var(--font-heading); line-height: 1; text-decoration: none; vertical-align: baseline; }}
-.gg-citation:hover {{ background: color-mix(in srgb, var(--accent) 16%, transparent); text-decoration: underline; }}
-.gg-citation--provided {{ cursor: help; }}
 
 .gg-summary-wrap {{ margin: 0 0 32px; }}
 .gg-summary-wrap--sidebar {{ display: grid; grid-template-columns: minmax(240px, .34fr) minmax(0, 1fr); gap: 28px; align-items: start; }}
@@ -1475,8 +1438,8 @@ def _fallback_presentation(report: str, title: str, summary: str, key_stats: lis
         planned = [{"id": "overview", "title": "Report", "section_type": "narrative", "order": 0, "blocks": []}]
     preset = {
         "domain": "generic",
-        "cover": {"enabled": False, "title": title or "Research Report", "subtitle": "", "treatment": "minimal", "show_date": False},
-        "executive_summary": {"placement": "none", "heading": "", "key_metrics": []},
+        "cover": {"enabled": True, "title": title or "Research Report", "subtitle": "", "treatment": "minimal", "show_date": True},
+        "executive_summary": {"placement": "after_cover" if summary else "none", "heading": "Executive Summary", "key_metrics": []},
         "sections": planned,
         "source_appendix": {"placement": "end_of_report", "group_by_section": False, "include_appendix": True},
         "default_layout": "single_column", "default_density": "standard",
@@ -1633,7 +1596,7 @@ def _render_chart_spec_block(block: dict, idx: int, theme: dict | None = None) -
     return _render_chart_block(chart, idx, theme)
 
 
-def _render_structured_blocks(blocks: list, charts: list, key_stats: list, theme: dict | None, chart_cursor: int, sources: object = None) -> tuple[str, int, bool]:
+def _render_structured_blocks(blocks: list, charts: list, key_stats: list, theme: dict | None, chart_cursor: int) -> tuple[str, int, bool]:
     rendered = []
     meaningful = False
     for raw in blocks or []:
@@ -1648,7 +1611,7 @@ def _render_structured_blocks(blocks: list, charts: list, key_stats: list, theme
             elif key_stats:
                 html_block = _render_key_stats(key_stats)
         elif kind == "prose" and raw.get("body"):
-            html_block = f'<div class="gg-block">{_markdown_to_html(str(raw.get("body")), charts, [], theme, sources)}</div>'
+            html_block = f'<div class="gg-block">{_markdown_to_html(str(raw.get("body")), charts, [], theme)}</div>'
         elif kind == "bullets":
             html_block = _render_bullets_block(raw)
         elif kind == "table":
@@ -1800,7 +1763,7 @@ def build_html_report(report: str, title: str, question: str, summary: str,
     summary_html = ""
     if exec_placement != "none" and exec_body:
         summary_cls = "gg-summary-wrap gg-summary-wrap--sidebar" if exec_placement == "sidebar" else "gg-summary-wrap--end" if exec_placement == "end_summary" else "gg-summary-wrap"
-        body = _markdown_to_html(exec_body, [], [], effective_theme, sources)
+        body = _markdown_to_html(exec_body, [], [], effective_theme)
         metrics = _render_metrics(exec_metrics)
         summary_html = f'<section class="{summary_cls}"><div class="gg-summary-card gg-summary-card--high"><h2 class="gg-summary-heading">{html.escape(str(exec_spec.get("heading") or "Executive Summary"))}</h2>{body}{metrics}</div></section>'
 
@@ -1814,14 +1777,14 @@ def build_html_report(report: str, title: str, question: str, summary: str,
         emphasis = str(plan.get("emphasis") or "normal")
         section_type = str(plan.get("section_type") or "narrative")
         body_raw = str(actual.get("body") or "").strip()
-        block_html, chart_cursor, blocks_meaningful = _render_structured_blocks(plan.get("blocks") or [], charts, key_stats, effective_theme, chart_cursor, sources)
+        block_html, chart_cursor, blocks_meaningful = _render_structured_blocks(plan.get("blocks") or [], charts, key_stats, effective_theme, chart_cursor)
         if not blocks_meaningful:
-            body_html = _markdown_to_html(body_raw, charts, images, effective_theme, sources) if body_raw else ""
+            body_html = _markdown_to_html(body_raw, charts, images, effective_theme) if body_raw else ""
         else:
             body_html = block_html
             # Keep generated markdown content as the source-of-truth when a structured layout is only metadata.
             if body_raw and not block_html.strip():
-                body_html = _markdown_to_html(body_raw, charts, images, effective_theme, sources)
+                body_html = _markdown_to_html(body_raw, charts, images, effective_theme)
         if section_type == "metrics_dashboard" and key_stats and not key_stats_rendered and "gg-metric" not in body_html:
             body_html = _render_key_stats(key_stats) + body_html
             key_stats_rendered = True
@@ -1843,24 +1806,6 @@ def build_html_report(report: str, title: str, question: str, summary: str,
             f'<div class="gg-section-heading"><h2>{section_title}</h2></div>'
             f'<div class="gg-section-body gg-section-body--{html.escape(layout, quote=True)}">{body_html}</div></section>'
         )
-
-    # A report should read like a professional research document, not a long chat response.
-    # Build a compact, clickable contents map from the actual rendered sections.
-    toc_items = []
-    for idx, (plan, actual) in enumerate(matches):
-        body_present = bool(str(actual.get("body") or "").strip())
-        if not body_present and not plan.get("blocks"):
-            continue
-        sid = str(plan.get("id") or f"section-{idx + 1}")
-        toc_items.append(
-            f'<li class="gg-toc__item"><a class="gg-toc__link" href="#{html.escape(sid, quote=True)}">{html.escape(str(plan.get("title") or actual.get("title") or f"Section {idx + 1}"))}</a></li>'
-        )
-    toc_html = (
-        '<nav class="gg-toc gg-reveal" data-reveal aria-label="Research contents">'
-        '<p class="gg-toc__eyebrow">Research map</p><h2 class="gg-toc__title">Contents</h2>'
-        f'<ol class="gg-toc__list">{"".join(toc_items)}</ol></nav>'
-        if toc_items else ""
-    )
 
     source_spec = spec_dict.get("source_appendix") or {}
     sources_html = _render_sources_appendix(sources, str(source_spec.get("placement") or "end_of_report"), bool(source_spec.get("include_appendix")))
@@ -1896,7 +1841,6 @@ def build_html_report(report: str, title: str, question: str, summary: str,
 {cover_html}
 <main class="{composition_class}">
   {opening_html}
-  {toc_html}
   <div class="gg-report-sections">{"".join(body_sections)}</div>
   {closing_summary}
   {sources_html}

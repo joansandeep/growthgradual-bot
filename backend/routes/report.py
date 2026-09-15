@@ -923,15 +923,9 @@ link is gone. Do not fold sources into a vague list of bare domain names ("Money
 not bury the list inside another section; it must be its own clearly headed section so a reader can
 immediately see where every fact came from. This section lists sources actually provided this turn
 only (see the verbatim-copy rule above); if the report genuinely used none, skip the section
-entirely rather than inventing entries to fill it. IN-BODY CITATIONS ARE REQUIRED FOR GROUNDED RESEARCH.
-The supplied web-source blocks are assigned stable IDs such as [S1], [S2], [S3]. Use these exact IDs
-inline immediately after the claim they support. A paragraph may contain multiple citations when its
-claims come from different sources. Tables must cite source-backed numeric rows/cells in the relevant
-cell or a source column. Management statements, analyst opinions, forecasts, and reported numbers must
-be attributed to the specific source with its [S#] marker. Never invent a citation ID, never use an ID
-that is not present in the supplied source blocks, and never cite a source merely because it is topically
-related. Do not use bare numeric markers such as [1] when an [S#] ID is available. The end Sources
-section should list the same IDs and exact source titles/publishers from the supplied source blocks.
+entirely rather than inventing entries to fill it. In-body citations still follow the existing rule
+(name the source in the sentence, never bracket markers like [1]) — this end section is the
+complete, authoritative listing, not a duplicate of the inline mentions.
 
 FORMAT RATIO — LET THE REQUEST DECIDE THE PRESENTATION:
   Tables, charts, bullet lists, blockquote callouts, and images are all OPTIONAL tools, not
@@ -3143,7 +3137,7 @@ async def _llm_build_multi_angle_queries(question: str, conversation_context: st
 # former is served from the user's own upload, the latter needs no search).
 _EVIDENCE_ANGLE_SUFFIX = {
     "news": "latest news updates",
-    "expert_opinion": "analyst expert commentary management investor institutional view",
+    "expert_opinion": "expert analyst opinion commentary",
     "financials": "key financial metrics data numbers",
     "market_data": "key financial metrics data numbers",
     "regulatory": "regulatory policy compliance",
@@ -3299,7 +3293,7 @@ _GAP_ASSESS_SYSTEM_PROMPT = (
     "false, give up to 4 NEW, specific search queries that target exactly what's missing (a "
     "company/entity the question names but that has no coverage yet, a metric or comparison the "
     "question asks for but that's absent from every source, a more recent time period, a "
-    "regulatory/official source, management commentary, domestic sell-side, foreign sell-side, or independent institutional/investor evidence) — also flag important disagreements or one-sided source coverage. Never repeat a query already tried, and never invent queries for "
+    "regulatory/official source) — never repeat a query already tried, and never invent queries for "
     "angles the question didn't ask about."
 )
 
@@ -3489,33 +3483,6 @@ async def _build_multi_angle_search_queries(
             base = _augment_query_for_historical_data(topic)
 
         queries = [base]
-
-        # Explicitly research independent dimensions named by the user. This is
-        # topic-agnostic: the dimensions come from the wording, not an industry template.
-        _dimension_queries = [
-            (r"\bmargin(?:s)?|margin squeeze|profitability|cost pressure", f"{topic} margins profitability cost pressure latest"),
-            (r"\bcapex\b|capital expenditure|investment plans?|capacity expansion", f"{topic} capex capital expenditure investment plans"),
-            (r"pricing pressure|price competition|discounting|realisation|realization", f"{topic} pricing pressure discounts realisation competition"),
-            (r"technology transition|technology shift|ev transition|digital transition|platform|battery|software", f"{topic} technology transition investment strategy"),
-            (r"bottom line|earnings|eps|profit|cash flow", f"{topic} earnings profit EPS cash flow outlook"),
-        ]
-        _q_l = question.lower()
-        for _pattern, _dq in _dimension_queries:
-            if re.search(_pattern, _q_l) and _dq.lower() not in {q.lower() for q in queries}:
-                queries.append(_dq)
-
-        # When third-party views are requested, deliberately separate company
-        # management, domestic sell-side, foreign sell-side, and institutional
-        # investor evidence instead of treating all commentary as one pool.
-        if "expert_opinion" in (intent.evidence_needed or []):
-            for _dq in (
-                f"{topic} management commentary earnings call investor presentation guidance",
-                f"{topic} Indian brokerage analyst margin earnings outlook",
-                f"{topic} foreign brokerage analyst institutional investor outlook",
-            ):
-                if _dq.lower() not in {q.lower() for q in queries}:
-                    queries.append(_dq)
-
         for kind in intent.evidence_needed:
             suffix = _EVIDENCE_ANGLE_SUFFIX.get(kind)
             if not suffix:
@@ -4143,7 +4110,6 @@ Respond with this shape:
 {
   "depth": "brief" | "standard" | "detailed" | "comprehensive",
   "depth_reason": "<one short phrase explaining why this depth fits THIS request and source material>",
-  "research_questions": ["<sub-question or hypothesis the research must resolve>", ...],
   "sections": [
     {
       "heading": "<actual section heading specific to this request>",
@@ -4244,9 +4210,6 @@ SECTION PLANNING GUIDANCE:
 22. If the source preview is empty or mostly irrelevant, plan fewer sections and favor prose/bullets rather than invented visuals.
 23. Number of sections should fit the requested depth — but the existing writer has a hard minimum-length floor. Unless the user explicitly asks for something short, avoid under-planning a substantive report; use the existing guidance of brief 2-4 sections, standard 7-10, detailed 9-12, comprehensive 11-14+ as flexible ranges, not rigid templates.
 
-RESEARCH QUESTIONS / HYPOTHESES:
-Before selecting sections, identify the small set of decision-relevant sub-questions that must be resolved to answer the user's actual request. For open-ended business/market/financial research, prefer causal questions (what changed, why, who is exposed, what offsets it, and how it reaches earnings/cash flow) over merely restating the user's nouns. If the user asks for management and analyst views, explicitly separate management assertions from independent analyst/investor interpretations and identify disagreements that the evidence should test. These are research questions, not invented conclusions.
-
 Never invent facts, numbers, sources, or data. Your job is to decide the structure and presentation from the evidence available to you."""
 
 
@@ -4263,9 +4226,6 @@ def _validate_report_plan(plan) -> bool:
     if not isinstance(plan, dict):
         return False
     if plan.get("depth") not in ("brief", "standard", "detailed", "comprehensive"):
-        return False
-    research_questions = plan.get("research_questions", [])
-    if research_questions is not None and (not isinstance(research_questions, list) or len(research_questions) > 20):
         return False
     sections = plan.get("sections")
     if not isinstance(sections, list) or not (1 <= len(sections) <= 14):
@@ -4433,10 +4393,7 @@ def _attach_presentation_to_plan(plan: dict, question: str = "", intent=None) ->
         # Last-resort recovery still derives the composition from the current planner sections.
         domain = _infer_domain()
         fallback = default_spec_for_domain(domain).to_dict()
-        # Last resort remains neutral: only validated planner sections may create substantive structure.
         fallback["sections"] = [_presentation_section_from_plan(sec, idx) for idx, sec in enumerate(planner_sections)]
-        fallback["cover"]["enabled"] = False
-        fallback["executive_summary"]["placement"] = "none"
         spec, final_warnings = ReportPresentationSpec.from_llm_output(fallback)
         plan["presentation"] = spec.to_dict()
         log.warning("Report: presentation normalization failed; reconstructed from plan: %s", e)
@@ -4560,12 +4517,8 @@ def _format_plan_for_prompt(plan: dict) -> str:
         "use it as your structural starting point):",
         f"Overall depth: {plan.get('depth')} ({plan.get('depth_reason', '').strip() or 'no reason given'})",
         "",
-        "Research questions / hypotheses to resolve:",
+        "Planned sections, in order:",
     ]
-    for rq in (plan.get("research_questions") or [])[:20]:
-        if isinstance(rq, str) and rq.strip():
-            lines.append(f"- {rq.strip()}")
-    lines.extend(["", "Planned sections, in order:"])
     for i, sec in enumerate(plan["sections"], 1):
         reason = sec.get("format_reason", "").strip()
         lines.append(
@@ -5346,17 +5299,8 @@ async def generate_report(request: Request):
     ))
     log.info("Report: enrichment done (%d sources ready)", len(enriched))
 
-    # Stable citation IDs are assigned to the exact ordered sources visible to
-    # the writer. The report can therefore cite [S1], [S2], etc. without the
-    # model inventing or guessing URLs.
-    enriched_manifest = normalise_source_manifest(enriched, source_documents)
-    _citation_by_url = {str(m.get("url") or "").rstrip("/").lower(): m.get("id") for m in enriched_manifest if m.get("url")}
-    for _src in enriched:
-        _src_url = str(_src.get("url") or "").rstrip("/").lower()
-        _src["citationId"] = _citation_by_url.get(_src_url, "")
-
     src_text = "\n\n---\n\n".join(
-        f"- [{s.get('citationId') or 'SOURCE'}] **{s['title']}**\nSource: {s['url']}\n"
+        f"- **{s['title']}**\nSource: {s['url']}\n"
         + (s["fullContent"][:ENRICH_FETCH_CHARS] if len(s.get("fullContent", "")) > len(s.get("snippet", "")) else s.get("snippet", "")[:1000])
         for s in enriched
     )
@@ -5501,9 +5445,7 @@ async def generate_report(request: Request):
         + conversation_section
         + (img_placement_instruction if img_placement_instruction else "")
         + (
-            f"\n\nSUPPLEMENTARY WEB SOURCES ({len(enriched)} results). Each source has a stable citation ID. "
-            f"Use [S1], [S2], etc. inline immediately after factual claims supported by that source. "
-            f"Use the same IDs in the Sources section; never invent IDs or URLs.\n\n{src_text}\n\n"
+            f"\n\nSupplementary web sources ({len(enriched)} results):\n\n{src_text}\n\n"
             if not no_web_sources else
             "\n\nNO WEB SOURCES: A web search for this topic returned nothing usable — this is "
             "expected for a personal/advisory question rather than a news or market-data query. "

@@ -19,6 +19,7 @@ import os
 import random
 import re
 import time
+import traceback
 import unicodedata
 from datetime import datetime, timezone
 from functools import lru_cache
@@ -3699,7 +3700,7 @@ main {{ width: 100%; max-width: 178mm; margin: 0 auto; }}
 .gg-section--critical, .gg-section--high {{ border-left: 4px solid {accent}; }}
 .gg-section-body {{ min-width: 0; }}
 .gg-section-body--two_column {{ {two_col_css} }}
-.gg-section-body--two_column > * {{ break-inside: avoid; }}
+.gg-section-body--two_column > * {{ break-inside: avoid-column; }}
 .gg-block, .gg-list, p {{ margin-top: 0; margin-bottom: 8px; }}
 .gg-list {{ padding-left: 18px; }}
 .gg-divider {{ border-top: 1px solid {line}; margin: 10px 0; }}
@@ -3711,9 +3712,10 @@ main {{ width: 100%; max-width: 178mm; margin: 0 auto; }}
 .gg-metric-change, .gg-stat-change {{ font-size: 8.5pt; color: {accent}; }}
 .gg-chart-wrap, .gg-table-wrap {{ margin: 10px 0; padding: 9px; background: {card_bg}; border: 1px solid {line}; border-radius: {radius}; break-inside: {"auto" if fast_mode else "avoid"}; }}
 .gg-chart-title {{ font-size: 10.5pt; font-weight: 700; color: {primary}; margin-bottom: 6px; }}
-.gg-chart-canvas-box {{ height: 220px; }}
-.gg-pdf-chart-fallback {{ width: 100%; max-width: 100%; overflow: hidden; break-inside: avoid; }}
+.gg-chart-canvas-box {{ height: 220px; overflow: hidden; }}
+.gg-pdf-chart-fallback {{ width: 100%; height: 100%; max-width: 100%; overflow: hidden; break-inside: avoid; }}
 .gg-pdf-chart-fallback svg {{ display: block; width: 100%; height: auto; max-width: 100%; }}
+.gg-pdf-chart-fallback img {{ display: block; width: 100%; height: 100%; max-width: 100%; max-height: 220px; object-fit: contain; }}
 .gg-table-scroll {{ width: 100%; }}
 .gg-table {{ width: 100%; border-collapse: collapse; table-layout: fixed; font-size: 8.8pt; }}
 .gg-table th {{ background: {primary}; color: #FFFFFF; font-weight: 700; padding: 6px; border: 1px solid {line}; }}
@@ -3973,36 +3975,65 @@ def build_pdf(report: str, title: str, question: str, summary: str,
         attempts.append(("chromium", _pdf_with_chromium))
 
     errors = []
-    profiles = [("dynamic", html_doc)]
-    # If a presentation-selected layout hits a browser/WeasyPrint edge case,
-    # retry the exact same report with a conservative print profile. This does
-    # NOT change the model-generated section structure or content; it only
-    # simplifies print-only layout primitives (e.g. CSS multi-column flow).
-    # This is especially important for long reports containing nested cards,
-    # tables and mixed layouts.
+    for engine, renderer in attempts:
+        try:
+            t_engine = time.perf_counter()
+            pdf_bytes = renderer(html_doc)
+            log.info("PDF: %s render succeeded in %.1fs", engine, time.perf_counter() - t_engine)
+            return _trim_trailing_blank_pages(pdf_bytes)
+        except Exception as exc:
+            errors.append(f"{engine}={exc}")
+            # str(exc) alone (e.g. "'NoneType' object has no attribute
+            # 'children'") is useless for tracking down *where* inside a
+            # ~4000-line renderer the failure happened. Log the full
+            # traceback so a real crash site can be identified instead of
+            # only ever seeing the exception message.
+            log.warning("PDF: %s render failed: %s\n%s", engine, exc, traceback.format_exc())
+
+    # Last resort before giving up: retry once against a maximally simplified
+    # version of the same document — every chart forced to a rasterized PNG
+    # (no inline SVG trees, no Chart.js canvases) and every section allowed to
+    # break freely across pages (fast_mode=True). This trades some visual
+    # density for a much smaller, layout-simpler document, which sidesteps
+    # WeasyPrint layout edge cases (deeply nested grid/flex/multi-column
+    # combinations are the most common trigger for internal WeasyPrint bugs
+    # like "'NoneType' object has no attribute 'children'") without needing to
+    # know in advance which construct triggered it. Only attempted if we
+    # haven't already rendered in fast/simplified mode above.
     if not fast_print:
-        safe_print_html = _strip_non_printing_runtime(
-            _replace_chart_runtime_with_svg(
+        try:
+            log.warning("PDF: both primary engines failed on the standard profile; retrying once in simplified (fast) mode")
+            safe_html = _replace_chart_runtime_with_svg(
                 build_html_report(
                     report or "", title or "", question or "Research Report", summary or "",
                     key_stats or [], charts or [], images, safe_theme, sources, presentation,
                 ),
-                rasterize=False,
-            ),
-            safe_theme, presentation, fast_mode=True,
-        )
-        profiles.append(("conservative", safe_print_html))
+                rasterize=True,
+            )
+            safe_html = _strip_non_printing_runtime(safe_html, safe_theme, presentation, fast_mode=True)
+            pdf_bytes = _pdf_with_weasyprint(safe_html)
+            log.info("PDF: weasyprint simplified-mode retry succeeded")
+            return _trim_trailing_blank_pages(pdf_bytes)
+        except Exception as exc:
+            errors.append(f"weasyprint-simplified={exc}")
+            log.warning("PDF: simplified-mode retry also failed: %s\n%s", exc, traceback.format_exc())
 
-    for profile_name, profile_html in profiles:
-        for engine, renderer in attempts:
-            try:
-                t_engine = time.perf_counter()
-                pdf_bytes = renderer(profile_html)
-                log.info("PDF: %s/%s render succeeded in %.1fs", profile_name, engine, time.perf_counter() - t_engine)
-                return _trim_trailing_blank_pages(pdf_bytes)
-            except Exception as exc:
-                errors.append(f"{profile_name}:{engine}={exc}")
-                log.warning("PDF: %s/%s render failed: %s", profile_name, engine, exc)
+    # Persist the exact HTML that failed to render so the crash can actually
+    # be reproduced and debugged offline, instead of only ever seeing a bare
+    # exception message with no way to inspect what was fed to the renderer.
+    try:
+        debug_dir = Path(os.environ.get("GG_PDF_FAILURE_DIR", "/tmp/gg_pdf_failures"))
+        debug_dir.mkdir(parents=True, exist_ok=True)
+        debug_path = debug_dir / f"failed_{int(time.time())}.html"
+        debug_path.write_text(html_doc, encoding="utf-8")
+        # Keep only the most recent handful of failures so this can't grow
+        # unbounded on a long-running instance.
+        saved = sorted(debug_dir.glob("failed_*.html"), key=lambda p: p.stat().st_mtime, reverse=True)
+        for stale in saved[20:]:
+            stale.unlink(missing_ok=True)
+        log.error("PDF: rendering failed on all engines; failing HTML saved to %s", debug_path)
+    except Exception as save_exc:
+        log.warning("PDF: could not save failing HTML for debugging: %s", save_exc)
 
     # Never silently revert to the fixed legacy renderer. The product contract
     # is presentation-driven PDF output; returning a clean error is safer than

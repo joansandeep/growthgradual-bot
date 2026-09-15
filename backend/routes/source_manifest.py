@@ -74,7 +74,6 @@ def normalise_source_manifest(sources: object, source_documents: object = None) 
             return
         seen.add(identity)
         result.append({
-            "id": f"S{len(result) + 1}",
             "title": title,
             "url": url,
             "publisher": publisher,
