@@ -1,9 +1,9 @@
 services:
   - type: web
     name: growth-gradual-backend
-    runtime: python
-    buildCommand: apt-get update && apt-get install -y chromium chromium-driver && pip install -r requirements.txt
-    startCommand: uvicorn main:app --host 0.0.0.0 --port $PORT
+    runtime: docker
+    dockerfilePath: ./backend/Dockerfile
+    dockerContext: ./backend
     envVars:
       - key: GROQ_API_KEYS
         sync: false
